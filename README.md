@@ -12,6 +12,7 @@ A production-ready FastAPI backend for stock analysis and trading recommendation
 - **Detailed Trade Plans**: Entry price, stop loss, multiple price targets, position sizing
 - **LLM-Ready Tools**: All functions designed with clear signatures for AI agent integration
 - **Production-Ready**: Comprehensive error handling, logging, and validation
+- **Alpaca Markets Integration**: Official alpaca-py SDK with IEX (free) and SIP (paid) support
 
 ## Architecture
 
@@ -43,6 +44,7 @@ StockMate/
 
 - Python 3.10 or higher
 - Alpaca Markets API account (free paper trading account available at https://alpaca.markets)
+  - See [Alpaca Integration Guide](docs/ALPACA_INTEGRATION.md) for detailed setup instructions
 
 ### Setup
 
@@ -433,9 +435,16 @@ For issues, questions, or feature requests:
 - Create an issue on GitHub
 - Email: support@stockmate.example.com
 
+## Documentation
+
+- **[README.md](README.md)**: Main documentation (you are here)
+- **[QUICKSTART.md](QUICKSTART.md)**: 5-minute setup guide
+- **[Alpaca Integration Guide](docs/ALPACA_INTEGRATION.md)**: Detailed Alpaca API documentation
+- **API Docs**: Interactive documentation at `/docs` endpoint when running
+
 ## Acknowledgments
 
-- **Alpaca Markets**: Market data provider
+- **Alpaca Markets**: Market data provider via official alpaca-py SDK
 - **FastAPI**: Modern Python web framework
 - **Pydantic**: Data validation library
 

@@ -4,7 +4,7 @@ All functions are designed to be used as LLM agent tools with clear
 signatures, comprehensive docstrings, and structured input/output.
 """
 
-from typing import List, Literal
+from typing import List, Literal, Optional
 from datetime import datetime, timedelta
 import logging
 
@@ -12,11 +12,18 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
+from alpaca.common.exceptions import APIError
 
 from app.config import get_settings
 from app.models.data import PriceBar, Fundamentals, Sentiment
 
 logger = logging.getLogger(__name__)
+
+# Alpaca Data Feed Options
+# - "iex": Free tier, 5 years of history (Investors Exchange)
+# - "sip": Paid tier, 7 years of history (Securities Information Processor)
+# - None: Defaults to best available feed based on subscription
+ALPACA_DATA_FEED = None  # Will use best available feed for user's subscription
 
 
 def _get_alpaca_client() -> StockHistoricalDataClient:
@@ -41,22 +48,30 @@ def fetch_price_bars(
     symbol: str,
     timeframe: Literal["1d", "1h", "15m", "5m"] = "1d",
     days_back: int = 100,
+    feed: Optional[str] = None,
 ) -> List[PriceBar]:
     """Fetch historical price bars (OHLCV data) for a stock symbol.
 
-    This tool retrieves historical price data from Alpaca Markets API.
-    It's designed to be called by LLM agents or directly from the analysis pipeline.
+    This tool retrieves historical price data from Alpaca Markets API using
+    the official alpaca-py SDK. Works with both free (IEX) and paid (SIP) tiers.
+
+    Data Feed Information:
+    - Free tier: Uses IEX feed (5 years of history, Investors Exchange)
+    - Paid tier: Can use SIP feed (7 years of history, all US exchanges)
+    - Default: Automatically uses best available feed for your subscription
 
     Args:
         symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
         timeframe: Bar timeframe - '1d' (daily), '1h' (hourly), '15m' (15-minute), '5m' (5-minute)
         days_back: Number of days of historical data to fetch
+        feed: Data feed to use ('iex', 'sip', or None for auto). Default: None
 
     Returns:
         List of PriceBar objects containing OHLCV data, sorted by timestamp ascending
 
     Raises:
         ValueError: If symbol is invalid or no data is available
+        APIError: If Alpaca API returns an error (e.g., invalid credentials, rate limit)
         Exception: If API request fails
 
     Example:
@@ -89,11 +104,16 @@ def fetch_price_bars(
     try:
         client = _get_alpaca_client()
 
+        # Use provided feed or default
+        data_feed = feed or ALPACA_DATA_FEED
+
+        # Build request parameters with feed specification
         request_params = StockBarsRequest(
             symbol_or_symbols=symbol,
             timeframe=tf,
             start=start,
             end=end,
+            feed=data_feed,  # Specify data feed (iex, sip, or None for auto)
         )
 
         bars_data = client.get_stock_bars(request_params)
@@ -116,9 +136,17 @@ def fetch_price_bars(
             for bar in bars
         ]
 
-        logger.info(f"Successfully fetched {len(price_bars)} bars for {symbol}")
+        feed_info = data_feed or "auto"
+        logger.info(f"Successfully fetched {len(price_bars)} bars for {symbol} (feed: {feed_info})")
         return price_bars
 
+    except APIError as e:
+        # Alpaca API specific errors (auth, rate limits, subscription issues)
+        logger.error(f"Alpaca API error fetching price bars for {symbol}: {str(e)}")
+        raise ValueError(f"Alpaca API error: {str(e)}")
+    except ValueError:
+        # Re-raise ValueError as-is
+        raise
     except Exception as e:
         logger.error(f"Error fetching price bars for {symbol}: {str(e)}")
         raise
