@@ -6,6 +6,8 @@ from datetime import datetime
 from app.tools.analysis import (
     find_structural_pivots,
     detect_key_levels,
+    calculate_volume_profile,
+    detect_chart_patterns,
     generate_trade_plan,
 )
 from app.models.data import (
@@ -237,3 +239,124 @@ class TestKeyLevels:
         """Test key levels with empty price bars."""
         with pytest.raises(ValueError, match="price_bars cannot be empty"):
             detect_key_levels([])
+
+
+class TestVolumeProfile:
+    """Tests for volume profile calculation."""
+
+    def test_calculate_volume_profile_basic(self, sample_price_bars):
+        """Test basic volume profile calculation."""
+        if len(sample_price_bars) >= 30:
+            vp = calculate_volume_profile(sample_price_bars, num_bins=50)
+
+            assert isinstance(vp, dict)
+            assert "vpoc" in vp
+            assert "value_area_high" in vp
+            assert "value_area_low" in vp
+            assert "high_volume_nodes" in vp
+            assert "low_volume_nodes" in vp
+            assert "current_price_position" in vp
+
+            # VPOC should be within price range
+            assert vp["vpoc"] > 0
+            assert vp["value_area_high"] > vp["value_area_low"]
+
+    def test_calculate_volume_profile_hvn_lvn(self, sample_price_bars):
+        """Test HVN and LVN detection."""
+        if len(sample_price_bars) >= 30:
+            vp = calculate_volume_profile(sample_price_bars, num_bins=50)
+
+            # HVNs should have price, volume, and strength
+            for hvn in vp["high_volume_nodes"]:
+                assert "price" in hvn
+                assert "volume" in hvn
+                assert "strength" in hvn
+                assert hvn["strength"] >= 1.5  # HVN threshold
+
+            # LVNs should have price, volume, and weakness
+            for lvn in vp["low_volume_nodes"]:
+                assert "price" in lvn
+                assert "volume" in lvn
+                assert "weakness" in lvn
+
+    def test_calculate_volume_profile_position(self, sample_price_bars):
+        """Test current price position determination."""
+        if len(sample_price_bars) >= 30:
+            vp = calculate_volume_profile(sample_price_bars, num_bins=50)
+
+            position = vp["current_price_position"]
+            assert position in ["above_value_area", "below_value_area", "within_value_area"]
+
+    def test_calculate_volume_profile_empty_bars(self):
+        """Test volume profile with empty price bars."""
+        with pytest.raises(ValueError, match="price_bars cannot be empty"):
+            calculate_volume_profile([])
+
+    def test_calculate_volume_profile_invalid_bins(self, sample_price_bars):
+        """Test volume profile with invalid bin count."""
+        with pytest.raises(ValueError, match="num_bins must be at least 10"):
+            calculate_volume_profile(sample_price_bars, num_bins=5)
+
+
+class TestChartPatterns:
+    """Tests for chart pattern detection."""
+
+    def test_detect_chart_patterns_basic(self, sample_price_bars):
+        """Test basic chart pattern detection."""
+        if len(sample_price_bars) >= 30:
+            patterns = detect_chart_patterns(sample_price_bars, min_pattern_bars=20)
+
+            assert isinstance(patterns, dict)
+            assert "patterns_found" in patterns
+            assert "pattern_count" in patterns
+            assert "bullish_patterns" in patterns
+            assert "bearish_patterns" in patterns
+            assert "strongest_pattern" in patterns
+            assert "net_sentiment" in patterns
+
+    def test_detect_chart_patterns_structure(self, sample_price_bars):
+        """Test pattern structure."""
+        if len(sample_price_bars) >= 30:
+            patterns = detect_chart_patterns(sample_price_bars, min_pattern_bars=20)
+
+            # If patterns are found, check their structure
+            for pattern in patterns["patterns_found"]:
+                assert "name" in pattern
+                assert "type" in pattern
+                assert "confidence" in pattern
+                assert "target_price" in pattern
+                assert "current_price" in pattern
+                assert "expected_move_pct" in pattern
+
+                # Type should be valid
+                assert "bullish" in pattern["type"] or "bearish" in pattern["type"]
+                assert "reversal" in pattern["type"] or "continuation" in pattern["type"]
+
+                # Confidence should be reasonable
+                assert 0 <= pattern["confidence"] <= 100
+
+    def test_detect_chart_patterns_strongest(self, sample_price_bars):
+        """Test strongest pattern selection."""
+        if len(sample_price_bars) >= 30:
+            patterns = detect_chart_patterns(sample_price_bars, min_pattern_bars=20)
+
+            if patterns["pattern_count"] > 0:
+                strongest = patterns["strongest_pattern"]
+                assert strongest is not None
+                assert isinstance(strongest, dict)
+
+                # Strongest should have highest confidence
+                if patterns["pattern_count"] > 1:
+                    for pattern in patterns["patterns_found"]:
+                        assert strongest["confidence"] >= pattern["confidence"]
+
+    def test_detect_chart_patterns_empty_bars(self):
+        """Test chart patterns with empty price bars."""
+        with pytest.raises(ValueError, match="price_bars cannot be empty"):
+            detect_chart_patterns([])
+
+    def test_detect_chart_patterns_insufficient_data(self, sample_price_bars):
+        """Test chart patterns with insufficient data."""
+        if len(sample_price_bars) < 20:
+            with pytest.raises(ValueError, match="Need at least"):
+                detect_chart_patterns(sample_price_bars[:10], min_pattern_bars=20)

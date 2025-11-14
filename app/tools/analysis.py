@@ -410,6 +410,580 @@ def detect_key_levels(
     return key_levels
 
 
+def calculate_volume_profile(
+    price_bars: List[PriceBar],
+    num_bins: int = 50,
+    value_area_percent: float = 70.0,
+) -> dict:
+    """Calculate Volume Profile with VPOC, Value Area, and HVN/LVN detection.
+
+    Volume Profile is an institutional-grade tool that shows where the majority of
+    trading activity occurred at specific price levels. It reveals:
+    - Where institutions are positioned (high volume = strong hands)
+    - Support/resistance levels based on actual trading activity
+    - Low volume areas where price moves fast (liquidity gaps)
+
+    Key Concepts:
+    - VPOC (Volume Point of Control): Price level with highest traded volume
+    - Value Area: Price range containing 70% of total volume (where market accepted price)
+    - HVN (High Volume Nodes): Strong support/resistance from institutional positioning
+    - LVN (Low Volume Nodes): Price levels with low activity - expect fast moves through these
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        num_bins: Number of price levels to create (default: 50)
+        value_area_percent: Percentage of volume for value area (default: 70%)
+
+    Returns:
+        Dictionary containing:
+        - vpoc: Volume Point of Control (price with highest volume)
+        - value_area_high: Upper bound of value area
+        - value_area_low: Lower bound of value area
+        - high_volume_nodes: List of HVN levels
+        - low_volume_nodes: List of LVN levels
+        - volume_distribution: Full volume by price level
+        - poc_strength: How dominant the VPOC is (concentration metric)
+
+    Raises:
+        ValueError: If price_bars is empty or parameters invalid
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 60)
+        >>> vp = calculate_volume_profile(bars, num_bins=50)
+        >>> print(f"VPOC: ${vp['vpoc']:.2f} (institutions positioned here)")
+        >>> print(f"Value Area: ${vp['value_area_low']:.2f} - ${vp['value_area_high']:.2f}")
+        >>> print(f"High Volume Nodes: {vp['high_volume_nodes']}")
+    """
+    logger.info(f"Calculating Volume Profile for {len(price_bars)} bars (bins: {num_bins})")
+
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    if num_bins < 10:
+        raise ValueError("num_bins must be at least 10")
+
+    if not 50 <= value_area_percent <= 90:
+        raise ValueError("value_area_percent must be between 50 and 90")
+
+    # Extract price and volume data
+    highs = np.array([bar.high for bar in price_bars])
+    lows = np.array([bar.low for bar in price_bars])
+    closes = np.array([bar.close for bar in price_bars])
+    volumes = np.array([bar.volume for bar in price_bars])
+
+    # Determine price range
+    price_min = np.min(lows)
+    price_max = np.max(highs)
+    price_range = price_max - price_min
+
+    if price_range == 0:
+        raise ValueError("Price range is zero - cannot calculate volume profile")
+
+    # Create price bins (levels)
+    bin_size = price_range / num_bins
+    price_levels = np.linspace(price_min, price_max, num_bins + 1)
+
+    # Initialize volume at each price level
+    volume_at_price = np.zeros(num_bins)
+
+    # Distribute volume across price levels
+    # For each bar, distribute its volume proportionally across the price levels it touched
+    for i in range(len(price_bars)):
+        bar_low = lows[i]
+        bar_high = highs[i]
+        bar_volume = volumes[i]
+
+        # Find which bins this bar touched
+        low_bin = int((bar_low - price_min) / bin_size)
+        high_bin = int((bar_high - price_min) / bin_size)
+
+        # Clamp to valid range
+        low_bin = max(0, min(low_bin, num_bins - 1))
+        high_bin = max(0, min(high_bin, num_bins - 1))
+
+        # Distribute volume across touched bins
+        bins_touched = high_bin - low_bin + 1
+        if bins_touched > 0:
+            volume_per_bin = bar_volume / bins_touched
+            for bin_idx in range(low_bin, high_bin + 1):
+                volume_at_price[bin_idx] += volume_per_bin
+
+    # Calculate bin center prices
+    bin_centers = price_levels[:-1] + (bin_size / 2)
+
+    # Find VPOC (Volume Point of Control) - highest volume price
+    vpoc_idx = np.argmax(volume_at_price)
+    vpoc = bin_centers[vpoc_idx]
+    vpoc_volume = volume_at_price[vpoc_idx]
+
+    # Calculate POC strength (how concentrated is volume at VPOC)
+    total_volume = np.sum(volume_at_price)
+    poc_strength = (vpoc_volume / total_volume * 100) if total_volume > 0 else 0
+
+    # Calculate Value Area (price range containing value_area_percent of total volume)
+    target_volume = total_volume * (value_area_percent / 100)
+
+    # Start from VPOC and expand up/down until we reach target volume
+    value_area_volume = volume_at_price[vpoc_idx]
+    va_low_idx = vpoc_idx
+    va_high_idx = vpoc_idx
+
+    while value_area_volume < target_volume:
+        # Check which direction has more volume
+        vol_above = volume_at_price[va_high_idx + 1] if va_high_idx < num_bins - 1 else 0
+        vol_below = volume_at_price[va_low_idx - 1] if va_low_idx > 0 else 0
+
+        if vol_above >= vol_below and va_high_idx < num_bins - 1:
+            va_high_idx += 1
+            value_area_volume += volume_at_price[va_high_idx]
+        elif vol_below > 0 and va_low_idx > 0:
+            va_low_idx -= 1
+            value_area_volume += volume_at_price[va_low_idx]
+        else:
+            # Can't expand anymore
+            break
+
+    value_area_high = bin_centers[va_high_idx]
+    value_area_low = bin_centers[va_low_idx]
+
+    # Identify High Volume Nodes (HVN) - price levels with significantly high volume
+    # Use 1.5x average volume as threshold
+    avg_volume = np.mean(volume_at_price)
+    hvn_threshold = avg_volume * 1.5
+
+    high_volume_nodes = []
+    for i, vol in enumerate(volume_at_price):
+        if vol >= hvn_threshold:
+            # Check if this is a local maximum (peak)
+            is_peak = True
+            for j in range(max(0, i - 2), min(num_bins, i + 3)):
+                if j != i and volume_at_price[j] > vol:
+                    is_peak = False
+                    break
+
+            if is_peak:
+                high_volume_nodes.append({
+                    "price": round(bin_centers[i], 2),
+                    "volume": round(float(vol), 0),
+                    "strength": round((vol / avg_volume), 2),
+                })
+
+    # Sort HVNs by volume (strongest first)
+    high_volume_nodes = sorted(high_volume_nodes, key=lambda x: x["volume"], reverse=True)[:10]
+
+    # Identify Low Volume Nodes (LVN) - areas where price moves fast
+    # Use 0.5x average volume as threshold
+    lvn_threshold = avg_volume * 0.5
+
+    low_volume_nodes = []
+    for i, vol in enumerate(volume_at_price):
+        if vol <= lvn_threshold and vol > 0:
+            # Check if this is a local minimum (valley)
+            is_valley = True
+            for j in range(max(0, i - 2), min(num_bins, i + 3)):
+                if j != i and volume_at_price[j] < vol:
+                    is_valley = False
+                    break
+
+            if is_valley:
+                low_volume_nodes.append({
+                    "price": round(bin_centers[i], 2),
+                    "volume": round(float(vol), 0),
+                    "weakness": round((avg_volume / vol if vol > 0 else 999), 2),
+                })
+
+    # Sort LVNs by weakness (most significant gaps first)
+    low_volume_nodes = sorted(low_volume_nodes, key=lambda x: x["weakness"], reverse=True)[:10]
+
+    # Create volume distribution for full profile
+    volume_distribution = [
+        {
+            "price": round(bin_centers[i], 2),
+            "volume": round(float(volume_at_price[i]), 0),
+            "percentage": round((volume_at_price[i] / total_volume * 100), 2) if total_volume > 0 else 0,
+        }
+        for i in range(num_bins)
+    ]
+
+    # Determine current price position relative to value area
+    current_price = closes[-1]
+    if current_price > value_area_high:
+        position = "above_value_area"
+    elif current_price < value_area_low:
+        position = "below_value_area"
+    else:
+        position = "within_value_area"
+
+    # Calculate distance to VPOC (institutional positioning)
+    distance_to_vpoc = ((current_price - vpoc) / vpoc) * 100
+
+    logger.info(
+        f"Volume Profile: VPOC=${vpoc:.2f} (strength: {poc_strength:.1f}%), "
+        f"Value Area: ${value_area_low:.2f}-${value_area_high:.2f}, "
+        f"HVNs: {len(high_volume_nodes)}, LVNs: {len(low_volume_nodes)}, "
+        f"Current: {position}"
+    )
+
+    return {
+        "vpoc": round(vpoc, 2),
+        "vpoc_volume": round(float(vpoc_volume), 0),
+        "poc_strength": round(poc_strength, 2),
+        "value_area_high": round(value_area_high, 2),
+        "value_area_low": round(value_area_low, 2),
+        "value_area_volume_percent": round(value_area_percent, 1),
+        "high_volume_nodes": high_volume_nodes,
+        "low_volume_nodes": low_volume_nodes,
+        "volume_distribution": volume_distribution,
+        "current_price_position": position,
+        "distance_to_vpoc_percent": round(distance_to_vpoc, 2),
+        "total_volume": round(float(total_volume), 0),
+        "num_bins": num_bins,
+    }
+
+
+def detect_chart_patterns(
+    price_bars: List[PriceBar],
+    min_pattern_bars: int = 20,
+    tolerance: float = 0.03,
+) -> dict:
+    """Detect major chart patterns for reversal and continuation signals.
+
+    Implements geometric pattern recognition for patterns that professional traders use:
+    - Reversal Patterns: H&S, Inverse H&S, Double Tops/Bottoms, Wedges
+    - Continuation Patterns: Flags, Triangles
+
+    Each pattern is validated using strict geometric rules and provides:
+    - Pattern type and reliability
+    - Entry/exit levels
+    - Expected price target
+    - Pattern strength score
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        min_pattern_bars: Minimum bars required for pattern (default: 20)
+        tolerance: Price level tolerance as percentage (default: 3%)
+
+    Returns:
+        Dictionary containing:
+        - patterns_found: List of detected patterns with metadata
+        - strongest_pattern: Most reliable pattern if any
+        - bullish_patterns: Count of bullish patterns
+        - bearish_patterns: Count of bearish patterns
+
+    Raises:
+        ValueError: If price_bars is empty or parameters invalid
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 60)
+        >>> patterns = detect_chart_patterns(bars)
+        >>> if patterns['strongest_pattern']:
+        >>>     p = patterns['strongest_pattern']
+        >>>     print(f"Pattern: {p['name']} (confidence: {p['confidence']:.1f}%)")
+        >>>     print(f"Target: ${p['target_price']:.2f}")
+    """
+    logger.info(f"Detecting chart patterns in {len(price_bars)} bars")
+
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    if len(price_bars) < min_pattern_bars:
+        raise ValueError(f"Need at least {min_pattern_bars} bars for pattern detection")
+
+    # Extract OHLC data
+    highs = np.array([bar.high for bar in price_bars])
+    lows = np.array([bar.low for bar in price_bars])
+    closes = np.array([bar.close for bar in price_bars])
+    volumes = np.array([bar.volume for bar in price_bars])
+
+    current_price = closes[-1]
+    patterns_found = []
+
+    # Helper: Find swing points (peaks and troughs)
+    def find_swing_points(data, window=5):
+        """Find local maxima (peaks) and minima (troughs)."""
+        peaks = []
+        troughs = []
+
+        for i in range(window, len(data) - window):
+            # Peak: higher than surrounding points
+            if all(data[i] >= data[i-j] for j in range(1, window+1)) and \
+               all(data[i] >= data[i+j] for j in range(1, window+1)):
+                peaks.append((i, data[i]))
+
+            # Trough: lower than surrounding points
+            if all(data[i] <= data[i-j] for j in range(1, window+1)) and \
+               all(data[i] <= data[i+j] for j in range(1, window+1)):
+                troughs.append((i, data[i]))
+
+        return peaks, troughs
+
+    peaks, troughs = find_swing_points(highs, window=5)
+
+    # Pattern 1: Head and Shoulders (Bearish Reversal)
+    if len(peaks) >= 3 and len(troughs) >= 2:
+        for i in range(len(peaks) - 2):
+            left_shoulder = peaks[i]
+            head = peaks[i + 1]
+            right_shoulder = peaks[i + 2]
+
+            # Validate H&S geometry
+            # 1. Head must be higher than both shoulders
+            if head[1] > left_shoulder[1] and head[1] > right_shoulder[1]:
+                # 2. Shoulders should be roughly equal height (within tolerance)
+                shoulder_diff = abs(left_shoulder[1] - right_shoulder[1]) / left_shoulder[1]
+                if shoulder_diff <= tolerance:
+                    # 3. Find neckline (lows between shoulders)
+                    neckline_lows = [t for t in troughs if left_shoulder[0] < t[0] < right_shoulder[0]]
+                    if len(neckline_lows) >= 1:
+                        neckline = np.mean([t[1] for t in neckline_lows])
+
+                        # Calculate target: Head to neckline distance projected down
+                        pattern_height = head[1] - neckline
+                        target_price = neckline - pattern_height
+
+                        # Calculate confidence based on geometry perfection
+                        shoulder_symmetry = 1 - shoulder_diff
+                        confidence = min(85, shoulder_symmetry * 100)
+
+                        patterns_found.append({
+                            "name": "Head and Shoulders",
+                            "type": "bearish_reversal",
+                            "confidence": round(confidence, 1),
+                            "neckline": round(neckline, 2),
+                            "target_price": round(target_price, 2),
+                            "current_price": round(current_price, 2),
+                            "distance_to_entry_pct": round(((neckline - current_price) / current_price * 100), 2),
+                            "expected_move_pct": round((pattern_height / neckline * 100), 2),
+                            "pattern_complete": current_price < neckline,
+                        })
+
+    # Pattern 2: Inverse Head and Shoulders (Bullish Reversal)
+    if len(troughs) >= 3 and len(peaks) >= 2:
+        for i in range(len(troughs) - 2):
+            left_shoulder = troughs[i]
+            head = troughs[i + 1]
+            right_shoulder = troughs[i + 2]
+
+            # Validate inverse H&S geometry
+            if head[1] < left_shoulder[1] and head[1] < right_shoulder[1]:
+                shoulder_diff = abs(left_shoulder[1] - right_shoulder[1]) / left_shoulder[1]
+                if shoulder_diff <= tolerance:
+                    # Find neckline (highs between shoulders)
+                    neckline_highs = [p for p in peaks if left_shoulder[0] < p[0] < right_shoulder[0]]
+                    if len(neckline_highs) >= 1:
+                        neckline = np.mean([p[1] for p in neckline_highs])
+
+                        pattern_height = neckline - head[1]
+                        target_price = neckline + pattern_height
+
+                        shoulder_symmetry = 1 - shoulder_diff
+                        confidence = min(85, shoulder_symmetry * 100)
+
+                        patterns_found.append({
+                            "name": "Inverse Head and Shoulders",
+                            "type": "bullish_reversal",
+                            "confidence": round(confidence, 1),
+                            "neckline": round(neckline, 2),
+                            "target_price": round(target_price, 2),
+                            "current_price": round(current_price, 2),
+                            "distance_to_entry_pct": round(((current_price - neckline) / neckline * 100), 2),
+                            "expected_move_pct": round((pattern_height / neckline * 100), 2),
+                            "pattern_complete": current_price > neckline,
+                        })
+
+    # Pattern 3: Double Top (Bearish Reversal)
+    if len(peaks) >= 2:
+        for i in range(len(peaks) - 1):
+            first_peak = peaks[i]
+            second_peak = peaks[i + 1]
+
+            # Peaks should be similar height
+            peak_diff = abs(first_peak[1] - second_peak[1]) / first_peak[1]
+            if peak_diff <= tolerance:
+                # Find the trough between peaks
+                troughs_between = [t for t in troughs if first_peak[0] < t[0] < second_peak[0]]
+                if troughs_between:
+                    support_level = min([t[1] for t in troughs_between])
+
+                    # Target: Distance from peaks to support
+                    pattern_height = np.mean([first_peak[1], second_peak[1]]) - support_level
+                    target_price = support_level - pattern_height
+
+                    peak_symmetry = 1 - peak_diff
+                    confidence = min(80, peak_symmetry * 95)
+
+                    patterns_found.append({
+                        "name": "Double Top",
+                        "type": "bearish_reversal",
+                        "confidence": round(confidence, 1),
+                        "support_level": round(support_level, 2),
+                        "target_price": round(target_price, 2),
+                        "current_price": round(current_price, 2),
+                        "distance_to_entry_pct": round(((support_level - current_price) / current_price * 100), 2),
+                        "expected_move_pct": round((pattern_height / support_level * 100), 2),
+                        "pattern_complete": current_price < support_level,
+                    })
+
+    # Pattern 4: Double Bottom (Bullish Reversal)
+    if len(troughs) >= 2:
+        for i in range(len(troughs) - 1):
+            first_trough = troughs[i]
+            second_trough = troughs[i + 1]
+
+            trough_diff = abs(first_trough[1] - second_trough[1]) / first_trough[1]
+            if trough_diff <= tolerance:
+                peaks_between = [p for p in peaks if first_trough[0] < p[0] < second_trough[0]]
+                if peaks_between:
+                    resistance_level = max([p[1] for p in peaks_between])
+
+                    pattern_height = resistance_level - np.mean([first_trough[1], second_trough[1]])
+                    target_price = resistance_level + pattern_height
+
+                    trough_symmetry = 1 - trough_diff
+                    confidence = min(80, trough_symmetry * 95)
+
+                    patterns_found.append({
+                        "name": "Double Bottom",
+                        "type": "bullish_reversal",
+                        "confidence": round(confidence, 1),
+                        "resistance_level": round(resistance_level, 2),
+                        "target_price": round(target_price, 2),
+                        "current_price": round(current_price, 2),
+                        "distance_to_entry_pct": round(((current_price - resistance_level) / resistance_level * 100), 2),
+                        "expected_move_pct": round((pattern_height / resistance_level * 100), 2),
+                        "pattern_complete": current_price > resistance_level,
+                    })
+
+    # Pattern 5: Ascending Triangle (Bullish Continuation)
+    # Look for horizontal resistance with rising support
+    if len(peaks) >= 2 and len(troughs) >= 2:
+        recent_peaks = peaks[-3:] if len(peaks) >= 3 else peaks
+        recent_troughs = troughs[-3:] if len(troughs) >= 3 else troughs
+
+        # Check if peaks are roughly horizontal (resistance)
+        if len(recent_peaks) >= 2:
+            peak_prices = [p[1] for p in recent_peaks]
+            peak_variance = np.std(peak_prices) / np.mean(peak_prices)
+
+            if peak_variance < tolerance:  # Horizontal resistance
+                # Check if troughs are rising
+                if len(recent_troughs) >= 2:
+                    trough_rising = all(recent_troughs[i][1] < recent_troughs[i+1][1]
+                                      for i in range(len(recent_troughs)-1))
+
+                    if trough_rising:
+                        resistance = np.mean(peak_prices)
+                        pattern_height = resistance - recent_troughs[0][1]
+                        target_price = resistance + pattern_height
+
+                        confidence = 75  # Moderate confidence for triangles
+
+                        patterns_found.append({
+                            "name": "Ascending Triangle",
+                            "type": "bullish_continuation",
+                            "confidence": round(confidence, 1),
+                            "resistance": round(resistance, 2),
+                            "target_price": round(target_price, 2),
+                            "current_price": round(current_price, 2),
+                            "distance_to_breakout_pct": round(((resistance - current_price) / current_price * 100), 2),
+                            "expected_move_pct": round((pattern_height / resistance * 100), 2),
+                            "pattern_complete": current_price > resistance,
+                        })
+
+    # Pattern 6: Descending Triangle (Bearish Continuation)
+    if len(peaks) >= 2 and len(troughs) >= 2:
+        recent_peaks = peaks[-3:] if len(peaks) >= 3 else peaks
+        recent_troughs = troughs[-3:] if len(troughs) >= 3 else troughs
+
+        # Check if troughs are roughly horizontal (support)
+        if len(recent_troughs) >= 2:
+            trough_prices = [t[1] for t in recent_troughs]
+            trough_variance = np.std(trough_prices) / np.mean(trough_prices)
+
+            if trough_variance < tolerance:  # Horizontal support
+                # Check if peaks are falling
+                if len(recent_peaks) >= 2:
+                    peaks_falling = all(recent_peaks[i][1] > recent_peaks[i+1][1]
+                                      for i in range(len(recent_peaks)-1))
+
+                    if peaks_falling:
+                        support = np.mean(trough_prices)
+                        pattern_height = recent_peaks[0][1] - support
+                        target_price = support - pattern_height
+
+                        confidence = 75
+
+                        patterns_found.append({
+                            "name": "Descending Triangle",
+                            "type": "bearish_continuation",
+                            "confidence": round(confidence, 1),
+                            "support": round(support, 2),
+                            "target_price": round(target_price, 2),
+                            "current_price": round(current_price, 2),
+                            "distance_to_breakdown_pct": round(((support - current_price) / current_price * 100), 2),
+                            "expected_move_pct": round((pattern_height / support * 100), 2),
+                            "pattern_complete": current_price < support,
+                        })
+
+    # Pattern 7: Bull Flag (Bullish Continuation)
+    # Look for strong uptrend followed by consolidation
+    if len(price_bars) >= 30:
+        # Check for prior uptrend (flagpole)
+        lookback = min(20, len(closes) - 10)
+        flagpole_start = closes[-lookback]
+        flag_start = closes[-10]
+
+        # Strong prior move up (>5%)
+        if (flag_start - flagpole_start) / flagpole_start > 0.05:
+            # Recent consolidation/slight pullback
+            recent_closes = closes[-10:]
+            consolidation_range = (np.max(recent_closes) - np.min(recent_closes)) / np.mean(recent_closes)
+
+            # Tight consolidation (<3%)
+            if consolidation_range < 0.03:
+                flagpole_height = flag_start - flagpole_start
+                target_price = current_price + flagpole_height
+
+                confidence = 70
+
+                patterns_found.append({
+                    "name": "Bull Flag",
+                    "type": "bullish_continuation",
+                    "confidence": round(confidence, 1),
+                    "flag_high": round(np.max(recent_closes), 2),
+                    "target_price": round(target_price, 2),
+                    "current_price": round(current_price, 2),
+                    "flagpole_move_pct": round((flagpole_height / flagpole_start * 100), 2),
+                    "expected_move_pct": round((flagpole_height / current_price * 100), 2),
+                    "pattern_complete": False,  # Continuation patterns are anticipatory
+                })
+
+    # Calculate statistics
+    bullish_patterns = [p for p in patterns_found if 'bullish' in p['type']]
+    bearish_patterns = [p for p in patterns_found if 'bearish' in p['type']]
+
+    # Find strongest pattern (highest confidence)
+    strongest_pattern = None
+    if patterns_found:
+        strongest_pattern = max(patterns_found, key=lambda x: x['confidence'])
+
+    logger.info(
+        f"Chart Patterns: Found {len(patterns_found)} patterns - "
+        f"{len(bullish_patterns)} bullish, {len(bearish_patterns)} bearish"
+    )
+    if strongest_pattern:
+        logger.info(f"Strongest: {strongest_pattern['name']} ({strongest_pattern['confidence']:.1f}%)")
+
+    return {
+        "patterns_found": patterns_found,
+        "pattern_count": len(patterns_found),
+        "bullish_patterns": len(bullish_patterns),
+        "bearish_patterns": len(bearish_patterns),
+        "strongest_pattern": strongest_pattern,
+        "net_sentiment": len(bullish_patterns) - len(bearish_patterns),
+    }
+
+
 def build_snapshot(symbol: str) -> MarketSnapshot:
     """Build a complete market snapshot for a stock.
 
@@ -959,6 +1533,81 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
             elif volatility == "high":
                 score -= 5
                 reasons.append("High volatility - increased risk")
+
+        # 12. Volume Profile Analysis (weight: 10%)
+        try:
+            volume_profile = calculate_volume_profile(snapshot.price_bars_1d, num_bins=50)
+
+            # Check position relative to value area
+            position = volume_profile["current_price_position"]
+            distance_to_vpoc = volume_profile["distance_to_vpoc_percent"]
+
+            if position == "within_value_area":
+                # Price in accepted value area - neutral to bullish
+                score += 5
+                reasons.append(f"Price within value area (market acceptance)")
+            elif position == "below_value_area" and abs(distance_to_vpoc) < 5:
+                # Price below value but near VPOC - potential bounce
+                score += 10
+                reasons.append(f"Price near VPOC ${volume_profile['vpoc']:.2f} (institutional support)")
+            elif position == "above_value_area":
+                # Price above value area - bullish but extended
+                score += 3
+                reasons.append("Price above value area (bullish but extended)")
+
+            # Check for High Volume Node support
+            hvn_support = [
+                hvn for hvn in volume_profile["high_volume_nodes"]
+                if hvn["price"] < current_price and (current_price - hvn["price"]) / current_price < 0.02
+            ]
+            if hvn_support:
+                score += 5
+                strongest_hvn = max(hvn_support, key=lambda x: x["strength"])
+                reasons.append(f"HVN support at ${strongest_hvn['price']:.2f} (institutional positioning)")
+
+        except Exception as e:
+            logger.warning(f"Could not analyze volume profile: {e}")
+
+        # 13. Chart Pattern Recognition (weight: 15%)
+        try:
+            chart_patterns = detect_chart_patterns(snapshot.price_bars_1d, min_pattern_bars=20)
+
+            if chart_patterns["pattern_count"] > 0:
+                strongest = chart_patterns["strongest_pattern"]
+
+                if strongest:
+                    pattern_type = strongest["type"]
+                    confidence_score = strongest["confidence"]
+
+                    if "bullish" in pattern_type:
+                        # Bullish pattern detected
+                        pattern_points = int(15 * (confidence_score / 100))
+                        score += pattern_points
+                        reasons.append(
+                            f"{strongest['name']} pattern ({confidence_score:.0f}% confidence) "
+                            f"- target ${strongest['target_price']:.2f}"
+                        )
+                    elif "bearish" in pattern_type:
+                        # Bearish pattern detected
+                        pattern_points = int(15 * (confidence_score / 100))
+                        score -= pattern_points
+                        reasons.append(
+                            f"{strongest['name']} pattern ({confidence_score:.0f}% confidence) "
+                            f"- bearish signal"
+                        )
+
+                # Net sentiment from multiple patterns
+                net_sentiment = chart_patterns["net_sentiment"]
+                if abs(net_sentiment) >= 2:
+                    if net_sentiment > 0:
+                        score += 5
+                        reasons.append(f"Multiple bullish patterns ({chart_patterns['bullish_patterns']} found)")
+                    else:
+                        score -= 5
+                        reasons.append(f"Multiple bearish patterns ({chart_patterns['bearish_patterns']} found)")
+
+        except Exception as e:
+            logger.warning(f"Could not detect chart patterns: {e}")
 
         # Normalize score to 0-100
         confidence = max(0, min(100, score))

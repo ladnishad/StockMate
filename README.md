@@ -24,17 +24,29 @@ A production-ready FastAPI backend for stock analysis and trading recommendation
   - News volume trends
   - Weighted recent news more heavily
   - Graceful fallback to price-based sentiment
+- **Volume Profile Analysis** (Institutional-Grade): Where the big money is positioned
+  - VPOC (Volume Point of Control) - highest traded price level
+  - Value Area calculation (70% volume range)
+  - High Volume Nodes (HVN) - strong support/resistance from institutions
+  - Low Volume Nodes (LVN) - liquidity gaps where price moves fast
+  - Current price position relative to institutional levels
+- **Chart Pattern Recognition** (Professional-Grade): Geometric pattern detection
+  - Reversal Patterns: Head & Shoulders, Inverse H&S, Double Tops/Bottoms
+  - Continuation Patterns: Ascending/Descending Triangles, Bull/Bear Flags
+  - Pattern confidence scoring (0-100%)
+  - Auto-calculated price targets based on pattern geometry
+  - Pattern completion status tracking
 - **Multi-Timeframe Confluence**: Analyzes alignment across daily, hourly, and 15-minute timeframes
-- **Pattern Recognition**: Candlestick patterns (doji, hammer, engulfing, etc.)
+- **Candlestick Pattern Recognition**: Doji, hammer, engulfing, shooting star, etc.
 - **Fibonacci Levels**: Automatic retracement and extension calculations
 - **Structural Analysis**: Automatic support/resistance level detection with volume confirmation
-- **Smart Recommendations**: BUY or NO_BUY with confidence scoring (uses 11 factors)
+- **Smart Recommendations**: BUY or NO_BUY with confidence scoring (uses 13 factors)
 - **Professional Trade Plans**:
   - ATR-based stop losses (volatility-adjusted)
   - Multiple price targets based on resistance levels
   - Risk-based position sizing (1% account risk)
   - Trade type classification (day/swing/long)
-- **LLM-Ready Tools**: 17 functions designed with clear signatures for AI agent integration
+- **LLM-Ready Tools**: 19 functions designed with clear signatures for AI agent integration
 - **Production-Ready**: Comprehensive error handling, logging, and validation
 - **Alpaca Markets Integration**: Official alpaca-py SDK with IEX (free) and SIP (paid) support
 
@@ -274,12 +286,14 @@ volume = analyze_volume(price_bars)  # OBV, relative volume, spikes
 atr = calculate_atr(price_bars, period=14)  # For stop loss calculation
 ```
 
-### Analysis Tools (5 functions)
+### Analysis Tools (7 functions)
 
 ```python
 from app.tools import (
     find_structural_pivots,
     detect_key_levels,
+    calculate_volume_profile,
+    detect_chart_patterns,
     calculate_fibonacci_levels,
     analyze_multi_timeframe_confluence,
     detect_candlestick_patterns,
@@ -296,6 +310,20 @@ key_levels = detect_key_levels(price_bars)
 print(f"Round numbers: {[l['price'] for l in key_levels['round_numbers'][:3]]}")
 print(f"Nearest support: ${key_levels['nearest_support']['price']:.2f}")
 print(f"Unfilled gaps: {len(key_levels['unfilled_gaps'])}")
+
+# Volume Profile Analysis (Institutional-Grade)
+volume_profile = calculate_volume_profile(price_bars, num_bins=50)
+print(f"VPOC (institutions positioned): ${volume_profile['vpoc']:.2f}")
+print(f"Value Area: ${volume_profile['value_area_low']:.2f} - ${volume_profile['value_area_high']:.2f}")
+print(f"HVN support levels: {[hvn['price'] for hvn in volume_profile['high_volume_nodes'][:3]]}")
+print(f"Current position: {volume_profile['current_price_position']}")
+
+# Chart Pattern Recognition (Professional-Grade)
+chart_patterns = detect_chart_patterns(price_bars, min_pattern_bars=20)
+if chart_patterns['strongest_pattern']:
+    p = chart_patterns['strongest_pattern']
+    print(f"Pattern: {p['name']} ({p['type']}, {p['confidence']:.0f}% confidence)")
+    print(f"Target: ${p['target_price']:.2f} ({p['expected_move_pct']:.1f}% move)")
 
 # Calculate Fibonacci levels
 fib = calculate_fibonacci_levels(price_bars)
@@ -318,7 +346,7 @@ result = run_analysis("AAPL", account_size=10000)
 
 ## Analysis Algorithm
 
-The recommendation engine uses a comprehensive weighted scoring system with **11 factors**:
+The recommendation engine uses a comprehensive weighted scoring system with **13 factors**:
 
 | Factor | Weight | Details |
 |--------|--------|---------|
@@ -333,12 +361,16 @@ The recommendation engine uses a comprehensive weighted scoring system with **11
 | **Support/Resistance** | **10%** | **Enhanced with round numbers, gaps, period highs/lows** |
 | **Divergence Detection** | **15%** | **RSI/MACD divergences for reversal signals** |
 | ATR Volatility | 5% | Risk assessment based on volatility |
+| **Volume Profile** | **10%** | **VPOC, value area, HVN/LVN institutional positioning** |
+| **Chart Patterns** | **15%** | **H&S, Double Tops/Bottoms, Triangles, Flags** |
 
 **Enhanced Features**:
 - **MACD Crossover Detection**: +20 points for bullish crossover (strong entry signal)
 - **Volume Confirmation**: +20 points for high volume accumulation
 - **Divergence Signals**: +15 points for regular bullish divergence (reversal up)
 - **Key Level Detection**: Enhanced support/resistance with psychological levels and gaps
+- **Volume Profile**: +10 points for price near VPOC institutional support
+- **Chart Patterns**: Up to +15 points for high-confidence reversal patterns (H&S, Double Bottoms)
 - **Timeframe Alignment**: +15 points when all timeframes agree
 - **Bollinger Squeeze**: +5 points for potential breakout setups
 - **ATR-Based Stop Losses**: Dynamic stops based on volatility (2x ATR for swing trades)

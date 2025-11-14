@@ -19,6 +19,8 @@ from .indicators import (
 from .analysis import (
     find_structural_pivots,
     detect_key_levels,
+    calculate_volume_profile,
+    detect_chart_patterns,
     build_snapshot,
     generate_trade_plan,
     run_analysis,
@@ -39,9 +41,11 @@ __all__ = [
     "calculate_atr",
     "calculate_bollinger_bands",
     "detect_divergences",
-    # Analysis tools (5)
+    # Analysis tools (7)
     "find_structural_pivots",
     "detect_key_levels",
+    "calculate_volume_profile",
+    "detect_chart_patterns",
     "build_snapshot",
     "generate_trade_plan",
     "run_analysis",
