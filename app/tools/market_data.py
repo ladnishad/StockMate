@@ -265,14 +265,15 @@ def fetch_sentiment(symbol: str) -> Sentiment:
         # Derive sentiment score (-1 to 1)
         # Positive price momentum + increasing volume = bullish
         # Negative price momentum + increasing volume = bearish
-        base_score = max(-1, min(1, price_change_pct / 10))  # Normalize to -1 to 1
+        base_score = price_change_pct / 10  # Normalize to approximately -1 to 1
 
-        # Adjust score based on volume
+        # Adjust score based on volume (amplify or dampen before clamping)
         if volume_ratio > 1.2:  # 20% higher volume
             base_score *= 1.2  # Amplify the signal
         elif volume_ratio < 0.8:  # 20% lower volume
             base_score *= 0.8  # Dampen the signal
 
+        # Clamp final score to [-1, 1] range
         sentiment_score = max(-1, min(1, base_score))
 
         # Determine label

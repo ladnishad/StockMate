@@ -700,19 +700,23 @@ def detect_chart_patterns(
 
     # Helper: Find swing points (peaks and troughs)
     def find_swing_points(data, window=5):
-        """Find local maxima (peaks) and minima (troughs)."""
+        """Find local maxima (peaks) and minima (troughs).
+
+        Uses strict inequality to avoid detecting flat tops/bottoms as swing points.
+        This reduces false pattern detection in consolidating markets.
+        """
         peaks = []
         troughs = []
 
         for i in range(window, len(data) - window):
-            # Peak: higher than surrounding points
-            if all(data[i] >= data[i-j] for j in range(1, window+1)) and \
-               all(data[i] >= data[i+j] for j in range(1, window+1)):
+            # Peak: strictly higher than surrounding points (avoids flat tops)
+            if all(data[i] > data[i-j] for j in range(1, window+1)) and \
+               all(data[i] > data[i+j] for j in range(1, window+1)):
                 peaks.append((i, data[i]))
 
-            # Trough: lower than surrounding points
-            if all(data[i] <= data[i-j] for j in range(1, window+1)) and \
-               all(data[i] <= data[i+j] for j in range(1, window+1)):
+            # Trough: strictly lower than surrounding points (avoids flat bottoms)
+            if all(data[i] < data[i-j] for j in range(1, window+1)) and \
+               all(data[i] < data[i+j] for j in range(1, window+1)):
                 troughs.append((i, data[i]))
 
         return peaks, troughs
@@ -926,7 +930,7 @@ def detect_chart_patterns(
                         })
 
     # Pattern 7: Bull Flag (Bullish Continuation)
-    # Look for strong uptrend followed by consolidation
+    # Look for strong uptrend followed by consolidation with slight downward slope
     if len(price_bars) >= 30:
         # Check for prior uptrend (flagpole)
         lookback = min(20, len(closes) - 10)
@@ -939,18 +943,27 @@ def detect_chart_patterns(
             recent_closes = closes[-10:]
             consolidation_range = (np.max(recent_closes) - np.min(recent_closes)) / np.mean(recent_closes)
 
-            # Tight consolidation (<3%)
-            if consolidation_range < 0.03:
+            # Calculate slope of consolidation (should be slightly downward for bull flag)
+            flag_slope = (recent_closes[-1] - recent_closes[0]) / recent_closes[0]
+
+            # Tight consolidation (<3%) with characteristic downward slope
+            # True bull flag: -5% < slope < 0 (slight downward drift)
+            if consolidation_range < 0.03 and -0.05 < flag_slope < 0.01:
                 flagpole_height = flag_start - flagpole_start
                 target_price = current_price + flagpole_height
 
-                confidence = 70
+                # Higher confidence if slope is ideal (-1% to 0%)
+                if -0.01 <= flag_slope < 0:
+                    confidence = 75  # Ideal slope
+                else:
+                    confidence = 68  # Acceptable but not perfect
 
                 patterns_found.append({
                     "name": "Bull Flag",
                     "type": "bullish_continuation",
                     "confidence": round(confidence, 1),
                     "flag_high": round(np.max(recent_closes), 2),
+                    "flag_slope_pct": round(flag_slope * 100, 2),
                     "target_price": round(target_price, 2),
                     "current_price": round(current_price, 2),
                     "flagpole_move_pct": round((flagpole_height / flagpole_start * 100), 2),
@@ -1320,10 +1333,13 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
         snapshot = build_snapshot(symbol)
 
         # Initialize scoring system (0-100)
+        # Note: Factors contribute points (not percentages) that sum to ~190 points max.
+        # Starting from 50 (neutral), factors add/subtract points, then clamped to [0,100].
+        # This means strong bullish signals can reach 65%+ buy threshold easily.
         score = 50  # Start neutral
         reasons = []
 
-        # 1. Sentiment Analysis (weight: 20%)
+        # 1. Sentiment Analysis (contribution: up to ±20 points)
         sentiment_weight = 20
         if snapshot.sentiment.label == "bullish":
             score += sentiment_weight
@@ -1332,7 +1348,7 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
             score -= sentiment_weight
             reasons.append(f"Bearish sentiment (score: {snapshot.sentiment.score:.2f})")
 
-        # 2. Trend Analysis - EMAs (weight: 25%)
+        # 2. Trend Analysis - EMAs (contribution: up to ±25 points)
         ema_signals = [i for i in snapshot.indicators if i.name.startswith("EMA")]
         if ema_signals:
             bullish_emas = sum(1 for ema in ema_signals if ema.signal == "bullish")
@@ -1346,7 +1362,7 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
             else:
                 reasons.append(f"Price below key EMAs ({bearish_emas}/{len(ema_signals)} bearish)")
 
-        # 3. RSI Analysis (weight: 15%)
+        # 3. RSI Analysis (contribution: up to ±15 points)
         rsi_indicator = next((i for i in snapshot.indicators if i.name.startswith("RSI")), None)
         if rsi_indicator:
             rsi_value = rsi_indicator.value
@@ -1364,7 +1380,7 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
                 score -= 15
                 reasons.append(f"RSI overbought ({rsi_value:.1f}) - caution")
 
-        # 4. VWAP Analysis (weight: 15%)
+        # 4. VWAP Analysis (contribution: up to ±15 points)
         vwap_indicator = next((i for i in snapshot.indicators if i.name == "VWAP"), None)
         if vwap_indicator:
             if vwap_indicator.signal == "bullish":
@@ -1374,7 +1390,7 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
                 score -= 15
                 reasons.append(f"Price below VWAP (${vwap_indicator.value:.2f})")
 
-        # 5. Volume Analysis (weight: 20%) - CRITICAL
+        # 5. Volume Analysis (contribution: up to ±20 points) - CRITICAL
         volume_indicator = next((i for i in snapshot.indicators if i.name == "Volume"), None)
         if volume_indicator:
             if volume_indicator.signal == "bullish":
@@ -1388,7 +1404,7 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
                 score -= 10
                 reasons.append("Low volume - unreliable move")
 
-        # 6. MACD Analysis (weight: 15%)
+        # 6. MACD Analysis (contribution: up to ±20 points)
         macd_indicator = next((i for i in snapshot.indicators if i.name == "MACD"), None)
         if macd_indicator:
             if macd_indicator.metadata.get("bullish_crossover"):
@@ -1404,7 +1420,7 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
                 score -= 10
                 reasons.append("MACD bearish momentum")
 
-        # 7. Bollinger Bands (weight: 10%)
+        # 7. Bollinger Bands (contribution: up to ±15 points)
         bb_indicator = next((i for i in snapshot.indicators if i.name == "BollingerBands"), None)
         if bb_indicator:
             interpretation = bb_indicator.metadata.get("interpretation")
@@ -1418,7 +1434,7 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
                 score += 5
                 reasons.append("Bollinger squeeze - potential breakout setup")
 
-        # 8. Multi-Timeframe Confluence (weight: 15%)
+        # 8. Multi-Timeframe Confluence (contribution: up to ±15 points)
         try:
             confluence = analyze_multi_timeframe_confluence(snapshot)
             if confluence["score"] >= 70:
@@ -1433,7 +1449,7 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
         except Exception as e:
             logger.warning(f"Could not analyze confluence: {e}")
 
-        # 9. Support/Resistance (weight: 10%)
+        # 9. Support/Resistance (contribution: up to ±10 points)
         current_price = snapshot.current_price
 
         # Detect key levels for enhanced support/resistance analysis
@@ -1490,7 +1506,7 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
                 score -= 10
                 reasons.append("Near strong resistance - limited upside")
 
-        # 10. Divergence Detection (weight: 15%)
+        # 10. Divergence Detection (contribution: up to ±15 points)
         rsi_divergence = next(
             (i for i in snapshot.indicators if i.name == "Divergence_RSI"),
             None
@@ -1523,18 +1539,20 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
         if divergence_signals:
             reasons.append(" + ".join(divergence_signals) + " - strong reversal signal")
 
-        # 11. ATR Volatility Check (weight: 5%)
+        # 11. ATR Volatility Check (contribution: informational only, 0 points)
+        # Note: ATR signals are now neutral (non-directional). High ATR doesn't mean bearish;
+        # it can occur in strong uptrends. We log it for informational purposes but don't score it.
         atr_indicator = next((i for i in snapshot.indicators if i.name.startswith("ATR")), None)
         if atr_indicator:
             volatility = atr_indicator.metadata.get("volatility")
-            if volatility == "low":
-                score += 5
-                reasons.append("Low volatility - stable environment")
-            elif volatility == "high":
-                score -= 5
-                reasons.append("High volatility - increased risk")
+            atr_pct = atr_indicator.metadata.get("atr_percentage", 0)
+            # Just log volatility for context - don't adjust score
+            if volatility == "high":
+                reasons.append(f"High volatility ({atr_pct:.1f}% ATR) - use wider stops")
+            elif volatility == "low":
+                reasons.append(f"Low volatility ({atr_pct:.1f}% ATR) - stable price action")
 
-        # 12. Volume Profile Analysis (weight: 10%)
+        # 12. Volume Profile Analysis (contribution: up to +10 points)
         try:
             volume_profile = calculate_volume_profile(snapshot.price_bars_1d, num_bins=50)
 
@@ -1568,7 +1586,7 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
         except Exception as e:
             logger.warning(f"Could not analyze volume profile: {e}")
 
-        # 13. Chart Pattern Recognition (weight: 15%)
+        # 13. Chart Pattern Recognition (contribution: up to ±15 points)
         try:
             chart_patterns = detect_chart_patterns(snapshot.price_bars_1d, min_pattern_bars=20)
 

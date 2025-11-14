@@ -58,6 +58,11 @@ def calculate_vwap(price_bars: List[PriceBar]) -> Indicator:
     df["tpv"] = df["typical_price"] * df["volume"]
     df["cumulative_tpv"] = df["tpv"].cumsum()
     df["cumulative_volume"] = df["volume"].cumsum()
+
+    # Validate cumulative volume is not zero (prevents division by zero)
+    if df["cumulative_volume"].iloc[-1] == 0:
+        raise ValueError("Total volume is zero - cannot calculate VWAP")
+
     df["vwap"] = df["cumulative_tpv"] / df["cumulative_volume"]
 
     current_vwap = float(df["vwap"].iloc[-1])
@@ -549,15 +554,17 @@ def calculate_atr(
         atr_percentile = 50.0
 
     # Volatility assessment
+    # Note: ATR is non-directional - high volatility can occur in both uptrends and downtrends.
+    # Signal is neutral as ATR alone doesn't indicate direction, only magnitude of moves.
     if atr_percentage > 3.0:
         volatility = "high"
-        signal = "bearish"  # High volatility = risky
+        signal = "neutral"  # High volatility = larger moves (direction agnostic)
     elif atr_percentage > 2.0:
         volatility = "moderate"
         signal = "neutral"
     else:
         volatility = "low"
-        signal = "bullish"  # Low volatility = stable
+        signal = "neutral"  # Low volatility = smaller moves
 
     # Suggested stop loss distances (common ATR multiples)
     stop_1x = current_atr
