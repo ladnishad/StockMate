@@ -35,6 +35,27 @@ class TestVWAP:
         with pytest.raises(ValueError, match="price_bars cannot be empty"):
             calculate_vwap([])
 
+    def test_calculate_vwap_zero_volume(self):
+        """Test VWAP with all zero volume bars (edge case)."""
+        from datetime import datetime
+        from app.models.data import PriceBar
+
+        zero_volume_bars = [
+            PriceBar(
+                timestamp=datetime(2024, 1, i),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=0  # Zero volume
+            )
+            for i in range(1, 25)
+        ]
+
+        # Should raise ValueError for zero total volume
+        with pytest.raises(ValueError, match="Total volume is zero"):
+            calculate_vwap(zero_volume_bars)
+
 
 class TestEMA:
     """Tests for EMA calculation."""

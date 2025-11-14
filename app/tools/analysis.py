@@ -429,6 +429,23 @@ def calculate_volume_profile(
     - HVN (High Volume Nodes): Strong support/resistance from institutional positioning
     - LVN (Low Volume Nodes): Price levels with low activity - expect fast moves through these
 
+    Technical Implementation Note:
+    This implementation uses OHLCV (bar) data and distributes each bar's volume equally
+    across all price levels touched by that bar (from low to high). This is the standard
+    approach for volume profile calculation with bar data.
+
+    For absolute precision, institutional traders use tick-by-tick data (Time Price
+    Opportunity / TPO) which shows exact prices where trades occurred. However, OHLCV-based
+    volume profile is widely used and provides sufficient accuracy for:
+    - Daily/hourly/minute timeframes
+    - Retail and professional trading
+    - Identifying major support/resistance zones
+
+    The equal distribution assumption works well because:
+    1. It's neutral (doesn't favor any price in the bar's range)
+    2. Over many bars, the distribution approximates actual volume
+    3. Major volume clusters still emerge clearly at significant price levels
+
     Args:
         price_bars: List of PriceBar objects (OHLCV data)
         num_bins: Number of price levels to create (default: 50)
@@ -1333,123 +1350,144 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
         snapshot = build_snapshot(symbol)
 
         # Initialize scoring system (0-100)
-        # Note: Factors contribute points (not percentages) that sum to ~190 points max.
-        # Starting from 50 (neutral), factors add/subtract points, then clamped to [0,100].
-        # This means strong bullish signals can reach 65%+ buy threshold easily.
-        score = 50  # Start neutral
+        # True percentage-based weights that sum to 100%.
+        # Each factor contributes a percentage of the final score.
+        # Starting from 0, factors add/subtract their weighted percentages.
+        # Final score clamped to [0,100] with 65%+ triggering BUY recommendation.
+        score = 0  # Start at 0
         reasons = []
 
-        # 1. Sentiment Analysis (contribution: up to ±20 points)
-        sentiment_weight = 20
+        # Weight configuration (percentages that sum to 100%)
+        # Total: 100.0% distributed across 12 active factors
+        WEIGHTS = {
+            "sentiment": 10.26,      # Sentiment strength
+            "ema_trend": 12.82,      # Trend alignment (most important)
+            "rsi": 7.69,             # Momentum oscillator
+            "vwap": 7.69,            # Institutional positioning
+            "volume": 10.26,         # Volume confirmation (critical)
+            "macd": 10.26,           # Momentum and crossovers
+            "bollinger": 7.69,       # Volatility bands
+            "multi_tf": 7.69,        # Multi-timeframe confluence
+            "support_resistance": 5.13,  # Key levels
+            "divergence": 7.69,      # Reversal signals
+            "volume_profile": 5.13,  # Institutional volume
+            "chart_patterns": 7.69,  # Pattern recognition
+        }
+        # Note: ATR excluded (0%) - informational only, non-directional
+
+        # 1. Sentiment Analysis (weight: 10.26%)
         if snapshot.sentiment.label == "bullish":
-            score += sentiment_weight
+            score += WEIGHTS["sentiment"]
             reasons.append(f"Bullish sentiment (score: {snapshot.sentiment.score:.2f})")
         elif snapshot.sentiment.label == "bearish":
-            score -= sentiment_weight
+            score -= WEIGHTS["sentiment"]
             reasons.append(f"Bearish sentiment (score: {snapshot.sentiment.score:.2f})")
+        # else: neutral = 0 points
 
-        # 2. Trend Analysis - EMAs (contribution: up to ±25 points)
+        # 2. Trend Analysis - EMAs (weight: 12.82%)
         ema_signals = [i for i in snapshot.indicators if i.name.startswith("EMA")]
         if ema_signals:
             bullish_emas = sum(1 for ema in ema_signals if ema.signal == "bullish")
             bearish_emas = sum(1 for ema in ema_signals if ema.signal == "bearish")
 
-            ema_score = (bullish_emas - bearish_emas) / len(ema_signals) * 25
+            # Scale by alignment: +100% if all bullish, -100% if all bearish
+            ema_alignment = (bullish_emas - bearish_emas) / len(ema_signals)
+            ema_score = ema_alignment * WEIGHTS["ema_trend"]
             score += ema_score
 
             if ema_score > 0:
                 reasons.append(f"Price above key EMAs ({bullish_emas}/{len(ema_signals)} bullish)")
-            else:
+            elif ema_score < 0:
                 reasons.append(f"Price below key EMAs ({bearish_emas}/{len(ema_signals)} bearish)")
 
-        # 3. RSI Analysis (contribution: up to ±15 points)
+        # 3. RSI Analysis (weight: 7.69%)
         rsi_indicator = next((i for i in snapshot.indicators if i.name.startswith("RSI")), None)
         if rsi_indicator:
             rsi_value = rsi_indicator.value
 
             if 40 <= rsi_value <= 70:
                 # Sweet spot - bullish momentum without overbought
-                score += 15
+                score += WEIGHTS["rsi"]
                 reasons.append(f"RSI in bullish zone ({rsi_value:.1f})")
             elif rsi_value < 30:
-                # Oversold - potential bounce
-                score += 10
+                # Oversold - potential bounce (partial weight)
+                score += WEIGHTS["rsi"] * 0.67
                 reasons.append(f"RSI oversold ({rsi_value:.1f}) - potential bounce")
             elif rsi_value > 80:
                 # Overbought - risky
-                score -= 15
+                score -= WEIGHTS["rsi"]
                 reasons.append(f"RSI overbought ({rsi_value:.1f}) - caution")
 
-        # 4. VWAP Analysis (contribution: up to ±15 points)
+        # 4. VWAP Analysis (weight: 7.69%)
         vwap_indicator = next((i for i in snapshot.indicators if i.name == "VWAP"), None)
         if vwap_indicator:
             if vwap_indicator.signal == "bullish":
-                score += 15
+                score += WEIGHTS["vwap"]
                 reasons.append(f"Price above VWAP (${vwap_indicator.value:.2f})")
             elif vwap_indicator.signal == "bearish":
-                score -= 15
+                score -= WEIGHTS["vwap"]
                 reasons.append(f"Price below VWAP (${vwap_indicator.value:.2f})")
 
-        # 5. Volume Analysis (contribution: up to ±20 points) - CRITICAL
+        # 5. Volume Analysis (weight: 10.26%) - CRITICAL
         volume_indicator = next((i for i in snapshot.indicators if i.name == "Volume"), None)
         if volume_indicator:
             if volume_indicator.signal == "bullish":
-                score += 20
+                score += WEIGHTS["volume"]
                 rel_vol = volume_indicator.metadata.get("relative_volume", 1.0)
                 reasons.append(f"Strong volume confirmation ({rel_vol:.1f}x avg)")
             elif volume_indicator.signal == "bearish":
-                score -= 15
+                score -= WEIGHTS["volume"] * 0.75  # Slightly less penalty
                 reasons.append("High volume distribution - bearish")
             elif volume_indicator.metadata.get("interpretation") == "low_volume":
-                score -= 10
+                score -= WEIGHTS["volume"] * 0.5  # Half penalty for low volume
                 reasons.append("Low volume - unreliable move")
 
-        # 6. MACD Analysis (contribution: up to ±20 points)
+        # 6. MACD Analysis (weight: 10.26%)
         macd_indicator = next((i for i in snapshot.indicators if i.name == "MACD"), None)
         if macd_indicator:
             if macd_indicator.metadata.get("bullish_crossover"):
-                score += 20
+                score += WEIGHTS["macd"]
                 reasons.append("MACD bullish crossover - strong entry signal")
             elif macd_indicator.metadata.get("bearish_crossover"):
-                score -= 20
+                score -= WEIGHTS["macd"]
                 reasons.append("MACD bearish crossover - exit signal")
             elif macd_indicator.signal == "bullish":
-                score += 10
+                score += WEIGHTS["macd"] * 0.5  # Half weight for momentum vs crossover
                 reasons.append("MACD bullish momentum")
             elif macd_indicator.signal == "bearish":
-                score -= 10
+                score -= WEIGHTS["macd"] * 0.5
                 reasons.append("MACD bearish momentum")
 
-        # 7. Bollinger Bands (contribution: up to ±15 points)
+        # 7. Bollinger Bands (weight: 7.69%)
         bb_indicator = next((i for i in snapshot.indicators if i.name == "BollingerBands"), None)
         if bb_indicator:
             interpretation = bb_indicator.metadata.get("interpretation")
             if interpretation == "oversold":
-                score += 15
+                score += WEIGHTS["bollinger"]
                 reasons.append("Price below Bollinger Bands - oversold bounce")
             elif interpretation == "overbought":
-                score -= 15
+                score -= WEIGHTS["bollinger"]
                 reasons.append("Price above Bollinger Bands - overbought")
             elif bb_indicator.metadata.get("squeeze"):
-                score += 5
+                score += WEIGHTS["bollinger"] * 0.33  # Partial weight for squeeze
                 reasons.append("Bollinger squeeze - potential breakout setup")
 
-        # 8. Multi-Timeframe Confluence (contribution: up to ±15 points)
+        # 8. Multi-Timeframe Confluence (weight: 7.69%)
         try:
             confluence = analyze_multi_timeframe_confluence(snapshot)
             if confluence["score"] >= 70:
-                score += 15
+                score += WEIGHTS["multi_tf"]
                 reasons.append(f"Strong timeframe alignment ({confluence['score']:.0f}%)")
             elif confluence["score"] >= 50:
-                score += 8
+                score += WEIGHTS["multi_tf"] * 0.53  # Moderate alignment
                 reasons.append(f"Moderate timeframe alignment ({confluence['score']:.0f}%)")
             elif confluence["score"] < 30:
-                score -= 10
+                score -= WEIGHTS["multi_tf"] * 0.67  # Penalty for divergence
                 reasons.append("Timeframe divergence - conflicting signals")
         except Exception as e:
             logger.warning(f"Could not analyze confluence: {e}")
 
-        # 9. Support/Resistance (contribution: up to ±10 points)
+        # 9. Support/Resistance (weight: 5.13%)
         current_price = snapshot.current_price
 
         # Detect key levels for enhanced support/resistance analysis
@@ -1466,13 +1504,13 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
 
                 # Better risk/reward if support is closer than resistance
                 if support_distance < 0.01 and resistance_distance > 0.03:
-                    score += 10
+                    score += WEIGHTS["support_resistance"]
                     reasons.append(
                         f"Near strong support (${nearest_support['price']:.2f}) "
                         f"with room to resistance"
                     )
                 elif resistance_distance < 0.01:
-                    score -= 10
+                    score -= WEIGHTS["support_resistance"]
                     reasons.append(f"Near resistance (${nearest_resistance['price']:.2f}) - limited upside")
 
             # Check for unfilled gaps nearby (gap fill tendency)
@@ -1482,10 +1520,10 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
                 gap_distance = abs(closest_gap["distance_from_current"])
                 if gap_distance < 2:  # Within 2%
                     if closest_gap["direction"] == "up" and closest_gap["distance_from_current"] < 0:
-                        score += 5
+                        score += WEIGHTS["support_resistance"] * 0.5
                         reasons.append("Unfilled gap below - potential support")
                     elif closest_gap["direction"] == "down" and closest_gap["distance_from_current"] > 0:
-                        score -= 5
+                        score -= WEIGHTS["support_resistance"] * 0.5
                         reasons.append("Unfilled gap above - potential resistance")
         except Exception as e:
             logger.warning(f"Could not analyze key levels: {e}")
@@ -1500,13 +1538,13 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
             ]
 
             if nearby_support and not nearby_resistance:
-                score += 10
+                score += WEIGHTS["support_resistance"]
                 reasons.append("Near strong support with room to resistance")
             elif nearby_resistance and not nearby_support:
-                score -= 10
+                score -= WEIGHTS["support_resistance"]
                 reasons.append("Near strong resistance - limited upside")
 
-        # 10. Divergence Detection (contribution: up to ±15 points)
+        # 10. Divergence Detection (weight: 7.69%)
         rsi_divergence = next(
             (i for i in snapshot.indicators if i.name == "Divergence_RSI"),
             None
@@ -1519,21 +1557,21 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
         divergence_signals = []
         if rsi_divergence:
             if rsi_divergence.metadata.get("regular_bullish"):
-                score += 15
+                score += WEIGHTS["divergence"]
                 divergence_signals.append("RSI bullish divergence")
             elif rsi_divergence.metadata.get("regular_bearish"):
-                score -= 15
+                score -= WEIGHTS["divergence"]
                 divergence_signals.append("RSI bearish divergence")
             elif rsi_divergence.metadata.get("hidden_bullish"):
-                score += 8
+                score += WEIGHTS["divergence"] * 0.53  # Hidden divergence less strong
                 divergence_signals.append("Hidden RSI bullish divergence")
 
         if macd_divergence:
             if macd_divergence.metadata.get("regular_bullish"):
-                score += 15
+                score += WEIGHTS["divergence"]
                 divergence_signals.append("MACD bullish divergence")
             elif macd_divergence.metadata.get("regular_bearish"):
-                score -= 15
+                score -= WEIGHTS["divergence"]
                 divergence_signals.append("MACD bearish divergence")
 
         if divergence_signals:
@@ -1552,7 +1590,7 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
             elif volatility == "low":
                 reasons.append(f"Low volatility ({atr_pct:.1f}% ATR) - stable price action")
 
-        # 12. Volume Profile Analysis (contribution: up to +10 points)
+        # 12. Volume Profile Analysis (weight: 5.13%)
         try:
             volume_profile = calculate_volume_profile(snapshot.price_bars_1d, num_bins=50)
 
@@ -1562,15 +1600,15 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
 
             if position == "within_value_area":
                 # Price in accepted value area - neutral to bullish
-                score += 5
+                score += WEIGHTS["volume_profile"] * 0.5
                 reasons.append(f"Price within value area (market acceptance)")
             elif position == "below_value_area" and abs(distance_to_vpoc) < 5:
                 # Price below value but near VPOC - potential bounce
-                score += 10
+                score += WEIGHTS["volume_profile"]
                 reasons.append(f"Price near VPOC ${volume_profile['vpoc']:.2f} (institutional support)")
             elif position == "above_value_area":
                 # Price above value area - bullish but extended
-                score += 3
+                score += WEIGHTS["volume_profile"] * 0.3
                 reasons.append("Price above value area (bullish but extended)")
 
             # Check for High Volume Node support
@@ -1579,14 +1617,14 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
                 if hvn["price"] < current_price and (current_price - hvn["price"]) / current_price < 0.02
             ]
             if hvn_support:
-                score += 5
+                score += WEIGHTS["volume_profile"] * 0.5
                 strongest_hvn = max(hvn_support, key=lambda x: x["strength"])
                 reasons.append(f"HVN support at ${strongest_hvn['price']:.2f} (institutional positioning)")
 
         except Exception as e:
             logger.warning(f"Could not analyze volume profile: {e}")
 
-        # 13. Chart Pattern Recognition (contribution: up to ±15 points)
+        # 13. Chart Pattern Recognition (weight: 7.69%)
         try:
             chart_patterns = detect_chart_patterns(snapshot.price_bars_1d, min_pattern_bars=20)
 
@@ -1598,17 +1636,17 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
                     confidence_score = strongest["confidence"]
 
                     if "bullish" in pattern_type:
-                        # Bullish pattern detected
-                        pattern_points = int(15 * (confidence_score / 100))
-                        score += pattern_points
+                        # Bullish pattern detected - scale by confidence
+                        pattern_contribution = WEIGHTS["chart_patterns"] * (confidence_score / 100)
+                        score += pattern_contribution
                         reasons.append(
                             f"{strongest['name']} pattern ({confidence_score:.0f}% confidence) "
                             f"- target ${strongest['target_price']:.2f}"
                         )
                     elif "bearish" in pattern_type:
-                        # Bearish pattern detected
-                        pattern_points = int(15 * (confidence_score / 100))
-                        score -= pattern_points
+                        # Bearish pattern detected - scale by confidence
+                        pattern_contribution = WEIGHTS["chart_patterns"] * (confidence_score / 100)
+                        score -= pattern_contribution
                         reasons.append(
                             f"{strongest['name']} pattern ({confidence_score:.0f}% confidence) "
                             f"- bearish signal"
@@ -1618,17 +1656,22 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
                 net_sentiment = chart_patterns["net_sentiment"]
                 if abs(net_sentiment) >= 2:
                     if net_sentiment > 0:
-                        score += 5
+                        score += WEIGHTS["chart_patterns"] * 0.33  # Bonus for multiple patterns
                         reasons.append(f"Multiple bullish patterns ({chart_patterns['bullish_patterns']} found)")
                     else:
-                        score -= 5
+                        score -= WEIGHTS["chart_patterns"] * 0.33
                         reasons.append(f"Multiple bearish patterns ({chart_patterns['bearish_patterns']} found)")
 
         except Exception as e:
             logger.warning(f"Could not detect chart patterns: {e}")
 
         # Normalize score to 0-100
+        # Score already calculated as percentage (0-100 range), just clamp
         confidence = max(0, min(100, score))
+
+        # Shift to make 50% neutral baseline for comparison
+        # (all bullish = ~100%, all bearish = ~0%, neutral mix = ~50%)
+        confidence = max(0, min(100, score + 50))
 
         # Generate recommendation
         if confidence >= 65:
