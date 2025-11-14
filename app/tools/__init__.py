@@ -1,7 +1,15 @@
 """Tools for stock analysis - designed to be LLM-agent ready."""
 
 from .market_data import fetch_price_bars, fetch_fundamentals, fetch_sentiment
-from .indicators import calculate_vwap, calculate_ema, calculate_rsi
+from .indicators import (
+    calculate_vwap,
+    calculate_ema,
+    calculate_rsi,
+    analyze_volume,
+    calculate_macd,
+    calculate_atr,
+    calculate_bollinger_bands,
+)
 from .analysis import (
     find_structural_pivots,
     build_snapshot,
@@ -18,6 +26,10 @@ __all__ = [
     "calculate_vwap",
     "calculate_ema",
     "calculate_rsi",
+    "analyze_volume",
+    "calculate_macd",
+    "calculate_atr",
+    "calculate_bollinger_bands",
     # Analysis tools
     "find_structural_pivots",
     "build_snapshot",

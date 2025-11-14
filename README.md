@@ -5,11 +5,22 @@ A production-ready FastAPI backend for stock analysis and trading recommendation
 ## Features
 
 - **Comprehensive Stock Analysis**: Multi-timeframe price action analysis (daily, hourly, 15-minute)
-- **Technical Indicators**: VWAP, EMA (multiple periods), RSI
-- **Structural Analysis**: Automatic support/resistance level detection
+- **Advanced Technical Indicators**:
+  - Trend: VWAP, EMA (9/20/50), Bollinger Bands
+  - Momentum: RSI, MACD (with crossover detection)
+  - Volume: Volume analysis, OBV, relative volume, volume spikes
+  - Volatility: ATR (Average True Range) for dynamic stop losses
+- **Multi-Timeframe Confluence**: Analyzes alignment across daily, hourly, and 15-minute timeframes
+- **Pattern Recognition**: Candlestick patterns (doji, hammer, engulfing, etc.)
+- **Fibonacci Levels**: Automatic retracement and extension calculations
+- **Structural Analysis**: Automatic support/resistance level detection with volume confirmation
 - **Sentiment Analysis**: Market sentiment based on price action and volume
-- **Smart Recommendations**: BUY or NO_BUY with confidence scoring
-- **Detailed Trade Plans**: Entry price, stop loss, multiple price targets, position sizing
+- **Smart Recommendations**: BUY or NO_BUY with confidence scoring (uses 10 factors)
+- **Professional Trade Plans**:
+  - ATR-based stop losses (volatility-adjusted)
+  - Multiple price targets based on resistance levels
+  - Risk-based position sizing (1% account risk)
+  - Trade type classification (day/swing/long)
 - **LLM-Ready Tools**: All functions designed with clear signatures for AI agent integration
 - **Production-Ready**: Comprehensive error handling, logging, and validation
 - **Alpaca Markets Integration**: Official alpaca-py SDK with IEX (free) and SIP (paid) support
@@ -192,8 +203,10 @@ All analysis functions are designed to be used by LLM agents with clear signatur
 ```python
 from app.tools import fetch_price_bars, fetch_fundamentals, fetch_sentiment
 
-# Fetch price data
-bars = fetch_price_bars("AAPL", timeframe="1d", days_back=100)
+# Fetch price data (multiple timeframes with IEX/SIP feed support)
+bars_daily = fetch_price_bars("AAPL", timeframe="1d", days_back=100)
+bars_hourly = fetch_price_bars("AAPL", timeframe="1h", days_back=30)
+bars_15min = fetch_price_bars("AAPL", timeframe="15m", days_back=7)
 
 # Fetch fundamentals
 fundamentals = fetch_fundamentals("AAPL")
@@ -205,30 +218,61 @@ sentiment = fetch_sentiment("AAPL")
 ### Technical Indicator Tools
 
 ```python
-from app.tools import calculate_vwap, calculate_ema, calculate_rsi
+from app.tools import (
+    calculate_vwap,
+    calculate_ema,
+    calculate_rsi,
+    analyze_volume,
+    calculate_macd,
+    calculate_atr,
+    calculate_bollinger_bands,
+)
 
-# Calculate VWAP
+# Trend indicators
 vwap = calculate_vwap(price_bars)
-
-# Calculate EMA
 ema_20 = calculate_ema(price_bars, period=20)
+bb = calculate_bollinger_bands(price_bars, period=20)
 
-# Calculate RSI
+# Momentum indicators
 rsi = calculate_rsi(price_bars, period=14)
+macd = calculate_macd(price_bars)  # Detects crossovers!
+
+# Volume analysis (CRITICAL)
+volume = analyze_volume(price_bars)  # OBV, relative volume, spikes
+
+# Volatility indicator
+atr = calculate_atr(price_bars, period=14)  # For stop loss calculation
 ```
 
 ### Analysis Tools
 
 ```python
-from app.tools import find_structural_pivots, build_snapshot, generate_trade_plan, run_analysis
+from app.tools import (
+    find_structural_pivots,
+    calculate_fibonacci_levels,
+    analyze_multi_timeframe_confluence,
+    detect_candlestick_patterns,
+    build_snapshot,
+    generate_trade_plan,
+    run_analysis,
+)
 
 # Find support/resistance levels
 pivots = find_structural_pivots(price_bars)
 
+# Calculate Fibonacci levels
+fib = calculate_fibonacci_levels(price_bars)
+
+# Detect candlestick patterns
+patterns = detect_candlestick_patterns(price_bars)
+
+# Analyze timeframe alignment
+confluence = analyze_multi_timeframe_confluence(snapshot)
+
 # Build complete market snapshot
 snapshot = build_snapshot("AAPL")
 
-# Generate trade plan
+# Generate trade plan (with ATR-based stops)
 trade_plan = generate_trade_plan(snapshot, account_size=10000)
 
 # Run complete analysis (main orchestrator)
@@ -237,7 +281,7 @@ result = run_analysis("AAPL", account_size=10000)
 
 ## Analysis Algorithm
 
-The recommendation engine uses a weighted scoring system:
+The recommendation engine uses a comprehensive weighted scoring system with **10 factors**:
 
 | Factor | Weight | Details |
 |--------|--------|---------|
@@ -245,8 +289,19 @@ The recommendation engine uses a weighted scoring system:
 | EMA Trend | 25% | Multiple EMAs (9, 20, 50) for trend confirmation |
 | RSI | 15% | Momentum indicator (optimal range: 40-70) |
 | VWAP | 15% | Price relative to volume-weighted average |
-| Support/Resistance | 15% | Proximity to structural levels |
-| 52-Week Range | 10% | Position within yearly range |
+| **Volume** | **20%** | **OBV, relative volume, accumulation/distribution** |
+| **MACD** | **15%** | **Crossovers and momentum direction** |
+| **Bollinger Bands** | **10%** | **Volatility, overbought/oversold, squeeze patterns** |
+| **Multi-Timeframe Confluence** | **15%** | **Alignment across daily/hourly/15min** |
+| Support/Resistance | 10% | Proximity to structural levels |
+| ATR Volatility | 5% | Risk assessment based on volatility |
+
+**Enhanced Features**:
+- **MACD Crossover Detection**: +20 points for bullish crossover (strong entry signal)
+- **Volume Confirmation**: +20 points for high volume accumulation
+- **Timeframe Alignment**: +15 points when all timeframes agree
+- **Bollinger Squeeze**: +5 points for potential breakout setups
+- **ATR-Based Stop Losses**: Dynamic stops based on volatility (2x ATR for swing trades)
 
 **Recommendation Thresholds**:
 - **BUY**: Confidence ≥ 65%
@@ -263,9 +318,10 @@ When a BUY recommendation is issued, the system generates a detailed trade plan:
 
 2. **Entry Price**: Slightly below current price (0.2%) for better entry
 
-3. **Stop Loss**:
-   - Primary: Below nearest strong support level
-   - Fallback: 2-3% below entry (depending on trade type)
+3. **Stop Loss** (ATR-Based - Professional Approach):
+   - Primary: ATR-based (1.5x ATR for day trades, 2x ATR for swing trades)
+   - Secondary: Below nearest strong support level
+   - Fallback: 2-3% below entry if no ATR data
 
 4. **Price Targets**:
    - Based on resistance levels or risk/reward ratios (1.5:1, 2.5:1, 3.5:1)

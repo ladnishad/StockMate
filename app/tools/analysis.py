@@ -19,7 +19,15 @@ from app.models.data import (
 )
 from app.models.response import AnalysisResponse, TradePlan
 from app.tools.market_data import fetch_price_bars, fetch_fundamentals, fetch_sentiment
-from app.tools.indicators import calculate_vwap, calculate_ema, calculate_rsi
+from app.tools.indicators import (
+    calculate_vwap,
+    calculate_ema,
+    calculate_rsi,
+    analyze_volume,
+    calculate_macd,
+    calculate_atr,
+    calculate_bollinger_bands,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +215,34 @@ def build_snapshot(symbol: str) -> MarketSnapshot:
         except Exception as e:
             logger.warning(f"Could not calculate RSI: {e}")
 
+        # Volume Analysis - CRITICAL
+        try:
+            volume = analyze_volume(price_bars_1d, sma_period=20)
+            indicators.append(volume)
+        except Exception as e:
+            logger.warning(f"Could not analyze volume: {e}")
+
+        # MACD
+        try:
+            macd = calculate_macd(price_bars_1d)
+            indicators.append(macd)
+        except Exception as e:
+            logger.warning(f"Could not calculate MACD: {e}")
+
+        # ATR
+        try:
+            atr = calculate_atr(price_bars_1d, period=14)
+            indicators.append(atr)
+        except Exception as e:
+            logger.warning(f"Could not calculate ATR: {e}")
+
+        # Bollinger Bands
+        try:
+            bb = calculate_bollinger_bands(price_bars_1d, period=20)
+            indicators.append(bb)
+        except Exception as e:
+            logger.warning(f"Could not calculate Bollinger Bands: {e}")
+
         # Find structural pivots
         pivots = find_structural_pivots(price_bars_1d, lookback=20, min_touches=2)
 
@@ -307,22 +343,35 @@ def generate_trade_plan(
     # Set entry price (current price or slightly below for better entry)
     entry_price = current_price * 0.998  # 0.2% below current
 
-    # Set stop loss based on nearest support or ATR
-    if supports:
-        # Use nearest strong support as stop loss (with small buffer)
-        stop_loss = supports[0].price * 0.995
+    # Get ATR for volatility-based stop loss
+    atr_indicator = next((i for i in snapshot.indicators if i.name.startswith("ATR")), None)
+
+    # Set stop loss based on ATR (professional approach) or nearest support
+    if atr_indicator:
+        # Use ATR-based stop loss (2x ATR for swing, 1.5x for day trades)
+        atr_value = atr_indicator.value
+        atr_multiplier = 1.5 if trade_type == "day" else 2.0
+        atr_stop_distance = atr_value * atr_multiplier
+        stop_loss = entry_price - atr_stop_distance
+
+        # If we have support nearby, use the better of the two
+        if supports and supports[0].price > stop_loss:
+            stop_loss = supports[0].price * 0.995  # Support with buffer
     else:
-        # Use percentage-based stop (2-3% depending on trade type)
-        stop_pct = 0.02 if trade_type == "day" else 0.03
-        stop_loss = entry_price * (1 - stop_pct)
+        # Fallback: use support or percentage-based
+        if supports:
+            stop_loss = supports[0].price * 0.995
+        else:
+            stop_pct = 0.02 if trade_type == "day" else 0.03
+            stop_loss = entry_price * (1 - stop_pct)
 
     # Ensure stop loss is reasonable (not too tight or too wide)
     risk_per_share = entry_price - stop_loss
     if risk_per_share < entry_price * 0.01:  # Less than 1%
         stop_loss = entry_price * 0.99
         risk_per_share = entry_price - stop_loss
-    elif risk_per_share > entry_price * 0.05:  # More than 5%
-        stop_loss = entry_price * 0.95
+    elif risk_per_share > entry_price * 0.08:  # More than 8% (widened for ATR)
+        stop_loss = entry_price * 0.92
         risk_per_share = entry_price - stop_loss
 
     # Calculate position size based on risk
@@ -456,7 +505,66 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
                 score -= 15
                 reasons.append(f"Price below VWAP (${vwap_indicator.value:.2f})")
 
-        # 5. Support/Resistance (weight: 15%)
+        # 5. Volume Analysis (weight: 20%) - CRITICAL
+        volume_indicator = next((i for i in snapshot.indicators if i.name == "Volume"), None)
+        if volume_indicator:
+            if volume_indicator.signal == "bullish":
+                score += 20
+                rel_vol = volume_indicator.metadata.get("relative_volume", 1.0)
+                reasons.append(f"Strong volume confirmation ({rel_vol:.1f}x avg)")
+            elif volume_indicator.signal == "bearish":
+                score -= 15
+                reasons.append("High volume distribution - bearish")
+            elif volume_indicator.metadata.get("interpretation") == "low_volume":
+                score -= 10
+                reasons.append("Low volume - unreliable move")
+
+        # 6. MACD Analysis (weight: 15%)
+        macd_indicator = next((i for i in snapshot.indicators if i.name == "MACD"), None)
+        if macd_indicator:
+            if macd_indicator.metadata.get("bullish_crossover"):
+                score += 20
+                reasons.append("MACD bullish crossover - strong entry signal")
+            elif macd_indicator.metadata.get("bearish_crossover"):
+                score -= 20
+                reasons.append("MACD bearish crossover - exit signal")
+            elif macd_indicator.signal == "bullish":
+                score += 10
+                reasons.append("MACD bullish momentum")
+            elif macd_indicator.signal == "bearish":
+                score -= 10
+                reasons.append("MACD bearish momentum")
+
+        # 7. Bollinger Bands (weight: 10%)
+        bb_indicator = next((i for i in snapshot.indicators if i.name == "BollingerBands"), None)
+        if bb_indicator:
+            interpretation = bb_indicator.metadata.get("interpretation")
+            if interpretation == "oversold":
+                score += 15
+                reasons.append("Price below Bollinger Bands - oversold bounce")
+            elif interpretation == "overbought":
+                score -= 15
+                reasons.append("Price above Bollinger Bands - overbought")
+            elif bb_indicator.metadata.get("squeeze"):
+                score += 5
+                reasons.append("Bollinger squeeze - potential breakout setup")
+
+        # 8. Multi-Timeframe Confluence (weight: 15%)
+        try:
+            confluence = analyze_multi_timeframe_confluence(snapshot)
+            if confluence["score"] >= 70:
+                score += 15
+                reasons.append(f"Strong timeframe alignment ({confluence['score']:.0f}%)")
+            elif confluence["score"] >= 50:
+                score += 8
+                reasons.append(f"Moderate timeframe alignment ({confluence['score']:.0f}%)")
+            elif confluence["score"] < 30:
+                score -= 10
+                reasons.append("Timeframe divergence - conflicting signals")
+        except Exception as e:
+            logger.warning(f"Could not analyze confluence: {e}")
+
+        # 9. Support/Resistance (weight: 10%)
         current_price = snapshot.current_price
         nearby_resistance = [
             p for p in snapshot.pivots
@@ -468,31 +576,22 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
         ]
 
         if nearby_support and not nearby_resistance:
-            score += 15
+            score += 10
             reasons.append("Near strong support with room to resistance")
         elif nearby_resistance and not nearby_support:
-            score -= 15
+            score -= 10
             reasons.append("Near strong resistance - limited upside")
 
-        # 6. 52-Week Range (weight: 10%)
-        if snapshot.fundamentals.fifty_two_week_high and snapshot.fundamentals.fifty_two_week_low:
-            range_position = (
-                (current_price - snapshot.fundamentals.fifty_two_week_low) /
-                (snapshot.fundamentals.fifty_two_week_high - snapshot.fundamentals.fifty_two_week_low)
-            )
-
-            if 0.3 <= range_position <= 0.7:
-                # Mid-range - good risk/reward
-                score += 10
-                reasons.append(f"Mid-range position ({range_position:.1%} of 52w range)")
-            elif range_position < 0.3:
-                # Near lows - potential value
+        # 10. ATR Volatility Check (weight: 5%)
+        atr_indicator = next((i for i in snapshot.indicators if i.name.startswith("ATR")), None)
+        if atr_indicator:
+            volatility = atr_indicator.metadata.get("volatility")
+            if volatility == "low":
                 score += 5
-                reasons.append(f"Near 52-week low ({range_position:.1%} of range)")
-            elif range_position > 0.9:
-                # Near highs - risky
-                score -= 10
-                reasons.append(f"Near 52-week high ({range_position:.1%} of range) - risky")
+                reasons.append("Low volatility - stable environment")
+            elif volatility == "high":
+                score -= 5
+                reasons.append("High volatility - increased risk")
 
         # Normalize score to 0-100
         confidence = max(0, min(100, score))
@@ -529,3 +628,382 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
     except Exception as e:
         logger.error(f"Error running analysis for {symbol}: {str(e)}")
         raise
+
+
+def calculate_fibonacci_levels(
+    price_bars: List[PriceBar],
+    swing_lookback: int = 20,
+) -> dict:
+    """Calculate Fibonacci retracement and extension levels.
+
+    Fibonacci levels are critical for swing traders - the market respects these
+    levels consistently, making them self-fulfilling prophecies.
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        swing_lookback: Period to identify swing high and low
+
+    Returns:
+        Dictionary containing Fibonacci levels and metadata
+
+    Raises:
+        ValueError: If price_bars is empty or insufficient data
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 100)
+        >>> fib = calculate_fibonacci_levels(bars)
+        >>> print(f"61.8% Retracement: ${fib['retracement']['0.618']:.2f}")
+    """
+    logger.info(f"Calculating Fibonacci levels for {len(price_bars)} bars")
+
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    if len(price_bars) < swing_lookback:
+        raise ValueError(f"Need at least {swing_lookback} bars for Fibonacci calculation")
+
+    # Find swing high and low in recent period
+    recent_bars = price_bars[-swing_lookback:]
+    swing_high = max(bar.high for bar in recent_bars)
+    swing_low = min(bar.low for bar in recent_bars)
+    
+    current_price = price_bars[-1].close
+
+    # Determine trend direction (for retracement vs extension)
+    if current_price > (swing_high + swing_low) / 2:
+        trend = "uptrend"
+        # Retracement from swing high down to swing low
+        retracement_base = swing_high
+        retracement_target = swing_low
+    else:
+        trend = "downtrend"
+        # Retracement from swing low up to swing high
+        retracement_base = swing_low
+        retracement_target = swing_high
+
+    # Calculate Fibonacci retracement levels
+    diff = retracement_base - retracement_target
+    retracement_levels = {
+        "0.000": retracement_base,
+        "0.236": retracement_base - (diff * 0.236),
+        "0.382": retracement_base - (diff * 0.382),
+        "0.500": retracement_base - (diff * 0.500),
+        "0.618": retracement_base - (diff * 0.618),
+        "0.786": retracement_base - (diff * 0.786),
+        "1.000": retracement_target,
+    }
+
+    # Calculate Fibonacci extension levels
+    extension_levels = {
+        "1.272": retracement_base + (diff * 0.272),
+        "1.618": retracement_base + (diff * 0.618),
+        "2.000": retracement_base + diff,
+        "2.618": retracement_base + (diff * 1.618),
+    }
+
+    # Find nearest Fibonacci level to current price
+    all_levels = {**retracement_levels, **extension_levels}
+    nearest_level = min(all_levels.items(), key=lambda x: abs(x[1] - current_price))
+    
+    # Check if price is near a Fibonacci level (within 1%)
+    near_fib = abs(nearest_level[1] - current_price) / current_price < 0.01
+
+    logger.info(
+        f"Fibonacci: Swing High={swing_high:.2f}, Swing Low={swing_low:.2f}, "
+        f"Trend={trend}, Near Level={nearest_level[0]}"
+    )
+
+    return {
+        "swing_high": round(swing_high, 2),
+        "swing_low": round(swing_low, 2),
+        "trend": trend,
+        "retracement": {k: round(v, 2) for k, v in retracement_levels.items()},
+        "extension": {k: round(v, 2) for k, v in extension_levels.items()},
+        "nearest_level": nearest_level[0],
+        "nearest_price": round(nearest_level[1], 2),
+        "near_fib_level": near_fib,
+        "current_price": round(current_price, 2),
+    }
+
+
+def analyze_multi_timeframe_confluence(
+    snapshot: MarketSnapshot,
+) -> dict:
+    """Analyze confluence across multiple timeframes.
+
+    Highest probability trades occur when multiple timeframes align. This function
+    scores the alignment of signals across daily, hourly, and 15-minute timeframes.
+
+    Args:
+        snapshot: MarketSnapshot containing multi-timeframe data
+
+    Returns:
+        Dictionary with confluence score and detailed breakdown
+
+    Example:
+        >>> snapshot = build_snapshot("AAPL")
+        >>> confluence = analyze_multi_timeframe_confluence(snapshot)
+        >>> print(f"Confluence Score: {confluence['score']}/100")
+        >>> print(f"Alignment: {confluence['alignment']}")
+    """
+    logger.info(f"Analyzing multi-timeframe confluence for {snapshot.symbol}")
+
+    scores = {
+        "daily": 0,
+        "hourly": 0,
+        "minute": 0,
+    }
+    
+    signals = {
+        "daily": {"trend": None, "momentum": None, "volume": None},
+        "hourly": {"trend": None, "momentum": None, "volume": None},
+        "minute": {"trend": None, "momentum": None, "volume": None},
+    }
+
+    # Analyze daily timeframe (from main snapshot)
+    if snapshot.price_bars_1d and len(snapshot.price_bars_1d) >= 50:
+        daily_bars = snapshot.price_bars_1d
+        
+        # Trend (EMAs)
+        emas = [i for i in snapshot.indicators if i.name.startswith("EMA")]
+        if emas:
+            bullish_emas = sum(1 for ema in emas if ema.signal == "bullish")
+            if bullish_emas >= len(emas) * 0.66:  # 2/3 bullish
+                signals["daily"]["trend"] = "bullish"
+                scores["daily"] += 35
+            elif bullish_emas <= len(emas) * 0.33:  # 1/3 bullish
+                signals["daily"]["trend"] = "bearish"
+            else:
+                signals["daily"]["trend"] = "neutral"
+                scores["daily"] += 15
+        
+        # Momentum (RSI, MACD)
+        rsi = next((i for i in snapshot.indicators if i.name.startswith("RSI")), None)
+        macd = next((i for i in snapshot.indicators if i.name == "MACD"), None)
+        
+        momentum_bullish = 0
+        momentum_total = 0
+        if rsi:
+            momentum_total += 1
+            if rsi.signal == "bullish":
+                momentum_bullish += 1
+        if macd:
+            momentum_total += 1
+            if macd.signal == "bullish":
+                momentum_bullish += 1
+        
+        if momentum_total > 0:
+            if momentum_bullish >= momentum_total * 0.66:
+                signals["daily"]["momentum"] = "bullish"
+                scores["daily"] += 35
+            elif momentum_bullish <= momentum_total * 0.33:
+                signals["daily"]["momentum"] = "bearish"
+            else:
+                signals["daily"]["momentum"] = "neutral"
+                scores["daily"] += 15
+        
+        # Volume
+        volume_ind = next((i for i in snapshot.indicators if i.name == "Volume"), None)
+        if volume_ind:
+            if volume_ind.signal == "bullish":
+                signals["daily"]["volume"] = "bullish"
+                scores["daily"] += 30
+            elif volume_ind.signal == "bearish":
+                signals["daily"]["volume"] = "bearish"
+            else:
+                signals["daily"]["volume"] = "neutral"
+                scores["daily"] += 10
+
+    # Analyze hourly timeframe (if available)
+    if snapshot.price_bars_1h and len(snapshot.price_bars_1h) >= 20:
+        from app.tools.indicators import calculate_ema, calculate_rsi
+        
+        hourly_bars = snapshot.price_bars_1h
+        
+        # Quick trend check with EMA
+        try:
+            ema_20 = calculate_ema(hourly_bars, period=20)
+            if ema_20.signal == "bullish":
+                signals["hourly"]["trend"] = "bullish"
+                scores["hourly"] += 30
+            elif ema_20.signal == "bearish":
+                signals["hourly"]["trend"] = "bearish"
+            else:
+                signals["hourly"]["trend"] = "neutral"
+                scores["hourly"] += 15
+        except:
+            pass
+        
+        # Momentum check
+        try:
+            rsi = calculate_rsi(hourly_bars, period=14)
+            if rsi.signal == "bullish":
+                signals["hourly"]["momentum"] = "bullish"
+                scores["hourly"] += 30
+            elif rsi.signal == "bearish":
+                signals["hourly"]["momentum"] = "bearish"
+            else:
+                signals["hourly"]["momentum"] = "neutral"
+                scores["hourly"] += 15
+        except:
+            pass
+
+    # Analyze 15-minute timeframe (if available)
+    if snapshot.price_bars_15m and len(snapshot.price_bars_15m) >= 20:
+        from app.tools.indicators import calculate_ema, calculate_rsi
+        
+        minute_bars = snapshot.price_bars_15m
+        
+        # Quick trend check
+        try:
+            ema_20 = calculate_ema(minute_bars, period=20)
+            if ema_20.signal == "bullish":
+                signals["minute"]["trend"] = "bullish"
+                scores["minute"] += 30
+            elif ema_20.signal == "bearish":
+                signals["minute"]["trend"] = "bearish"
+            else:
+                signals["minute"]["trend"] = "neutral"
+                scores["minute"] += 15
+        except:
+            pass
+
+    # Calculate overall confluence score
+    total_score = sum(scores.values())
+    max_possible = 100 * 3  # 100 points per timeframe
+    confluence_score = (total_score / max_possible) * 100 if max_possible > 0 else 0
+
+    # Determine alignment
+    if confluence_score >= 70:
+        alignment = "strong"
+    elif confluence_score >= 50:
+        alignment = "moderate"
+    elif confluence_score >= 30:
+        alignment = "weak"
+    else:
+        alignment = "divergent"
+
+    # Count aligned signals
+    all_signals = []
+    for tf in signals.values():
+        for signal in tf.values():
+            if signal:
+                all_signals.append(signal)
+    
+    bullish_count = all_signals.count("bullish")
+    bearish_count = all_signals.count("bearish")
+    neutral_count = all_signals.count("neutral")
+
+    logger.info(
+        f"Multi-timeframe confluence: {confluence_score:.1f}/100 ({alignment}), "
+        f"Bullish: {bullish_count}, Bearish: {bearish_count}, Neutral: {neutral_count}"
+    )
+
+    return {
+        "score": round(confluence_score, 1),
+        "alignment": alignment,
+        "timeframe_scores": scores,
+        "signals": signals,
+        "bullish_count": bullish_count,
+        "bearish_count": bearish_count,
+        "neutral_count": neutral_count,
+    }
+
+
+def detect_candlestick_patterns(
+    price_bars: List[PriceBar],
+    lookback: int = 5,
+) -> List[dict]:
+    """Detect common candlestick patterns.
+
+    Identifies reversal and continuation patterns that have statistical edge.
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        lookback: Number of recent bars to analyze
+
+    Returns:
+        List of detected patterns with type and strength
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 50)
+        >>> patterns = detect_candlestick_patterns(bars)
+        >>> for pattern in patterns:
+        ...     print(f"{pattern['name']}: {pattern['signal']} ({pattern['strength']})")
+    """
+    logger.info(f"Detecting candlestick patterns in last {lookback} bars")
+
+    if len(price_bars) < lookback:
+        return []
+
+    recent_bars = price_bars[-lookback:]
+    patterns = []
+
+    for i in range(1, len(recent_bars)):
+        bar = recent_bars[i]
+        prev_bar = recent_bars[i - 1] if i > 0 else None
+
+        body = abs(bar.close - bar.open)
+        range_size = bar.high - bar.low
+        upper_wick = bar.high - max(bar.open, bar.close)
+        lower_wick = min(bar.open, bar.close) - bar.low
+
+        # Doji (indecision)
+        if body < range_size * 0.1 and range_size > 0:
+            patterns.append({
+                "name": "Doji",
+                "signal": "neutral",
+                "strength": "medium",
+                "description": "Indecision, potential reversal",
+            })
+
+        # Hammer (bullish reversal)
+        if (lower_wick > body * 2 and 
+            upper_wick < body * 0.3 and 
+            bar.close < prev_bar.close if prev_bar else False):
+            patterns.append({
+                "name": "Hammer",
+                "signal": "bullish",
+                "strength": "strong",
+                "description": "Bullish reversal after downtrend",
+            })
+
+        # Shooting Star (bearish reversal)
+        if (upper_wick > body * 2 and 
+            lower_wick < body * 0.3 and 
+            bar.close > prev_bar.close if prev_bar else False):
+            patterns.append({
+                "name": "Shooting Star",
+                "signal": "bearish",
+                "strength": "strong",
+                "description": "Bearish reversal after uptrend",
+            })
+
+        # Bullish Engulfing
+        if (prev_bar and 
+            prev_bar.close < prev_bar.open and  # Previous red
+            bar.close > bar.open and  # Current green
+            bar.open < prev_bar.close and 
+            bar.close > prev_bar.open):
+            patterns.append({
+                "name": "Bullish Engulfing",
+                "signal": "bullish",
+                "strength": "strong",
+                "description": "Strong bullish reversal",
+            })
+
+        # Bearish Engulfing
+        if (prev_bar and 
+            prev_bar.close > prev_bar.open and  # Previous green
+            bar.close < bar.open and  # Current red
+            bar.open > prev_bar.close and 
+            bar.close < prev_bar.open):
+            patterns.append({
+                "name": "Bearish Engulfing",
+                "signal": "bearish",
+                "strength": "strong",
+                "description": "Strong bearish reversal",
+            })
+
+    logger.info(f"Detected {len(patterns)} candlestick patterns")
+    return patterns
