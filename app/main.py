@@ -10,6 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.models.request import AnalysisRequest
 from app.models.response import AnalysisResponse
 from app.tools.analysis import run_analysis
+from app.tools.market_scanner import (
+    get_market_overview,
+    get_sector_performance,
+    find_sector_leaders,
+    run_market_scan,
+)
 from app.config import get_settings
 
 # Configure logging
@@ -58,6 +64,10 @@ async def root():
         "status": "operational",
         "endpoints": {
             "analyze": "/analyze",
+            "market": "/market",
+            "sectors": "/sectors",
+            "sector_leaders": "/sectors/{symbol}/leaders",
+            "market_scan": "/market/scan",
             "health": "/health",
             "docs": "/docs",
         }
@@ -172,6 +182,121 @@ async def analyze_stock(request: AnalysisRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Analysis failed: {str(e)}"
+        )
+
+
+@app.get(
+    "/market",
+    summary="Get market overview",
+    description="Analyze major market indices (S&P 500, Nasdaq, Dow) to determine overall market health.",
+)
+async def market_overview(days_back: int = 30):
+    """Get overview of major market indices."""
+    try:
+        result = get_market_overview(days_back=days_back)
+        logger.info(f"Market overview: {result['market_signal']}")
+        return result
+    except Exception as e:
+        logger.error(f"Error getting market overview: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get market overview: {str(e)}"
+        )
+
+
+@app.get(
+    "/sectors",
+    summary="Get sector performance",
+    description="Analyze all 11 SPDR sectors and rank them by performance, strength, or volume.",
+)
+async def sector_performance(
+    days_back: int = 30,
+    sort_by: str = "performance"
+):
+    """Get performance of all sectors."""
+    try:
+        if sort_by not in ["performance", "strength", "volume"]:
+            raise ValueError("sort_by must be 'performance', 'strength', or 'volume'")
+
+        result = get_sector_performance(days_back=days_back, sort_by=sort_by)
+        logger.info(f"Sector performance: {result['leading_sectors']}")
+        return result
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error getting sector performance: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get sector performance: {str(e)}"
+        )
+
+
+@app.get(
+    "/sectors/{sector_symbol}/leaders",
+    summary="Find sector leaders",
+    description="Find top stocks within a specific sector using full StockMate analysis.",
+)
+async def sector_leaders(
+    sector_symbol: str,
+    min_score: int = 65,
+    max_results: int = 5
+):
+    """Find top stocks in a sector."""
+    try:
+        result = find_sector_leaders(
+            sector_symbol=sector_symbol.upper(),
+            min_score=min_score,
+            max_results=max_results
+        )
+        logger.info(
+            f"Found {len(result['leaders'])} leaders in {result['sector_name']}"
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error finding sector leaders: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to find sector leaders: {str(e)}"
+        )
+
+
+@app.get(
+    "/market/scan",
+    summary="Complete market scan",
+    description="Run complete top-down analysis: Market → Sectors → Stocks. Professional trader workflow.",
+)
+async def market_scan(
+    min_sector_change: float = 0.0,
+    min_stock_score: int = 65,
+    top_sectors: int = 3,
+    stocks_per_sector: int = 3
+):
+    """Run complete top-down market scan."""
+    try:
+        result = run_market_scan(
+            min_sector_change=min_sector_change,
+            min_stock_score=min_stock_score,
+            top_sectors=top_sectors,
+            stocks_per_sector=stocks_per_sector
+        )
+        logger.info(
+            f"Market scan complete: {result['market']['market_signal']} market, "
+            f"{len(result['top_stocks'])} sectors scanned"
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error running market scan: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Market scan failed: {str(e)}"
         )
 
 

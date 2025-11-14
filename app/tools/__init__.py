@@ -25,6 +25,12 @@ from .analysis import (
     generate_trade_plan,
     run_analysis,
 )
+from .market_scanner import (
+    get_market_overview,
+    get_sector_performance,
+    find_sector_leaders,
+    run_market_scan,
+)
 
 __all__ = [
     # Market data tools (4)
@@ -49,4 +55,9 @@ __all__ = [
     "build_snapshot",
     "generate_trade_plan",
     "run_analysis",
+    # Market scanner tools (4) - NEW
+    "get_market_overview",
+    "get_sector_performance",
+    "find_sector_leaders",
+    "run_market_scan",
 ]

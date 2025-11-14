@@ -36,6 +36,12 @@ A production-ready FastAPI backend for stock analysis and trading recommendation
   - Pattern confidence scoring (0-100%)
   - Auto-calculated price targets based on pattern geometry
   - Pattern completion status tracking
+- **Market Scanner** (Top-Down Analysis): Professional trader workflow for stock selection
+  - Market Overview: S&P 500, Nasdaq, Dow Jones, Russell 2000 health analysis
+  - Sector Performance: 11 SPDR sector ETFs ranked by performance/strength/volume
+  - Sector Leaders: Find top stocks within strongest sectors
+  - Complete Market Scan: Automated Market → Sectors → Stocks workflow
+  - Sector Rotation Detection: Identify risk-on vs risk-off market environment
 - **Multi-Timeframe Confluence**: Analyzes alignment across daily, hourly, and 15-minute timeframes
 - **Candlestick Pattern Recognition**: Doji, hammer, engulfing, shooting star, etc.
 - **Fibonacci Levels**: Automatic retracement and extension calculations
@@ -46,7 +52,7 @@ A production-ready FastAPI backend for stock analysis and trading recommendation
   - Multiple price targets based on resistance levels
   - Risk-based position sizing (1% account risk)
   - Trade type classification (day/swing/long)
-- **LLM-Ready Tools**: 19 functions designed with clear signatures for AI agent integration
+- **LLM-Ready Tools**: 23 functions designed with clear signatures for AI agent integration
 - **Production-Ready**: Comprehensive error handling, logging, and validation
 - **Alpaca Markets Integration**: Official alpaca-py SDK with IEX (free) and SIP (paid) support
 
@@ -67,7 +73,8 @@ StockMate/
 │       ├── __init__.py
 │       ├── market_data.py     # Data fetching tools
 │       ├── indicators.py      # Technical indicator tools
-│       └── analysis.py        # Analysis and trading logic tools
+│       ├── analysis.py        # Analysis and trading logic tools
+│       └── market_scanner.py  # Market-wide and sector scanning tools
 ├── tests/                      # Test suite
 ├── requirements.txt            # Python dependencies
 ├── .env.example               # Environment variables template
@@ -219,6 +226,174 @@ if result['trade_plan']:
     print(f"Position Size: {plan['position_size']} shares")
 ```
 
+### Market Scanner Endpoints (Top-Down Analysis)
+
+#### 1. GET `/market` - Market Overview
+
+Get health of major indices (S&P 500, Nasdaq, Dow, Russell 2000):
+
+```bash
+curl "http://localhost:8000/market?days_back=30"
+```
+
+**Response**:
+```json
+{
+  "indices": [
+    {
+      "symbol": "SPY",
+      "name": "S&P 500",
+      "price": 450.25,
+      "change_pct": 2.5,
+      "signal": "bullish",
+      "signal_strength": 80,
+      "rsi": 58.5,
+      "above_ema20": true,
+      "above_ema50": true
+    }
+  ],
+  "market_signal": "bullish",
+  "bullish_count": 3,
+  "bearish_count": 0,
+  "summary": "3/4 indices bullish - strong market"
+}
+```
+
+#### 2. GET `/sectors` - Sector Performance
+
+Analyze all 11 SPDR sectors:
+
+```bash
+curl "http://localhost:8000/sectors?days_back=30&sort_by=performance"
+```
+
+**Response**:
+```json
+{
+  "sectors": [
+    {
+      "symbol": "XLK",
+      "name": "Technology",
+      "price": 180.50,
+      "change_pct": 5.2,
+      "signal": "bullish",
+      "signal_strength": 85,
+      "rsi": 62.3,
+      "relative_volume": 1.3
+    },
+    {
+      "symbol": "XLF",
+      "name": "Financials",
+      "price": 38.75,
+      "change_pct": 3.1,
+      "signal": "bullish",
+      "signal_strength": 70
+    }
+  ],
+  "leading_sectors": ["Technology", "Healthcare", "Financials"],
+  "lagging_sectors": ["Utilities", "Real Estate", "Energy"],
+  "rotation_signal": "risk_on"
+}
+```
+
+#### 3. GET `/sectors/{symbol}/leaders` - Sector Leaders
+
+Find top stocks in a sector:
+
+```bash
+curl "http://localhost:8000/sectors/XLK/leaders?min_score=70&max_results=5"
+```
+
+**Response**:
+```json
+{
+  "sector_name": "Technology",
+  "sector_etf": "XLK",
+  "leaders": [
+    {
+      "symbol": "NVDA",
+      "score": 85,
+      "recommendation": "BUY",
+      "current_price": 495.50,
+      "reasons": [
+        "Strong volume confirmation (2.5x avg)",
+        "MACD bullish crossover",
+        "Price above key EMAs (3/3 bullish)"
+      ],
+      "trade_plan": {
+        "entry": 495.50,
+        "stop": 485.00,
+        "target": 510.00
+      }
+    }
+  ],
+  "stocks_analyzed": 10,
+  "stocks_above_threshold": 3,
+  "average_score": 68.5
+}
+```
+
+#### 4. GET `/market/scan` - Complete Market Scan
+
+Run full top-down analysis (Market → Sectors → Stocks):
+
+```bash
+curl "http://localhost:8000/market/scan?min_stock_score=70&top_sectors=3&stocks_per_sector=3"
+```
+
+**Response**:
+```json
+{
+  "market": {
+    "market_signal": "bullish",
+    "bullish_count": 3,
+    "summary": "3/4 indices bullish - strong market"
+  },
+  "sectors": {
+    "leading_sectors": ["Technology", "Healthcare", "Financials"],
+    "rotation_signal": "risk_on"
+  },
+  "top_stocks": [
+    {
+      "sector_name": "Technology",
+      "leaders": [
+        {"symbol": "NVDA", "score": 85, "recommendation": "BUY"},
+        {"symbol": "MSFT", "score": 78, "recommendation": "BUY"},
+        {"symbol": "AAPL", "score": 72, "recommendation": "BUY"}
+      ]
+    }
+  ]
+}
+```
+
+### Python Client - Market Scanner Example
+
+```python
+import requests
+
+BASE_URL = "http://localhost:8000"
+
+# Step 1: Check market health
+market = requests.get(f"{BASE_URL}/market").json()
+print(f"Market: {market['market_signal']}")
+
+# Step 2: Find leading sectors
+sectors = requests.get(f"{BASE_URL}/sectors").json()
+print(f"Leading sectors: {sectors['leading_sectors']}")
+
+# Step 3: Find top stocks in leading sector
+sector_etf = sectors['sectors'][0]['symbol']  # Top sector
+leaders = requests.get(f"{BASE_URL}/sectors/{sector_etf}/leaders").json()
+
+print(f"\nTop stocks in {leaders['sector_name']}:")
+for stock in leaders['leaders']:
+    print(f"  {stock['symbol']}: {stock['score']}% - {stock['recommendation']}")
+
+# Or run complete scan in one call
+scan = requests.get(f"{BASE_URL}/market/scan?min_stock_score=70").json()
+print(f"\nComplete scan found {len(scan['top_stocks'])} sectors with leaders")
+```
+
 ## LLM-Ready Tools
 
 All analysis functions are designed to be used by LLM agents with clear signatures and comprehensive docstrings:
@@ -342,6 +517,64 @@ trade_plan = generate_trade_plan(snapshot, account_size=10000)
 
 # Run complete analysis (main orchestrator)
 result = run_analysis("AAPL", account_size=10000)
+```
+
+### Market Scanner Tools (4 functions)
+
+```python
+from app.tools import (
+    get_market_overview,
+    get_sector_performance,
+    find_sector_leaders,
+    run_market_scan,
+)
+
+# Step 1: Check overall market health (S&P 500, Nasdaq, Dow, Russell 2000)
+market = get_market_overview(days_back=30)
+print(f"Market: {market['market_signal']}")  # bullish/bearish/neutral
+print(f"Summary: {market['summary']}")  # "3/4 indices bullish - strong market"
+
+for index in market['indices']:
+    print(f"{index['name']}: {index['signal']} ({index['change_pct']}%)")
+
+# Step 2: Analyze sector performance (11 SPDR sectors)
+sectors = get_sector_performance(days_back=30, sort_by="performance")
+print(f"Leading sectors: {sectors['leading_sectors']}")  # ["Technology", "Healthcare"]
+print(f"Sector rotation: {sectors['rotation_signal']}")  # risk_on/risk_off/neutral
+
+for sector in sectors['sectors'][:3]:  # Top 3 sectors
+    print(f"{sector['name']}: {sector['change_pct']}% ({sector['signal']})")
+
+# Step 3: Find top stocks in leading sectors
+tech_leaders = find_sector_leaders(
+    sector_symbol="XLK",  # Technology sector
+    min_score=65,  # Only BUY candidates
+    max_results=5
+)
+
+print(f"\nTop stocks in {tech_leaders['sector_name']}:")
+for stock in tech_leaders['leaders']:
+    print(f"  {stock['symbol']}: {stock['score']}% - {stock['recommendation']}")
+    print(f"    Entry: ${stock['trade_plan']['entry']}, Stop: ${stock['trade_plan']['stop']}")
+    print(f"    Top reasons: {', '.join(stock['reasons'][:2])}")
+
+# Complete top-down scan in one call
+scan = run_market_scan(
+    min_sector_change=0.0,  # All sectors
+    min_stock_score=70,     # Only strong candidates
+    top_sectors=3,          # Top 3 sectors
+    stocks_per_sector=3     # Top 3 stocks per sector
+)
+
+print(f"\nMarket Scan Results:")
+print(f"  Market: {scan['market']['market_signal']}")
+print(f"  Leading sectors: {scan['sectors']['leading_sectors']}")
+print(f"  Found {len(scan['top_stocks'])} sectors with leaders")
+
+for sector_stocks in scan['top_stocks']:
+    print(f"\n  {sector_stocks['sector_name']}:")
+    for stock in sector_stocks['leaders']:
+        print(f"    {stock['symbol']}: {stock['score']}%")
 ```
 
 ## Analysis Algorithm
