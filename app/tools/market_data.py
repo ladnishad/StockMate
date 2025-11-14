@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import logging
 
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
+from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest, NewsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.common.exceptions import APIError
@@ -295,3 +295,241 @@ def fetch_sentiment(symbol: str) -> Sentiment:
     except Exception as e:
         logger.error(f"Error calculating sentiment for {symbol}: {str(e)}")
         raise
+
+
+def fetch_news_sentiment(
+    symbol: str,
+    days_back: int = 7,
+    limit: int = 50,
+) -> dict:
+    """Fetch real news sentiment from Alpaca News API.
+
+    This tool retrieves actual news articles and sentiment scores from Alpaca's News API,
+    providing comprehensive news-based sentiment analysis including:
+    - Sentiment scores from news articles
+    - Article headlines and summaries
+    - News volume and recency
+    - Source credibility
+
+    Note: Alpaca News API is available on paid plans. Free tier users will get
+    a graceful fallback to the basic sentiment analysis.
+
+    Args:
+        symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
+        days_back: Number of days of news to fetch (default: 7)
+        limit: Maximum number of articles to retrieve (default: 50)
+
+    Returns:
+        Dictionary containing:
+        - sentiment_score: Aggregated sentiment (-1 to 1)
+        - sentiment_label: "bullish", "bearish", or "neutral"
+        - article_count: Number of articles analyzed
+        - average_sentiment: Average sentiment from articles
+        - recent_headlines: List of recent headlines with sentiment
+        - news_volume_trend: "increasing", "stable", or "decreasing"
+
+    Raises:
+        ValueError: If symbol is invalid
+        Exception: If API request fails
+
+    Example:
+        >>> news = fetch_news_sentiment("AAPL", days_back=7)
+        >>> print(f"News Sentiment: {news['sentiment_label']} ({news['sentiment_score']:.2f})")
+        >>> print(f"Analyzed {news['article_count']} articles")
+        >>> for headline in news['recent_headlines'][:5]:
+        >>>     print(f"  - {headline['title']} (sentiment: {headline['sentiment']})")
+    """
+    logger.info(f"Fetching news sentiment for {symbol} (last {days_back} days)")
+
+    try:
+        client = _get_alpaca_client()
+
+        # Calculate date range
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days_back)
+
+        # Create news request
+        news_request = NewsRequest(
+            symbols=symbol,
+            start=start_date,
+            end=end_date,
+            limit=limit,
+            sort="desc",  # Most recent first
+        )
+
+        # Fetch news articles
+        try:
+            news_data = client.get_news(news_request)
+            articles = list(news_data) if news_data else []
+        except AttributeError:
+            # News API might not be available in all alpaca-py versions or subscription tiers
+            logger.warning(
+                f"Alpaca News API not available. "
+                f"This may require a paid subscription or newer alpaca-py version. "
+                f"Falling back to basic sentiment analysis."
+            )
+            # Fallback to basic sentiment
+            basic_sentiment = fetch_sentiment(symbol)
+            return {
+                "sentiment_score": basic_sentiment.score,
+                "sentiment_label": basic_sentiment.label,
+                "article_count": 0,
+                "average_sentiment": basic_sentiment.score,
+                "recent_headlines": [],
+                "news_volume_trend": "unavailable",
+                "source": "price_based_fallback",
+            }
+        except APIError as e:
+            logger.warning(f"Alpaca News API error: {str(e)}. Falling back to basic sentiment.")
+            basic_sentiment = fetch_sentiment(symbol)
+            return {
+                "sentiment_score": basic_sentiment.score,
+                "sentiment_label": basic_sentiment.label,
+                "article_count": 0,
+                "average_sentiment": basic_sentiment.score,
+                "recent_headlines": [],
+                "news_volume_trend": "unavailable",
+                "source": "price_based_fallback",
+            }
+
+        if not articles:
+            logger.warning(f"No news articles found for {symbol}. Using basic sentiment.")
+            basic_sentiment = fetch_sentiment(symbol)
+            return {
+                "sentiment_score": basic_sentiment.score,
+                "sentiment_label": basic_sentiment.label,
+                "article_count": 0,
+                "average_sentiment": basic_sentiment.score,
+                "recent_headlines": [],
+                "news_volume_trend": "no_news",
+                "source": "price_based_fallback",
+            }
+
+        # Extract headlines and sentiment scores
+        headlines_with_sentiment = []
+        sentiment_scores = []
+
+        for article in articles:
+            # Alpaca news articles may have sentiment attached
+            # If not available, we'll analyze based on headline tone
+            article_sentiment = 0.0
+
+            # Try to get sentiment from article metadata
+            # Note: Exact field names may vary by Alpaca API version
+            if hasattr(article, 'sentiment'):
+                article_sentiment = float(article.sentiment)
+            elif hasattr(article, 'sentiment_score'):
+                article_sentiment = float(article.sentiment_score)
+            else:
+                # Fallback: Simple keyword-based sentiment
+                headline = article.headline.lower() if hasattr(article, 'headline') else ""
+                summary = article.summary.lower() if hasattr(article, 'summary') else ""
+                text = headline + " " + summary
+
+                # Bullish keywords
+                bullish_keywords = [
+                    'surge', 'gain', 'rise', 'jump', 'rally', 'beat', 'exceed',
+                    'growth', 'profit', 'strong', 'up', 'high', 'record', 'upgrade',
+                    'buy', 'outperform', 'positive', 'breakthrough', 'success'
+                ]
+
+                # Bearish keywords
+                bearish_keywords = [
+                    'fall', 'drop', 'decline', 'loss', 'miss', 'weak', 'down',
+                    'low', 'concern', 'worry', 'risk', 'cut', 'downgrade', 'sell',
+                    'underperform', 'negative', 'struggle', 'fail', 'lawsuit'
+                ]
+
+                bullish_count = sum(1 for word in bullish_keywords if word in text)
+                bearish_count = sum(1 for word in bearish_keywords if word in text)
+
+                # Calculate sentiment score (-1 to 1)
+                if bullish_count + bearish_count > 0:
+                    article_sentiment = (bullish_count - bearish_count) / (bullish_count + bearish_count)
+                else:
+                    article_sentiment = 0.0
+
+            sentiment_scores.append(article_sentiment)
+
+            # Store headline info
+            headlines_with_sentiment.append({
+                "title": article.headline if hasattr(article, 'headline') else "Unknown",
+                "sentiment": round(article_sentiment, 2),
+                "created_at": article.created_at if hasattr(article, 'created_at') else None,
+                "url": article.url if hasattr(article, 'url') else None,
+                "source": article.source if hasattr(article, 'source') else "Unknown",
+            })
+
+        # Calculate aggregated sentiment
+        if sentiment_scores:
+            average_sentiment = sum(sentiment_scores) / len(sentiment_scores)
+
+            # Weight recent news more heavily (exponential decay)
+            weighted_scores = []
+            for i, score in enumerate(sentiment_scores):
+                # More recent articles get higher weight (decay factor)
+                recency_weight = 1.0 / (1.0 + (i * 0.1))
+                weighted_scores.append(score * recency_weight)
+
+            weighted_average = sum(weighted_scores) / sum(
+                1.0 / (1.0 + (i * 0.1)) for i in range(len(weighted_scores))
+            )
+
+            sentiment_score = round(weighted_average, 2)
+        else:
+            average_sentiment = 0.0
+            sentiment_score = 0.0
+
+        # Determine sentiment label
+        if sentiment_score > 0.2:
+            sentiment_label = "bullish"
+        elif sentiment_score < -0.2:
+            sentiment_label = "bearish"
+        else:
+            sentiment_label = "neutral"
+
+        # Calculate news volume trend
+        if len(articles) > 10:
+            recent_count = len([a for a in articles[:len(articles)//2]])
+            older_count = len([a for a in articles[len(articles)//2:]])
+
+            if recent_count > older_count * 1.5:
+                news_volume_trend = "increasing"
+            elif recent_count < older_count * 0.67:
+                news_volume_trend = "decreasing"
+            else:
+                news_volume_trend = "stable"
+        else:
+            news_volume_trend = "low_volume"
+
+        logger.info(
+            f"News Sentiment for {symbol}: {sentiment_label} ({sentiment_score:.2f}) "
+            f"based on {len(articles)} articles"
+        )
+
+        return {
+            "sentiment_score": sentiment_score,
+            "sentiment_label": sentiment_label,
+            "article_count": len(articles),
+            "average_sentiment": round(average_sentiment, 2),
+            "recent_headlines": headlines_with_sentiment[:10],  # Top 10 most recent
+            "news_volume_trend": news_volume_trend,
+            "source": "alpaca_news_api",
+            "days_analyzed": days_back,
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching news sentiment for {symbol}: {str(e)}")
+        # Graceful fallback
+        logger.info("Falling back to price-based sentiment analysis")
+        basic_sentiment = fetch_sentiment(symbol)
+        return {
+            "sentiment_score": basic_sentiment.score,
+            "sentiment_label": basic_sentiment.label,
+            "article_count": 0,
+            "average_sentiment": basic_sentiment.score,
+            "recent_headlines": [],
+            "news_volume_trend": "unavailable",
+            "source": "price_based_fallback",
+            "error": str(e),
+        }

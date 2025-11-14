@@ -27,6 +27,7 @@ from app.tools.indicators import (
     calculate_macd,
     calculate_atr,
     calculate_bollinger_bands,
+    detect_divergences,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,277 @@ def find_structural_pivots(
     return sorted(unique_pivots, key=lambda x: x.strength, reverse=True)
 
 
+def detect_key_levels(
+    price_bars: List[PriceBar],
+    current_price: Optional[float] = None,
+) -> dict:
+    """Detect key psychological and technical price levels.
+
+    Identifies important price levels that traders watch:
+    - Round numbers (100.00, 150.00, etc.) - psychological levels
+    - Gap levels - overnight gaps that often get filled
+    - Previous period highs/lows - daily, weekly, monthly resistance/support
+    - Opening prices from significant periods
+
+    These levels often act as support/resistance due to trader psychology
+    and institutional order placement.
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        current_price: Current price (optional, uses last bar if not provided)
+
+    Returns:
+        Dictionary containing categorized key levels with metadata
+
+    Raises:
+        ValueError: If price_bars is empty
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 60)
+        >>> levels = detect_key_levels(bars)
+        >>> print(f"Round numbers nearby: {levels['round_numbers']}")
+        >>> print(f"Unfilled gaps: {levels['unfilled_gaps']}")
+        >>> print(f"Previous day high: ${levels['previous_day_high']:.2f}")
+    """
+    logger.info(f"Detecting key levels for {len(price_bars)} bars")
+
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    if current_price is None:
+        current_price = price_bars[-1].close
+
+    key_levels = {
+        "round_numbers": [],
+        "unfilled_gaps": [],
+        "previous_day_high": None,
+        "previous_day_low": None,
+        "previous_week_high": None,
+        "previous_week_low": None,
+        "previous_month_high": None,
+        "previous_month_low": None,
+        "all_levels": [],  # Consolidated list with types
+    }
+
+    # 1. Detect Round Number Levels (psychological levels)
+    # Find nearest round numbers above and below current price
+    price_magnitude = 10 ** (len(str(int(current_price))) - 1)  # e.g., 100 for $150
+
+    # Major round numbers (e.g., 100, 150, 200)
+    major_increment = price_magnitude / 2 if price_magnitude >= 10 else 10
+    minor_increment = price_magnitude / 10 if price_magnitude >= 10 else 5
+
+    # Find round numbers within +/- 20% of current price
+    search_range = current_price * 0.20
+
+    # Major levels (e.g., $100, $150, $200)
+    major_levels = []
+    test_price = (current_price // major_increment) * major_increment
+    for i in range(-5, 6):
+        level = test_price + (i * major_increment)
+        if abs(level - current_price) <= search_range and level > 0:
+            distance_pct = ((level - current_price) / current_price) * 100
+            major_levels.append({
+                "price": round(level, 2),
+                "type": "round_major",
+                "distance_pct": round(distance_pct, 2),
+                "significance": "high" if level % price_magnitude == 0 else "medium",
+            })
+
+    # Half-levels (e.g., $125, $175)
+    half_levels = []
+    test_price = (current_price // minor_increment) * minor_increment
+    for i in range(-10, 11):
+        level = test_price + (i * minor_increment)
+        if abs(level - current_price) <= search_range and level > 0:
+            # Skip if already in major levels
+            if not any(abs(m["price"] - level) < 1 for m in major_levels):
+                distance_pct = ((level - current_price) / current_price) * 100
+                half_levels.append({
+                    "price": round(level, 2),
+                    "type": "round_minor",
+                    "distance_pct": round(distance_pct, 2),
+                    "significance": "low",
+                })
+
+    key_levels["round_numbers"] = sorted(
+        major_levels + half_levels,
+        key=lambda x: abs(x["distance_pct"])
+    )[:10]  # Keep 10 closest
+
+    # 2. Detect Gap Levels (unfilled gaps)
+    gaps = []
+    for i in range(1, len(price_bars)):
+        prev_bar = price_bars[i - 1]
+        curr_bar = price_bars[i]
+
+        # Gap up: current low > previous high
+        if curr_bar.low > prev_bar.high:
+            gap_size = curr_bar.low - prev_bar.high
+            gap_size_pct = (gap_size / prev_bar.high) * 100
+
+            # Check if gap has been filled
+            filled = False
+            for j in range(i + 1, len(price_bars)):
+                if price_bars[j].low <= prev_bar.high:
+                    filled = True
+                    break
+
+            if not filled and gap_size_pct >= 0.5:  # Only significant gaps (>0.5%)
+                gaps.append({
+                    "gap_high": round(curr_bar.low, 2),
+                    "gap_low": round(prev_bar.high, 2),
+                    "gap_size": round(gap_size, 2),
+                    "gap_size_pct": round(gap_size_pct, 2),
+                    "direction": "up",
+                    "bar_index": i,
+                    "filled": False,
+                    "distance_from_current": round(
+                        ((prev_bar.high - current_price) / current_price) * 100, 2
+                    ),
+                })
+
+        # Gap down: current high < previous low
+        elif curr_bar.high < prev_bar.low:
+            gap_size = prev_bar.low - curr_bar.high
+            gap_size_pct = (gap_size / prev_bar.low) * 100
+
+            # Check if gap has been filled
+            filled = False
+            for j in range(i + 1, len(price_bars)):
+                if price_bars[j].high >= prev_bar.low:
+                    filled = True
+                    break
+
+            if not filled and gap_size_pct >= 0.5:  # Only significant gaps (>0.5%)
+                gaps.append({
+                    "gap_high": round(prev_bar.low, 2),
+                    "gap_low": round(curr_bar.high, 2),
+                    "gap_size": round(gap_size, 2),
+                    "gap_size_pct": round(gap_size_pct, 2),
+                    "direction": "down",
+                    "bar_index": i,
+                    "filled": False,
+                    "distance_from_current": round(
+                        ((prev_bar.low - current_price) / current_price) * 100, 2
+                    ),
+                })
+
+    key_levels["unfilled_gaps"] = sorted(
+        gaps,
+        key=lambda x: abs(x["distance_from_current"])
+    )[:5]  # Keep 5 closest gaps
+
+    # 3. Previous Period Highs/Lows
+    if len(price_bars) >= 2:
+        # Previous day
+        prev_day = price_bars[-2]
+        key_levels["previous_day_high"] = round(prev_day.high, 2)
+        key_levels["previous_day_low"] = round(prev_day.low, 2)
+        key_levels["previous_day_close"] = round(prev_day.close, 2)
+
+    if len(price_bars) >= 7:
+        # Previous week (last 5 trading days)
+        week_bars = price_bars[-7:-2]
+        key_levels["previous_week_high"] = round(max(bar.high for bar in week_bars), 2)
+        key_levels["previous_week_low"] = round(min(bar.low for bar in week_bars), 2)
+
+    if len(price_bars) >= 30:
+        # Previous month (last 20 trading days)
+        month_bars = price_bars[-30:-2]
+        key_levels["previous_month_high"] = round(max(bar.high for bar in month_bars), 2)
+        key_levels["previous_month_low"] = round(min(bar.low for bar in month_bars), 2)
+
+    # 4. Create consolidated list of all levels for easy access
+    all_levels = []
+
+    # Add period highs/lows
+    if key_levels["previous_day_high"]:
+        all_levels.append({
+            "price": key_levels["previous_day_high"],
+            "type": "previous_day_high",
+            "significance": "high",
+        })
+        all_levels.append({
+            "price": key_levels["previous_day_low"],
+            "type": "previous_day_low",
+            "significance": "high",
+        })
+
+    if key_levels["previous_week_high"]:
+        all_levels.append({
+            "price": key_levels["previous_week_high"],
+            "type": "previous_week_high",
+            "significance": "medium",
+        })
+        all_levels.append({
+            "price": key_levels["previous_week_low"],
+            "type": "previous_week_low",
+            "significance": "medium",
+        })
+
+    if key_levels["previous_month_high"]:
+        all_levels.append({
+            "price": key_levels["previous_month_high"],
+            "type": "previous_month_high",
+            "significance": "medium",
+        })
+        all_levels.append({
+            "price": key_levels["previous_month_low"],
+            "type": "previous_month_low",
+            "significance": "medium",
+        })
+
+    # Add round numbers (top 5)
+    for rn in key_levels["round_numbers"][:5]:
+        all_levels.append({
+            "price": rn["price"],
+            "type": rn["type"],
+            "significance": rn["significance"],
+        })
+
+    # Add gap levels
+    for gap in key_levels["unfilled_gaps"]:
+        all_levels.append({
+            "price": gap["gap_high"],
+            "type": f"gap_{gap['direction']}_high",
+            "significance": "medium",
+        })
+        all_levels.append({
+            "price": gap["gap_low"],
+            "type": f"gap_{gap['direction']}_low",
+            "significance": "medium",
+        })
+
+    # Sort by proximity to current price
+    key_levels["all_levels"] = sorted(
+        all_levels,
+        key=lambda x: abs(x["price"] - current_price)
+    )
+
+    # Calculate nearest support and resistance from all levels
+    support_levels = [lvl for lvl in all_levels if lvl["price"] < current_price]
+    resistance_levels = [lvl for lvl in all_levels if lvl["price"] > current_price]
+
+    key_levels["nearest_support"] = (
+        sorted(support_levels, key=lambda x: x["price"], reverse=True)[0]
+        if support_levels else None
+    )
+    key_levels["nearest_resistance"] = (
+        sorted(resistance_levels, key=lambda x: x["price"])[0]
+        if resistance_levels else None
+    )
+
+    logger.info(
+        f"Key Levels: {len(key_levels['round_numbers'])} round numbers, "
+        f"{len(key_levels['unfilled_gaps'])} unfilled gaps, "
+        f"Nearest support: {key_levels['nearest_support']['price'] if key_levels['nearest_support'] else 'N/A'}, "
+        f"Nearest resistance: {key_levels['nearest_resistance']['price'] if key_levels['nearest_resistance'] else 'N/A'}"
+    )
+
+    return key_levels
+
+
 def build_snapshot(symbol: str) -> MarketSnapshot:
     """Build a complete market snapshot for a stock.
 
@@ -242,6 +514,29 @@ def build_snapshot(symbol: str) -> MarketSnapshot:
             indicators.append(bb)
         except Exception as e:
             logger.warning(f"Could not calculate Bollinger Bands: {e}")
+
+        # Divergence Detection (RSI and MACD)
+        try:
+            rsi_divergence = detect_divergences(
+                price_bars_1d,
+                indicator_type="rsi",
+                lookback_period=14,
+                swing_detection_window=5
+            )
+            indicators.append(rsi_divergence)
+        except Exception as e:
+            logger.warning(f"Could not detect RSI divergences: {e}")
+
+        try:
+            macd_divergence = detect_divergences(
+                price_bars_1d,
+                indicator_type="macd",
+                lookback_period=14,
+                swing_detection_window=5
+            )
+            indicators.append(macd_divergence)
+        except Exception as e:
+            logger.warning(f"Could not detect MACD divergences: {e}")
 
         # Find structural pivots
         pivots = find_structural_pivots(price_bars_1d, lookback=20, min_touches=2)
@@ -566,23 +861,95 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
 
         # 9. Support/Resistance (weight: 10%)
         current_price = snapshot.current_price
-        nearby_resistance = [
-            p for p in snapshot.pivots
-            if p.type == "resistance" and 0 < (p.price - current_price) / current_price < 0.02
-        ]
-        nearby_support = [
-            p for p in snapshot.pivots
-            if p.type == "support" and 0 < (current_price - p.price) / current_price < 0.02
-        ]
 
-        if nearby_support and not nearby_resistance:
-            score += 10
-            reasons.append("Near strong support with room to resistance")
-        elif nearby_resistance and not nearby_support:
-            score -= 10
-            reasons.append("Near strong resistance - limited upside")
+        # Detect key levels for enhanced support/resistance analysis
+        try:
+            key_levels = detect_key_levels(snapshot.price_bars_1d, current_price)
 
-        # 10. ATR Volatility Check (weight: 5%)
+            # Check for nearby key levels
+            nearest_support = key_levels.get("nearest_support")
+            nearest_resistance = key_levels.get("nearest_resistance")
+
+            if nearest_support and nearest_resistance:
+                support_distance = abs(current_price - nearest_support["price"]) / current_price
+                resistance_distance = abs(nearest_resistance["price"] - current_price) / current_price
+
+                # Better risk/reward if support is closer than resistance
+                if support_distance < 0.01 and resistance_distance > 0.03:
+                    score += 10
+                    reasons.append(
+                        f"Near strong support (${nearest_support['price']:.2f}) "
+                        f"with room to resistance"
+                    )
+                elif resistance_distance < 0.01:
+                    score -= 10
+                    reasons.append(f"Near resistance (${nearest_resistance['price']:.2f}) - limited upside")
+
+            # Check for unfilled gaps nearby (gap fill tendency)
+            unfilled_gaps = key_levels.get("unfilled_gaps", [])
+            if unfilled_gaps:
+                closest_gap = unfilled_gaps[0]
+                gap_distance = abs(closest_gap["distance_from_current"])
+                if gap_distance < 2:  # Within 2%
+                    if closest_gap["direction"] == "up" and closest_gap["distance_from_current"] < 0:
+                        score += 5
+                        reasons.append("Unfilled gap below - potential support")
+                    elif closest_gap["direction"] == "down" and closest_gap["distance_from_current"] > 0:
+                        score -= 5
+                        reasons.append("Unfilled gap above - potential resistance")
+        except Exception as e:
+            logger.warning(f"Could not analyze key levels: {e}")
+            # Fallback to basic pivot analysis
+            nearby_resistance = [
+                p for p in snapshot.pivots
+                if p.type == "resistance" and 0 < (p.price - current_price) / current_price < 0.02
+            ]
+            nearby_support = [
+                p for p in snapshot.pivots
+                if p.type == "support" and 0 < (current_price - p.price) / current_price < 0.02
+            ]
+
+            if nearby_support and not nearby_resistance:
+                score += 10
+                reasons.append("Near strong support with room to resistance")
+            elif nearby_resistance and not nearby_support:
+                score -= 10
+                reasons.append("Near strong resistance - limited upside")
+
+        # 10. Divergence Detection (weight: 15%)
+        rsi_divergence = next(
+            (i for i in snapshot.indicators if i.name == "Divergence_RSI"),
+            None
+        )
+        macd_divergence = next(
+            (i for i in snapshot.indicators if i.name == "Divergence_MACD"),
+            None
+        )
+
+        divergence_signals = []
+        if rsi_divergence:
+            if rsi_divergence.metadata.get("regular_bullish"):
+                score += 15
+                divergence_signals.append("RSI bullish divergence")
+            elif rsi_divergence.metadata.get("regular_bearish"):
+                score -= 15
+                divergence_signals.append("RSI bearish divergence")
+            elif rsi_divergence.metadata.get("hidden_bullish"):
+                score += 8
+                divergence_signals.append("Hidden RSI bullish divergence")
+
+        if macd_divergence:
+            if macd_divergence.metadata.get("regular_bullish"):
+                score += 15
+                divergence_signals.append("MACD bullish divergence")
+            elif macd_divergence.metadata.get("regular_bearish"):
+                score -= 15
+                divergence_signals.append("MACD bearish divergence")
+
+        if divergence_signals:
+            reasons.append(" + ".join(divergence_signals) + " - strong reversal signal")
+
+        # 11. ATR Volatility Check (weight: 5%)
         atr_indicator = next((i for i in snapshot.indicators if i.name.startswith("ATR")), None)
         if atr_indicator:
             volatility = atr_indicator.metadata.get("volatility")

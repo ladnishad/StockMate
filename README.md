@@ -10,18 +10,31 @@ A production-ready FastAPI backend for stock analysis and trading recommendation
   - Momentum: RSI, MACD (with crossover detection)
   - Volume: Volume analysis, OBV, relative volume, volume spikes
   - Volatility: ATR (Average True Range) for dynamic stop losses
+- **Divergence Detection**: RSI and MACD divergence analysis for reversal signals
+  - Regular bullish/bearish divergences (reversal patterns)
+  - Hidden divergences (continuation patterns)
+  - Automatic swing point detection
+- **Enhanced Key Level Detection**: Comprehensive support/resistance identification
+  - Round number psychology (100.00, 150.00, etc.)
+  - Unfilled gap detection and tracking
+  - Previous period highs/lows (day, week, month)
+  - Nearest support/resistance calculation
+- **News Sentiment Analysis**: Real-time news integration via Alpaca News API
+  - Article sentiment scoring
+  - News volume trends
+  - Weighted recent news more heavily
+  - Graceful fallback to price-based sentiment
 - **Multi-Timeframe Confluence**: Analyzes alignment across daily, hourly, and 15-minute timeframes
 - **Pattern Recognition**: Candlestick patterns (doji, hammer, engulfing, etc.)
 - **Fibonacci Levels**: Automatic retracement and extension calculations
 - **Structural Analysis**: Automatic support/resistance level detection with volume confirmation
-- **Sentiment Analysis**: Market sentiment based on price action and volume
-- **Smart Recommendations**: BUY or NO_BUY with confidence scoring (uses 10 factors)
+- **Smart Recommendations**: BUY or NO_BUY with confidence scoring (uses 11 factors)
 - **Professional Trade Plans**:
   - ATR-based stop losses (volatility-adjusted)
   - Multiple price targets based on resistance levels
   - Risk-based position sizing (1% account risk)
   - Trade type classification (day/swing/long)
-- **LLM-Ready Tools**: All functions designed with clear signatures for AI agent integration
+- **LLM-Ready Tools**: 17 functions designed with clear signatures for AI agent integration
 - **Production-Ready**: Comprehensive error handling, logging, and validation
 - **Alpaca Markets Integration**: Official alpaca-py SDK with IEX (free) and SIP (paid) support
 
@@ -198,10 +211,15 @@ if result['trade_plan']:
 
 All analysis functions are designed to be used by LLM agents with clear signatures and comprehensive docstrings:
 
-### Market Data Tools
+### Market Data Tools (4 functions)
 
 ```python
-from app.tools import fetch_price_bars, fetch_fundamentals, fetch_sentiment
+from app.tools import (
+    fetch_price_bars,
+    fetch_fundamentals,
+    fetch_sentiment,
+    fetch_news_sentiment,
+)
 
 # Fetch price data (multiple timeframes with IEX/SIP feed support)
 bars_daily = fetch_price_bars("AAPL", timeframe="1d", days_back=100)
@@ -211,11 +229,16 @@ bars_15min = fetch_price_bars("AAPL", timeframe="15m", days_back=7)
 # Fetch fundamentals
 fundamentals = fetch_fundamentals("AAPL")
 
-# Fetch sentiment
+# Fetch basic sentiment (price-based)
 sentiment = fetch_sentiment("AAPL")
+
+# Fetch news sentiment (real articles from Alpaca News API)
+news = fetch_news_sentiment("AAPL", days_back=7)
+print(f"News sentiment: {news['sentiment_label']} ({news['sentiment_score']:.2f})")
+print(f"Analyzed {news['article_count']} articles")
 ```
 
-### Technical Indicator Tools
+### Technical Indicator Tools (8 functions)
 
 ```python
 from app.tools import (
@@ -226,6 +249,7 @@ from app.tools import (
     calculate_macd,
     calculate_atr,
     calculate_bollinger_bands,
+    detect_divergences,
 )
 
 # Trend indicators
@@ -237,6 +261,12 @@ bb = calculate_bollinger_bands(price_bars, period=20)
 rsi = calculate_rsi(price_bars, period=14)
 macd = calculate_macd(price_bars)  # Detects crossovers!
 
+# Divergence detection (powerful reversal signals)
+rsi_div = detect_divergences(price_bars, indicator_type="rsi")
+macd_div = detect_divergences(price_bars, indicator_type="macd")
+if rsi_div.metadata['regular_bullish']:
+    print("Bullish divergence detected - potential reversal up!")
+
 # Volume analysis (CRITICAL)
 volume = analyze_volume(price_bars)  # OBV, relative volume, spikes
 
@@ -244,11 +274,12 @@ volume = analyze_volume(price_bars)  # OBV, relative volume, spikes
 atr = calculate_atr(price_bars, period=14)  # For stop loss calculation
 ```
 
-### Analysis Tools
+### Analysis Tools (5 functions)
 
 ```python
 from app.tools import (
     find_structural_pivots,
+    detect_key_levels,
     calculate_fibonacci_levels,
     analyze_multi_timeframe_confluence,
     detect_candlestick_patterns,
@@ -259,6 +290,12 @@ from app.tools import (
 
 # Find support/resistance levels
 pivots = find_structural_pivots(price_bars)
+
+# Detect key psychological and technical levels
+key_levels = detect_key_levels(price_bars)
+print(f"Round numbers: {[l['price'] for l in key_levels['round_numbers'][:3]]}")
+print(f"Nearest support: ${key_levels['nearest_support']['price']:.2f}")
+print(f"Unfilled gaps: {len(key_levels['unfilled_gaps'])}")
 
 # Calculate Fibonacci levels
 fib = calculate_fibonacci_levels(price_bars)
@@ -281,7 +318,7 @@ result = run_analysis("AAPL", account_size=10000)
 
 ## Analysis Algorithm
 
-The recommendation engine uses a comprehensive weighted scoring system with **10 factors**:
+The recommendation engine uses a comprehensive weighted scoring system with **11 factors**:
 
 | Factor | Weight | Details |
 |--------|--------|---------|
@@ -293,12 +330,15 @@ The recommendation engine uses a comprehensive weighted scoring system with **10
 | **MACD** | **15%** | **Crossovers and momentum direction** |
 | **Bollinger Bands** | **10%** | **Volatility, overbought/oversold, squeeze patterns** |
 | **Multi-Timeframe Confluence** | **15%** | **Alignment across daily/hourly/15min** |
-| Support/Resistance | 10% | Proximity to structural levels |
+| **Support/Resistance** | **10%** | **Enhanced with round numbers, gaps, period highs/lows** |
+| **Divergence Detection** | **15%** | **RSI/MACD divergences for reversal signals** |
 | ATR Volatility | 5% | Risk assessment based on volatility |
 
 **Enhanced Features**:
 - **MACD Crossover Detection**: +20 points for bullish crossover (strong entry signal)
 - **Volume Confirmation**: +20 points for high volume accumulation
+- **Divergence Signals**: +15 points for regular bullish divergence (reversal up)
+- **Key Level Detection**: Enhanced support/resistance with psychological levels and gaps
 - **Timeframe Alignment**: +15 points when all timeframes agree
 - **Bollinger Squeeze**: +5 points for potential breakout setups
 - **ATR-Based Stop Losses**: Dynamic stops based on volatility (2x ATR for swing trades)

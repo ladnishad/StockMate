@@ -1,7 +1,12 @@
 """Tests for technical indicator calculation tools."""
 
 import pytest
-from app.tools.indicators import calculate_vwap, calculate_ema, calculate_rsi
+from app.tools.indicators import (
+    calculate_vwap,
+    calculate_ema,
+    calculate_rsi,
+    detect_divergences,
+)
 
 
 class TestVWAP:
@@ -119,3 +124,66 @@ class TestRSI:
         """Test RSI with invalid period."""
         with pytest.raises(ValueError, match="period must be >= 2"):
             calculate_rsi(sample_price_bars, period=1)
+
+
+class TestDivergenceDetection:
+    """Tests for divergence detection."""
+
+    def test_detect_divergences_rsi_basic(self, sample_price_bars):
+        """Test basic RSI divergence detection."""
+        # Need enough data for divergence detection
+        if len(sample_price_bars) >= 30:
+            divergence = detect_divergences(
+                sample_price_bars,
+                indicator_type="rsi",
+                lookback_period=14,
+                swing_detection_window=5
+            )
+
+            assert divergence.name == "Divergence_RSI"
+            assert divergence.value >= 0  # Divergence count
+            assert divergence.signal in ["bullish", "bearish", "neutral"]
+            assert "regular_bullish" in divergence.metadata
+            assert "regular_bearish" in divergence.metadata
+            assert "divergence_count" in divergence.metadata
+            assert "strength" in divergence.metadata
+
+    def test_detect_divergences_macd_basic(self, sample_price_bars):
+        """Test basic MACD divergence detection."""
+        if len(sample_price_bars) >= 40:
+            divergence = detect_divergences(
+                sample_price_bars,
+                indicator_type="macd",
+                lookback_period=14,
+                swing_detection_window=5
+            )
+
+            assert divergence.name == "Divergence_MACD"
+            assert divergence.value >= 0
+            assert divergence.signal in ["bullish", "bearish", "neutral"]
+
+    def test_detect_divergences_insufficient_data(self):
+        """Test divergence detection with insufficient data."""
+        from app.models.data import PriceBar
+        from datetime import datetime
+
+        # Create minimal price bars (not enough for divergence)
+        bars = [
+            PriceBar(
+                timestamp=datetime(2024, 1, i),
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1000000
+            )
+            for i in range(1, 20)
+        ]
+
+        with pytest.raises(ValueError, match="Need at least"):
+            detect_divergences(bars, indicator_type="rsi")
+
+    def test_detect_divergences_invalid_indicator(self, sample_price_bars):
+        """Test divergence detection with invalid indicator type."""
+        with pytest.raises(ValueError, match="indicator_type must be"):
+            detect_divergences(sample_price_bars, indicator_type="invalid")

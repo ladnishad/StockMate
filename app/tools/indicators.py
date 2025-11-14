@@ -659,7 +659,7 @@ def calculate_bollinger_bands(
                 hist_lower = sma.iloc[i] - (std_dev * std.iloc[i])
                 hist_width = ((hist_upper - hist_lower) / sma.iloc[i]) * 100
                 historical_widths.append(hist_width)
-        
+
         if historical_widths:
             avg_width = np.mean(historical_widths)
             # Squeeze: current width < 75% of average
@@ -709,5 +709,268 @@ def calculate_bollinger_bands(
             "period": period,
             "std_dev": std_dev,
             "current_price": round(current_price, 2),
+        }
+    )
+
+
+def detect_divergences(
+    price_bars: List[PriceBar],
+    indicator_type: str = "rsi",
+    lookback_period: int = 14,
+    swing_detection_window: int = 5,
+) -> Indicator:
+    """Detect bullish and bearish divergences between price and indicators.
+
+    Divergence is a powerful leading indicator that signals potential reversals:
+    - Regular Bullish: Price makes lower lows, but indicator makes higher lows (reversal up)
+    - Regular Bearish: Price makes higher highs, but indicator makes lower highs (reversal down)
+    - Hidden Bullish: Price makes higher lows, but indicator makes lower lows (continuation up)
+    - Hidden Bearish: Price makes lower highs, but indicator makes higher highs (continuation down)
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        indicator_type: "rsi" or "macd" (default: "rsi")
+        lookback_period: Period for indicator calculation (default: 14)
+        swing_detection_window: Window for finding swing highs/lows (default: 5)
+
+    Returns:
+        Indicator object with divergence detection results
+
+    Raises:
+        ValueError: If price_bars is empty or parameters are invalid
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 100)
+        >>> divergence = detect_divergences(bars, indicator_type="rsi")
+        >>> if divergence.metadata.get("regular_bullish"):
+        >>>     print("Bullish divergence detected - potential reversal up!")
+        >>> print(f"Divergences found: {divergence.metadata['divergence_types']}")
+    """
+    logger.info(
+        f"Detecting {indicator_type.upper()} divergences for {len(price_bars)} bars "
+        f"(lookback={lookback_period}, window={swing_detection_window})"
+    )
+
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    if len(price_bars) < lookback_period + swing_detection_window * 2:
+        raise ValueError(
+            f"Need at least {lookback_period + swing_detection_window * 2} bars "
+            f"for divergence detection"
+        )
+
+    if indicator_type not in ["rsi", "macd"]:
+        raise ValueError("indicator_type must be 'rsi' or 'macd'")
+
+    # Calculate indicator values
+    if indicator_type == "rsi":
+        indicator = calculate_rsi(price_bars, period=lookback_period)
+        # Get full RSI series for swing detection
+        closes = np.array([bar.close for bar in price_bars])
+        deltas = np.diff(closes)
+        gains = np.where(deltas > 0, deltas, 0)
+        losses = np.where(deltas < 0, -deltas, 0)
+
+        avg_gain = np.mean(gains[:lookback_period])
+        avg_loss = np.mean(losses[:lookback_period])
+
+        rsi_values = []
+        for i in range(lookback_period, len(gains)):
+            avg_gain = (avg_gain * (lookback_period - 1) + gains[i]) / lookback_period
+            avg_loss = (avg_loss * (lookback_period - 1) + losses[i]) / lookback_period
+
+            if avg_loss == 0:
+                rsi_val = 100.0
+            else:
+                rs = avg_gain / avg_loss
+                rsi_val = 100 - (100 / (1 + rs))
+            rsi_values.append(rsi_val)
+
+        # Pad with NaN for alignment
+        indicator_values = [np.nan] * (lookback_period + 1) + rsi_values
+    else:  # macd
+        macd_indicator = calculate_macd(price_bars)
+        closes_series = pd.Series([bar.close for bar in price_bars])
+        ema_fast = closes_series.ewm(span=12, adjust=False).mean()
+        ema_slow = closes_series.ewm(span=26, adjust=False).mean()
+        macd_line = ema_fast - ema_slow
+        indicator_values = macd_line.tolist()
+
+    # Extract price data
+    closes = np.array([bar.close for bar in price_bars])
+
+    # Find swing highs and lows
+    def find_swing_points(data, window):
+        """Find local maxima (swing highs) and minima (swing lows)."""
+        swing_highs = []
+        swing_lows = []
+
+        for i in range(window, len(data) - window):
+            # Check if current point is a swing high
+            is_high = all(data[i] >= data[i - j] for j in range(1, window + 1))
+            is_high = is_high and all(data[i] >= data[i + j] for j in range(1, window + 1))
+
+            # Check if current point is a swing low
+            is_low = all(data[i] <= data[i - j] for j in range(1, window + 1))
+            is_low = is_low and all(data[i] <= data[i + j] for j in range(1, window + 1))
+
+            if is_high:
+                swing_highs.append((i, data[i]))
+            if is_low:
+                swing_lows.append((i, data[i]))
+
+        return swing_highs, swing_lows
+
+    # Find swing points for price and indicator
+    price_highs, price_lows = find_swing_points(closes, swing_detection_window)
+
+    # Filter out NaN values from indicator
+    valid_indicator = np.array([
+        val if not (isinstance(val, float) and np.isnan(val)) else None
+        for val in indicator_values
+    ])
+
+    # Only use indicator values where we have valid data
+    indicator_data = []
+    for i, val in enumerate(valid_indicator):
+        if val is not None:
+            indicator_data.append(val)
+        else:
+            indicator_data.append(0)  # Placeholder for invalid data
+
+    indicator_highs, indicator_lows = find_swing_points(
+        np.array(indicator_data),
+        swing_detection_window
+    )
+
+    # Detect divergences
+    divergences = {
+        "regular_bullish": False,
+        "regular_bearish": False,
+        "hidden_bullish": False,
+        "hidden_bearish": False,
+    }
+
+    divergence_details = []
+
+    # Check for regular bullish divergence (price: lower lows, indicator: higher lows)
+    if len(price_lows) >= 2 and len(indicator_lows) >= 2:
+        # Get last two swing lows
+        p_low_1_idx, p_low_1_val = price_lows[-2]
+        p_low_2_idx, p_low_2_val = price_lows[-1]
+
+        # Find corresponding indicator lows (within +/- 3 bars)
+        i_low_1 = None
+        i_low_2 = None
+
+        for idx, val in indicator_lows:
+            if abs(idx - p_low_1_idx) <= 3 and i_low_1 is None:
+                i_low_1 = (idx, val)
+            if abs(idx - p_low_2_idx) <= 3:
+                i_low_2 = (idx, val)
+
+        if i_low_1 and i_low_2:
+            # Regular bullish: price lower low, indicator higher low
+            if p_low_2_val < p_low_1_val and i_low_2[1] > i_low_1[1]:
+                divergences["regular_bullish"] = True
+                divergence_details.append(
+                    f"Regular Bullish: Price {p_low_1_val:.2f}->{p_low_2_val:.2f}, "
+                    f"{indicator_type.upper()} {i_low_1[1]:.2f}->{i_low_2[1]:.2f}"
+                )
+
+            # Hidden bullish: price higher low, indicator lower low
+            if p_low_2_val > p_low_1_val and i_low_2[1] < i_low_1[1]:
+                divergences["hidden_bullish"] = True
+                divergence_details.append(
+                    f"Hidden Bullish: Price {p_low_1_val:.2f}->{p_low_2_val:.2f}, "
+                    f"{indicator_type.upper()} {i_low_1[1]:.2f}->{i_low_2[1]:.2f}"
+                )
+
+    # Check for regular bearish divergence (price: higher highs, indicator: lower highs)
+    if len(price_highs) >= 2 and len(indicator_highs) >= 2:
+        # Get last two swing highs
+        p_high_1_idx, p_high_1_val = price_highs[-2]
+        p_high_2_idx, p_high_2_val = price_highs[-1]
+
+        # Find corresponding indicator highs (within +/- 3 bars)
+        i_high_1 = None
+        i_high_2 = None
+
+        for idx, val in indicator_highs:
+            if abs(idx - p_high_1_idx) <= 3 and i_high_1 is None:
+                i_high_1 = (idx, val)
+            if abs(idx - p_high_2_idx) <= 3:
+                i_high_2 = (idx, val)
+
+        if i_high_1 and i_high_2:
+            # Regular bearish: price higher high, indicator lower high
+            if p_high_2_val > p_high_1_val and i_high_2[1] < i_high_1[1]:
+                divergences["regular_bearish"] = True
+                divergence_details.append(
+                    f"Regular Bearish: Price {p_high_1_val:.2f}->{p_high_2_val:.2f}, "
+                    f"{indicator_type.upper()} {i_high_1[1]:.2f}->{i_high_2[1]:.2f}"
+                )
+
+            # Hidden bearish: price lower high, indicator higher high
+            if p_high_2_val < p_high_1_val and i_high_2[1] > i_high_1[1]:
+                divergences["hidden_bearish"] = True
+                divergence_details.append(
+                    f"Hidden Bearish: Price {p_high_1_val:.2f}->{p_high_2_val:.2f}, "
+                    f"{indicator_type.upper()} {i_high_1[1]:.2f}->{i_high_2[1]:.2f}"
+                )
+
+    # Determine overall signal
+    divergence_types = [k for k, v in divergences.items() if v]
+
+    if divergences["regular_bullish"]:
+        signal = "bullish"
+        interpretation = "regular_bullish_divergence"
+    elif divergences["regular_bearish"]:
+        signal = "bearish"
+        interpretation = "regular_bearish_divergence"
+    elif divergences["hidden_bullish"]:
+        signal = "bullish"
+        interpretation = "hidden_bullish_divergence"
+    elif divergences["hidden_bearish"]:
+        signal = "bearish"
+        interpretation = "hidden_bearish_divergence"
+    else:
+        signal = "neutral"
+        interpretation = "no_divergence"
+
+    # Calculate divergence strength
+    divergence_count = sum(divergences.values())
+    if divergence_count >= 2:
+        strength = "strong"
+    elif divergence_count == 1:
+        strength = "moderate"
+    else:
+        strength = "none"
+
+    logger.info(
+        f"Divergence Detection ({indicator_type.upper()}): "
+        f"Found {divergence_count} divergence(s) - {', '.join(divergence_types) if divergence_types else 'none'}"
+    )
+
+    return Indicator(
+        name=f"Divergence_{indicator_type.upper()}",
+        value=divergence_count,
+        signal=signal,
+        metadata={
+            "indicator_type": indicator_type,
+            "regular_bullish": divergences["regular_bullish"],
+            "regular_bearish": divergences["regular_bearish"],
+            "hidden_bullish": divergences["hidden_bullish"],
+            "hidden_bearish": divergences["hidden_bearish"],
+            "divergence_types": divergence_types,
+            "divergence_count": divergence_count,
+            "strength": strength,
+            "interpretation": interpretation,
+            "details": divergence_details,
+            "lookback_period": lookback_period,
+            "swing_detection_window": swing_detection_window,
+            "price_swing_highs_count": len(price_highs),
+            "price_swing_lows_count": len(price_lows),
         }
     )

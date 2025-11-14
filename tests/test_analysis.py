@@ -3,7 +3,11 @@
 import pytest
 from datetime import datetime
 
-from app.tools.analysis import find_structural_pivots, generate_trade_plan
+from app.tools.analysis import (
+    find_structural_pivots,
+    detect_key_levels,
+    generate_trade_plan,
+)
 from app.models.data import (
     MarketSnapshot,
     Fundamentals,
@@ -168,3 +172,68 @@ class TestTradePlanGeneration:
         # Larger account should allow larger position
         if plan_small and plan_large:
             assert plan_large.position_size > plan_small.position_size
+
+
+class TestKeyLevels:
+    """Tests for key level detection."""
+
+    def test_detect_key_levels_basic(self, sample_price_bars):
+        """Test basic key level detection."""
+        levels = detect_key_levels(sample_price_bars)
+
+        assert isinstance(levels, dict)
+        assert "round_numbers" in levels
+        assert "unfilled_gaps" in levels
+        assert "all_levels" in levels
+        assert "nearest_support" in levels
+        assert "nearest_resistance" in levels
+
+    def test_detect_key_levels_round_numbers(self, sample_price_bars):
+        """Test round number detection."""
+        levels = detect_key_levels(sample_price_bars, current_price=150.0)
+
+        round_numbers = levels["round_numbers"]
+        assert isinstance(round_numbers, list)
+
+        # Should detect numbers like 150, 140, 160, etc.
+        if round_numbers:
+            for level in round_numbers:
+                assert "price" in level
+                assert "type" in level
+                assert level["type"] in ["round_major", "round_minor"]
+                assert "significance" in level
+
+    def test_detect_key_levels_gaps(self, sample_price_bars):
+        """Test gap detection."""
+        levels = detect_key_levels(sample_price_bars)
+
+        unfilled_gaps = levels["unfilled_gaps"]
+        assert isinstance(unfilled_gaps, list)
+
+        # If gaps are found, check structure
+        for gap in unfilled_gaps:
+            assert "gap_high" in gap
+            assert "gap_low" in gap
+            assert "gap_size" in gap
+            assert "direction" in gap
+            assert gap["direction"] in ["up", "down"]
+            assert gap["filled"] == False
+
+    def test_detect_key_levels_previous_periods(self, sample_price_bars):
+        """Test previous period highs/lows detection."""
+        if len(sample_price_bars) >= 30:
+            levels = detect_key_levels(sample_price_bars)
+
+            # Should have previous day high/low
+            assert levels["previous_day_high"] is not None
+            assert levels["previous_day_low"] is not None
+
+            # If enough data, should have week and month
+            if len(sample_price_bars) >= 30:
+                assert levels.get("previous_month_high") is not None
+                assert levels.get("previous_month_low") is not None
+
+    def test_detect_key_levels_empty_bars(self):
+        """Test key levels with empty price bars."""
+        with pytest.raises(ValueError, match="price_bars cannot be empty"):
+            detect_key_levels([])
