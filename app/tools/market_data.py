@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # - "iex": Free tier, 5 years of history (Investors Exchange)
 # - "sip": Paid tier, 7 years of history (Securities Information Processor)
 # - None: Defaults to best available feed based on subscription
-ALPACA_DATA_FEED = None  # Will use best available feed for user's subscription
+ALPACA_DATA_FEED = "iex"  # Use IEX feed for free tier (change to "sip" for paid tier)
 
 
 def _get_alpaca_client() -> StockHistoricalDataClient:
