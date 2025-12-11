@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     alpaca_secret_key: str = ""
     alpaca_base_url: str = "https://paper-api.alpaca.markets"
 
+    # AlgoTrader Plus Data Feed Configuration
+    # "sip" = Securities Information Processor (all US exchanges, paid tier)
+    # "iex" = Investors Exchange only (free tier)
+    alpaca_data_feed: str = "sip"
+
     # Application Configuration
     app_env: str = "development"
     log_level: str = "INFO"

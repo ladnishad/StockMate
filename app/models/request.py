@@ -1,5 +1,6 @@
 """Request models for API endpoints."""
 
+from typing import Optional, Literal
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -10,6 +11,7 @@ class AnalysisRequest(BaseModel):
         symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
         account_size: Total account size in dollars
         use_ai: Whether to use AI-enhanced analysis (future use)
+        trader_profile: Optional trader profile for customized analysis
     """
 
     symbol: str = Field(
@@ -29,6 +31,12 @@ class AnalysisRequest(BaseModel):
         default=False,
         description="Whether to use AI-enhanced analysis"
     )
+    trader_profile: Optional[Literal[
+        "day_trader", "swing_trader", "position_trader", "long_term_investor"
+    ]] = Field(
+        default=None,
+        description="Trader profile for customized analysis. Options: day_trader, swing_trader, position_trader, long_term_investor"
+    )
 
     @field_validator("symbol")
     @classmethod
@@ -42,7 +50,14 @@ class AnalysisRequest(BaseModel):
                 {
                     "symbol": "AAPL",
                     "account_size": 10000.0,
-                    "use_ai": False
+                    "use_ai": False,
+                    "trader_profile": None
+                },
+                {
+                    "symbol": "TSLA",
+                    "account_size": 25000.0,
+                    "use_ai": False,
+                    "trader_profile": "swing_trader"
                 }
             ]
         }

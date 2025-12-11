@@ -9,7 +9,13 @@ from datetime import datetime, timedelta
 import logging
 
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest, NewsRequest
+from alpaca.data.requests import (
+    StockBarsRequest,
+    StockLatestQuoteRequest,
+    StockLatestTradeRequest,
+    StockSnapshotRequest,
+    NewsRequest,
+)
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.common.exceptions import APIError
@@ -18,12 +24,6 @@ from app.config import get_settings
 from app.models.data import PriceBar, Fundamentals, Sentiment
 
 logger = logging.getLogger(__name__)
-
-# Alpaca Data Feed Options
-# - "iex": Free tier, 5 years of history (Investors Exchange)
-# - "sip": Paid tier, 7 years of history (Securities Information Processor)
-# - None: Defaults to best available feed based on subscription
-ALPACA_DATA_FEED = "iex"  # Use IEX feed for free tier (change to "sip" for paid tier)
 
 
 def _get_alpaca_client() -> StockHistoricalDataClient:
@@ -103,9 +103,10 @@ def fetch_price_bars(
 
     try:
         client = _get_alpaca_client()
+        settings = get_settings()
 
-        # Use provided feed or default
-        data_feed = feed or ALPACA_DATA_FEED
+        # Use provided feed or default from config (sip for AlgoTrader Plus)
+        data_feed = feed or settings.alpaca_data_feed
 
         # Build request parameters with feed specification
         request_params = StockBarsRequest(
@@ -534,3 +535,289 @@ def fetch_news_sentiment(
             "source": "price_based_fallback",
             "error": str(e),
         }
+
+
+def fetch_latest_quote(symbol: str) -> dict:
+    """Fetch real-time bid/ask quote for a symbol.
+
+    This tool retrieves the most recent quote (bid/ask prices and sizes) from
+    Alpaca Markets API. With AlgoTrader Plus subscription, this provides real-time
+    data from all US exchanges via the SIP feed.
+
+    Args:
+        symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
+
+    Returns:
+        Dictionary containing:
+        - symbol: The stock symbol
+        - bid_price: Current best bid price
+        - ask_price: Current best ask price
+        - bid_size: Size at best bid
+        - ask_size: Size at best ask
+        - spread: Absolute spread (ask - bid)
+        - spread_pct: Spread as percentage of mid price
+        - mid_price: Midpoint between bid and ask
+        - timestamp: Quote timestamp
+
+    Raises:
+        ValueError: If symbol is invalid or no quote available
+        APIError: If Alpaca API returns an error
+
+    Example:
+        >>> quote = fetch_latest_quote("AAPL")
+        >>> print(f"AAPL Bid: ${quote['bid_price']:.2f} Ask: ${quote['ask_price']:.2f}")
+        >>> print(f"Spread: {quote['spread_pct']:.3f}%")
+    """
+    logger.info(f"Fetching latest quote for {symbol}")
+
+    try:
+        client = _get_alpaca_client()
+        settings = get_settings()
+
+        request = StockLatestQuoteRequest(
+            symbol_or_symbols=symbol,
+            feed=settings.alpaca_data_feed,
+        )
+
+        quotes = client.get_stock_latest_quote(request)
+
+        if symbol not in quotes:
+            raise ValueError(f"No quote available for symbol: {symbol}")
+
+        quote = quotes[symbol]
+
+        bid_price = float(quote.bid_price)
+        ask_price = float(quote.ask_price)
+        spread = ask_price - bid_price
+        mid_price = (bid_price + ask_price) / 2
+        spread_pct = (spread / mid_price * 100) if mid_price > 0 else 0
+
+        result = {
+            "symbol": symbol,
+            "bid_price": bid_price,
+            "ask_price": ask_price,
+            "bid_size": int(quote.bid_size),
+            "ask_size": int(quote.ask_size),
+            "spread": round(spread, 4),
+            "spread_pct": round(spread_pct, 4),
+            "mid_price": round(mid_price, 4),
+            "timestamp": quote.timestamp.isoformat() if quote.timestamp else None,
+        }
+
+        logger.info(f"Quote for {symbol}: bid=${bid_price:.2f} ask=${ask_price:.2f} spread={spread_pct:.3f}%")
+        return result
+
+    except APIError as e:
+        logger.error(f"Alpaca API error fetching quote for {symbol}: {str(e)}")
+        raise ValueError(f"Alpaca API error: {str(e)}")
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching quote for {symbol}: {str(e)}")
+        raise
+
+
+def fetch_latest_trade(symbol: str) -> dict:
+    """Fetch the most recent trade execution for a symbol.
+
+    This tool retrieves the latest trade (price, size, exchange) from
+    Alpaca Markets API. With AlgoTrader Plus subscription, this provides
+    real-time data from all US exchanges via the SIP feed.
+
+    Args:
+        symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
+
+    Returns:
+        Dictionary containing:
+        - symbol: The stock symbol
+        - price: Trade execution price
+        - size: Number of shares traded
+        - exchange: Exchange where trade occurred
+        - timestamp: Trade timestamp
+        - conditions: Trade conditions (if available)
+
+    Raises:
+        ValueError: If symbol is invalid or no trade available
+        APIError: If Alpaca API returns an error
+
+    Example:
+        >>> trade = fetch_latest_trade("AAPL")
+        >>> print(f"AAPL Last: ${trade['price']:.2f} x {trade['size']} on {trade['exchange']}")
+    """
+    logger.info(f"Fetching latest trade for {symbol}")
+
+    try:
+        client = _get_alpaca_client()
+        settings = get_settings()
+
+        request = StockLatestTradeRequest(
+            symbol_or_symbols=symbol,
+            feed=settings.alpaca_data_feed,
+        )
+
+        trades = client.get_stock_latest_trade(request)
+
+        if symbol not in trades:
+            raise ValueError(f"No trade available for symbol: {symbol}")
+
+        trade = trades[symbol]
+
+        result = {
+            "symbol": symbol,
+            "price": float(trade.price),
+            "size": int(trade.size),
+            "exchange": trade.exchange if hasattr(trade, 'exchange') else None,
+            "timestamp": trade.timestamp.isoformat() if trade.timestamp else None,
+            "conditions": list(trade.conditions) if hasattr(trade, 'conditions') and trade.conditions else [],
+        }
+
+        logger.info(f"Latest trade for {symbol}: ${result['price']:.2f} x {result['size']}")
+        return result
+
+    except APIError as e:
+        logger.error(f"Alpaca API error fetching trade for {symbol}: {str(e)}")
+        raise ValueError(f"Alpaca API error: {str(e)}")
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching trade for {symbol}: {str(e)}")
+        raise
+
+
+def fetch_snapshots(symbols: List[str]) -> dict:
+    """Fetch real-time snapshots for multiple symbols in a single API call.
+
+    This tool retrieves comprehensive snapshots including latest quote, latest trade,
+    current daily bar, and previous daily bar for multiple symbols efficiently.
+    This is much faster than fetching data for each symbol individually.
+
+    With AlgoTrader Plus subscription, this provides real-time data from all
+    US exchanges via the SIP feed.
+
+    Args:
+        symbols: List of stock ticker symbols (e.g., ['AAPL', 'TSLA', 'MSFT'])
+
+    Returns:
+        Dictionary mapping symbol to snapshot data:
+        {
+            "AAPL": {
+                "symbol": "AAPL",
+                "latest_quote": { bid_price, ask_price, spread, ... },
+                "latest_trade": { price, size, exchange, ... },
+                "daily_bar": { open, high, low, close, volume, ... },
+                "prev_daily_bar": { open, high, low, close, volume, ... },
+            },
+            ...
+        }
+
+    Raises:
+        ValueError: If symbols list is empty or invalid
+        APIError: If Alpaca API returns an error
+
+    Example:
+        >>> snapshots = fetch_snapshots(["AAPL", "MSFT", "GOOGL"])
+        >>> for symbol, data in snapshots.items():
+        >>>     print(f"{symbol}: ${data['latest_trade']['price']:.2f}")
+    """
+    if not symbols:
+        raise ValueError("Symbols list cannot be empty")
+
+    logger.info(f"Fetching snapshots for {len(symbols)} symbols: {symbols[:5]}{'...' if len(symbols) > 5 else ''}")
+
+    try:
+        client = _get_alpaca_client()
+        settings = get_settings()
+
+        request = StockSnapshotRequest(
+            symbol_or_symbols=symbols,
+            feed=settings.alpaca_data_feed,
+        )
+
+        snapshots = client.get_stock_snapshot(request)
+
+        result = {}
+        for symbol in symbols:
+            if symbol not in snapshots:
+                logger.warning(f"No snapshot available for {symbol}")
+                result[symbol] = None
+                continue
+
+            snapshot = snapshots[symbol]
+
+            # Process latest quote
+            latest_quote = None
+            if snapshot.latest_quote:
+                q = snapshot.latest_quote
+                bid = float(q.bid_price)
+                ask = float(q.ask_price)
+                mid = (bid + ask) / 2
+                spread = ask - bid
+                latest_quote = {
+                    "bid_price": bid,
+                    "ask_price": ask,
+                    "bid_size": int(q.bid_size),
+                    "ask_size": int(q.ask_size),
+                    "spread": round(spread, 4),
+                    "spread_pct": round(spread / mid * 100, 4) if mid > 0 else 0,
+                    "mid_price": round(mid, 4),
+                    "timestamp": q.timestamp.isoformat() if q.timestamp else None,
+                }
+
+            # Process latest trade
+            latest_trade = None
+            if snapshot.latest_trade:
+                t = snapshot.latest_trade
+                latest_trade = {
+                    "price": float(t.price),
+                    "size": int(t.size),
+                    "exchange": t.exchange if hasattr(t, 'exchange') else None,
+                    "timestamp": t.timestamp.isoformat() if t.timestamp else None,
+                }
+
+            # Process daily bar
+            daily_bar = None
+            if snapshot.daily_bar:
+                b = snapshot.daily_bar
+                daily_bar = {
+                    "open": float(b.open),
+                    "high": float(b.high),
+                    "low": float(b.low),
+                    "close": float(b.close),
+                    "volume": int(b.volume),
+                    "timestamp": b.timestamp.isoformat() if b.timestamp else None,
+                    "vwap": float(b.vwap) if hasattr(b, 'vwap') and b.vwap else None,
+                }
+
+            # Process previous daily bar
+            prev_daily_bar = None
+            if snapshot.previous_daily_bar:
+                pb = snapshot.previous_daily_bar
+                prev_daily_bar = {
+                    "open": float(pb.open),
+                    "high": float(pb.high),
+                    "low": float(pb.low),
+                    "close": float(pb.close),
+                    "volume": int(pb.volume),
+                    "timestamp": pb.timestamp.isoformat() if pb.timestamp else None,
+                    "vwap": float(pb.vwap) if hasattr(pb, 'vwap') and pb.vwap else None,
+                }
+
+            result[symbol] = {
+                "symbol": symbol,
+                "latest_quote": latest_quote,
+                "latest_trade": latest_trade,
+                "daily_bar": daily_bar,
+                "prev_daily_bar": prev_daily_bar,
+            }
+
+        logger.info(f"Successfully fetched snapshots for {len(result)} symbols")
+        return result
+
+    except APIError as e:
+        logger.error(f"Alpaca API error fetching snapshots: {str(e)}")
+        raise ValueError(f"Alpaca API error: {str(e)}")
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching snapshots: {str(e)}")
+        raise

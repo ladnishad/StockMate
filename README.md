@@ -6,10 +6,11 @@ A production-ready FastAPI backend for stock analysis and trading recommendation
 
 - **Comprehensive Stock Analysis**: Multi-timeframe price action analysis (daily, hourly, 15-minute)
 - **Advanced Technical Indicators**:
-  - Trend: VWAP, EMA (9/20/50), Bollinger Bands
-  - Momentum: RSI, MACD (with crossover detection)
+  - Trend: VWAP, EMA (9/20/50), Bollinger Bands, ADX (trend strength)
+  - Momentum: RSI, MACD (with crossover detection), Stochastic Oscillator
   - Volume: Volume analysis, OBV, relative volume, volume spikes
   - Volatility: ATR (Average True Range) for dynamic stop losses
+  - Fibonacci: Retracement & extension levels for swing trading
 - **Divergence Detection**: RSI and MACD divergence analysis for reversal signals
   - Regular bullish/bearish divergences (reversal patterns)
   - Hidden divergences (continuation patterns)
@@ -46,15 +47,35 @@ A production-ready FastAPI backend for stock analysis and trading recommendation
 - **Candlestick Pattern Recognition**: Doji, hammer, engulfing, shooting star, etc.
 - **Fibonacci Levels**: Automatic retracement and extension calculations
 - **Structural Analysis**: Automatic support/resistance level detection with volume confirmation
-- **Smart Recommendations**: BUY or NO_BUY with confidence scoring (uses 13 factors)
+- **Smart Recommendations**: BUY or NO_BUY with confidence scoring (uses 15 factors)
+- **Trader Profiles** (NEW): 4 preset profiles to customize analysis for your trading style
+  - **Day Trader**: Intraday focus, VWAP/volume emphasis, tight 1.5x ATR stops, 70% confidence threshold
+  - **Swing Trader**: Multi-day holds, Fibonacci levels, structure-based stops, 65% threshold
+  - **Position Trader**: Multi-week holds, trend-following, momentum focus, 65% threshold
+  - **Long-Term Investor**: Multi-month holds, fundamentals emphasis, wide stops, 60% threshold
 - **Professional Trade Plans**:
   - ATR-based stop losses (volatility-adjusted)
   - Multiple price targets based on resistance levels
   - Risk-based position sizing (1% account risk)
   - Trade type classification (day/swing/long)
-- **LLM-Ready Tools**: 23 functions designed with clear signatures for AI agent integration
+  - **Live quote integration** for real-time entry prices
+  - **Spread analysis** with wide spread warnings
+- **LLM-Ready Tools**: 34 functions designed with clear signatures for AI agent integration
 - **Production-Ready**: Comprehensive error handling, logging, and validation
 - **Alpaca Markets Integration**: Official alpaca-py SDK with IEX (free) and SIP (paid) support
+
+### AlgoTrader Plus Features (NEW)
+
+With an AlgoTrader Plus subscription ($99/month), StockMate unlocks powerful real-time capabilities:
+
+- **SIP Data Feed**: Access to all 16 US stock exchanges (vs IEX only ~3% volume)
+- **Real-Time Quotes**: Live bid/ask prices with spread analysis
+- **Real-Time Trades**: Latest trade executions with exchange info
+- **Batch Snapshots**: Fetch multiple symbols in a single API call (10x faster)
+- **WebSocket Streaming**: Real-time quotes, trades, and bars via WebSocket
+- **10,000 API calls/min**: 50x higher rate limit than free tier
+- **7 Years Historical Data**: Extended history via SIP feed
+- **No 15-Minute Delay**: True real-time data with no restrictions
 
 ## Architecture
 
@@ -68,13 +89,16 @@ StockMate/
 │   │   ├── __init__.py
 │   │   ├── request.py         # API request models
 │   │   ├── response.py        # API response models
-│   │   └── data.py            # Internal data models
+│   │   ├── data.py            # Internal data models
+│   │   ├── profile.py         # Trader profile models (NEW)
+│   │   └── profile_presets.py # 4 preset profile configurations (NEW)
 │   └── tools/                  # Analysis tools (LLM-ready)
 │       ├── __init__.py
-│       ├── market_data.py     # Data fetching tools
+│       ├── market_data.py     # Data fetching tools (REST API)
 │       ├── indicators.py      # Technical indicator tools
 │       ├── analysis.py        # Analysis and trading logic tools
-│       └── market_scanner.py  # Market-wide and sector scanning tools
+│       ├── market_scanner.py  # Market-wide and sector scanning tools
+│       └── streaming.py       # Real-time WebSocket streaming (NEW)
 ├── tests/                      # Test suite
 ├── requirements.txt            # Python dependencies
 ├── .env.example               # Environment variables template
@@ -118,6 +142,7 @@ StockMate/
    ALPACA_API_KEY=your_api_key_here
    ALPACA_SECRET_KEY=your_secret_key_here
    ALPACA_BASE_URL=https://paper-api.alpaca.markets
+   ALPACA_DATA_FEED=sip  # "sip" for AlgoTrader Plus, "iex" for free tier
    ```
 
    **Get Alpaca API credentials**:
@@ -128,29 +153,96 @@ StockMate/
 5. **Run the server**:
    ```bash
    # Development mode (with auto-reload)
-   python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+   python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8004
 
    # Or using the main.py directly
    python app/main.py
    ```
 
 6. **Access the API**:
-   - API: http://localhost:8000
-   - Interactive docs: http://localhost:8000/docs
-   - Alternative docs: http://localhost:8000/redoc
+   - API: http://localhost:8004
+   - Interactive docs: http://localhost:8004/docs
+   - Alternative docs: http://localhost:8004/redoc
 
 ## API Usage
+
+### Trader Profiles Endpoint (NEW)
+
+**Endpoint**: `GET /profiles`
+
+Get all available trader profiles with their configurations:
+
+```bash
+curl "http://localhost:8000/profiles"
+```
+
+**Response**:
+```json
+{
+  "profiles": [
+    {
+      "type": "day_trader",
+      "name": "Day Trader",
+      "description": "Intraday trades closed before market close...",
+      "timeframes": {"primary": "15m", "confirmation": "1h", "entry": "5m"},
+      "holding_period": {"min": "5m", "max": "1d"},
+      "allowed_trade_types": ["day"],
+      "risk": {
+        "risk_percentage": 0.5,
+        "stop_method": "atr",
+        "atr_multiplier": 1.5,
+        "max_position_percent": 15.0
+      },
+      "targets": {
+        "method": "rr_ratio",
+        "rr_ratios": [1.0, 1.5, 2.0],
+        "use_fibonacci_extensions": false
+      },
+      "thresholds": {
+        "buy_confidence": 70.0,
+        "rsi_overbought": 75.0,
+        "rsi_oversold": 25.0
+      },
+      "weights": {
+        "vwap": 15.0, "volume": 15.0, "ema_trend": 10.0, "fibonacci": 0.0
+      }
+    },
+    {
+      "type": "swing_trader",
+      "name": "Swing Trader",
+      "description": "Multi-day to multi-week trades capturing price swings...",
+      "timeframes": {"primary": "1d", "confirmation": "1h", "entry": "15m"},
+      "risk": {"stop_method": "structure", "atr_multiplier": 2.0},
+      "targets": {"method": "fibonacci", "use_fibonacci_extensions": true},
+      "thresholds": {"buy_confidence": 65.0},
+      "weights": {"fibonacci": 5.0, "divergence": 8.0}
+    }
+  ],
+  "count": 4,
+  "usage": "Pass the 'type' value as the 'trader_profile' parameter in /analyze requests"
+}
+```
 
 ### Analyze Stock Endpoint
 
 **Endpoint**: `POST /analyze`
 
-**Request**:
+**Request** (without profile - uses default scoring):
 ```json
 {
   "symbol": "AAPL",
   "account_size": 10000.0,
   "use_ai": false
+}
+```
+
+**Request** (with trader profile - customized analysis):
+```json
+{
+  "symbol": "AAPL",
+  "account_size": 10000.0,
+  "use_ai": false,
+  "trader_profile": "swing_trader"
 }
 ```
 
@@ -394,11 +486,169 @@ scan = requests.get(f"{BASE_URL}/market/scan?min_stock_score=70").json()
 print(f"\nComplete scan found {len(scan['top_stocks'])} sectors with leaders")
 ```
 
+### AlgoTrader Plus Real-Time Endpoints (NEW)
+
+These endpoints leverage AlgoTrader Plus subscription features for real-time data.
+
+#### GET `/quote/{symbol}` - Real-Time Quote
+
+Get live bid/ask with spread analysis:
+
+```bash
+curl "http://localhost:8000/quote/AAPL"
+```
+
+**Response**:
+```json
+{
+  "symbol": "AAPL",
+  "bid_price": 175.25,
+  "ask_price": 175.28,
+  "bid_size": 200,
+  "ask_size": 150,
+  "spread": 0.03,
+  "spread_pct": 0.017,
+  "mid_price": 175.265,
+  "timestamp": "2025-01-15T14:30:00Z"
+}
+```
+
+#### GET `/trade/{symbol}` - Latest Trade
+
+Get most recent trade execution:
+
+```bash
+curl "http://localhost:8000/trade/AAPL"
+```
+
+**Response**:
+```json
+{
+  "symbol": "AAPL",
+  "price": 175.27,
+  "size": 100,
+  "exchange": "XNAS",
+  "timestamp": "2025-01-15T14:30:00Z",
+  "conditions": []
+}
+```
+
+#### POST `/snapshots` - Batch Multi-Symbol Snapshots
+
+Fetch multiple symbols in one API call (10x faster than individual requests):
+
+```bash
+curl -X POST "http://localhost:8000/snapshots" \
+  -H "Content-Type: application/json" \
+  -d '{"symbols": ["AAPL", "MSFT", "GOOGL", "NVDA"]}'
+```
+
+**Response**:
+```json
+{
+  "AAPL": {
+    "symbol": "AAPL",
+    "latest_quote": {"bid_price": 175.25, "ask_price": 175.28, ...},
+    "latest_trade": {"price": 175.27, "size": 100, ...},
+    "daily_bar": {"open": 174.50, "high": 176.00, "low": 174.25, "close": 175.27, ...}
+  },
+  "MSFT": { ... },
+  "GOOGL": { ... },
+  "NVDA": { ... }
+}
+```
+
+#### GET `/market/quick` - Quick Market Status
+
+Fast market overview using batch snapshots (more efficient than `/market`):
+
+```bash
+curl "http://localhost:8000/market/quick"
+```
+
+#### GET `/sectors/quick` - Quick Sector Status
+
+Fast sector overview using batch snapshots:
+
+```bash
+curl "http://localhost:8000/sectors/quick"
+```
+
+### WebSocket Streaming Endpoints
+
+Real-time streaming via WebSocket connections. Connect and receive live updates.
+
+#### WS `/ws/quotes/{symbol}` - Quote Stream
+
+```javascript
+const ws = new WebSocket('ws://localhost:8000/ws/quotes/AAPL');
+ws.onmessage = (event) => {
+  const quote = JSON.parse(event.data);
+  console.log(`${quote.symbol}: ${quote.bid_price} / ${quote.ask_price}`);
+};
+```
+
+#### WS `/ws/trades/{symbol}` - Trade Stream
+
+```javascript
+const ws = new WebSocket('ws://localhost:8000/ws/trades/AAPL');
+ws.onmessage = (event) => {
+  const trade = JSON.parse(event.data);
+  console.log(`${trade.symbol}: ${trade.price} x ${trade.size}`);
+};
+```
+
+#### WS `/ws/bars/{symbol}` - Minute Bar Stream
+
+```javascript
+const ws = new WebSocket('ws://localhost:8000/ws/bars/AAPL');
+ws.onmessage = (event) => {
+  const bar = JSON.parse(event.data);
+  console.log(`${bar.symbol}: O=${bar.open} H=${bar.high} L=${bar.low} C=${bar.close}`);
+};
+```
+
+### Python Client - Real-Time Examples
+
+```python
+import requests
+import websocket
+import json
+
+BASE_URL = "http://localhost:8000"
+
+# Get real-time quote
+quote = requests.get(f"{BASE_URL}/quote/AAPL").json()
+print(f"AAPL Bid/Ask: ${quote['bid_price']} / ${quote['ask_price']}")
+print(f"Spread: ${quote['spread']:.4f} ({quote['spread_pct']:.3f}%)")
+
+# Batch fetch multiple symbols (efficient!)
+snapshots = requests.post(
+    f"{BASE_URL}/snapshots",
+    json={"symbols": ["AAPL", "MSFT", "GOOGL"]}
+).json()
+
+for symbol, data in snapshots.items():
+    if data['latest_trade']:
+        print(f"{symbol}: ${data['latest_trade']['price']}")
+
+# WebSocket streaming
+def on_message(ws, message):
+    quote = json.loads(message)
+    print(f"Live: {quote['symbol']} ${quote['bid_price']} / ${quote['ask_price']}")
+
+ws = websocket.WebSocketApp(
+    "ws://localhost:8000/ws/quotes/AAPL",
+    on_message=on_message
+)
+ws.run_forever()
+```
+
 ## LLM-Ready Tools
 
 All analysis functions are designed to be used by LLM agents with clear signatures and comprehensive docstrings:
 
-### Market Data Tools (4 functions)
+### Market Data Tools (7 functions)
 
 ```python
 from app.tools import (
@@ -406,6 +656,9 @@ from app.tools import (
     fetch_fundamentals,
     fetch_sentiment,
     fetch_news_sentiment,
+    fetch_latest_quote,
+    fetch_latest_trade,
+    fetch_snapshots,
 )
 
 # Fetch price data (multiple timeframes with IEX/SIP feed support)
@@ -423,9 +676,23 @@ sentiment = fetch_sentiment("AAPL")
 news = fetch_news_sentiment("AAPL", days_back=7)
 print(f"News sentiment: {news['sentiment_label']} ({news['sentiment_score']:.2f})")
 print(f"Analyzed {news['article_count']} articles")
+
+# NEW: Real-time quote with spread analysis (AlgoTrader Plus)
+quote = fetch_latest_quote("AAPL")
+print(f"Bid/Ask: ${quote.bid_price} / ${quote.ask_price}")
+print(f"Spread: ${quote.spread:.4f} ({quote.spread_pct:.3f}%)")
+
+# NEW: Latest trade execution (AlgoTrader Plus)
+trade = fetch_latest_trade("AAPL")
+print(f"Last trade: ${trade.price} x {trade.size} on {trade.exchange}")
+
+# NEW: Batch snapshots - 10x faster than individual requests (AlgoTrader Plus)
+snapshots = fetch_snapshots(["AAPL", "MSFT", "GOOGL", "NVDA"])
+for symbol, snap in snapshots.items():
+    print(f"{symbol}: ${snap.latest_trade.price if snap.latest_trade else 'N/A'}")
 ```
 
-### Technical Indicator Tools (8 functions)
+### Technical Indicator Tools (10 functions)
 
 ```python
 from app.tools import (
@@ -437,6 +704,8 @@ from app.tools import (
     calculate_atr,
     calculate_bollinger_bands,
     detect_divergences,
+    calculate_adx,       # NEW: Trend strength
+    calculate_stochastic, # NEW: Momentum oscillator
 )
 
 # Trend indicators
@@ -459,9 +728,23 @@ volume = analyze_volume(price_bars)  # OBV, relative volume, spikes
 
 # Volatility indicator
 atr = calculate_atr(price_bars, period=14)  # For stop loss calculation
+
+# NEW: ADX for trend strength (swing trading essential)
+adx = calculate_adx(price_bars, period=14)
+print(f"ADX: {adx.value:.1f} ({adx.metadata['trend_strength']})")
+print(f"+DI: {adx.metadata['plus_di']:.1f}, -DI: {adx.metadata['minus_di']:.1f}")
+if adx.metadata['is_trending']:
+    print(f"Market is trending: {adx.metadata['trend_direction']}")
+
+# NEW: Stochastic Oscillator for overbought/oversold
+stoch = calculate_stochastic(price_bars, k_period=14, d_period=3)
+print(f"Stochastic: %K={stoch.metadata['k']:.1f}, %D={stoch.metadata['d']:.1f}")
+print(f"Interpretation: {stoch.metadata['interpretation']}")
+if stoch.metadata['bullish_crossover']:
+    print("Bullish crossover detected!")
 ```
 
-### Analysis Tools (7 functions)
+### Analysis Tools (10 functions)
 
 ```python
 from app.tools import (
@@ -519,7 +802,7 @@ trade_plan = generate_trade_plan(snapshot, account_size=10000)
 result = run_analysis("AAPL", account_size=10000)
 ```
 
-### Market Scanner Tools (4 functions)
+### Market Scanner Tools (6 functions)
 
 ```python
 from app.tools import (
@@ -527,6 +810,8 @@ from app.tools import (
     get_sector_performance,
     find_sector_leaders,
     run_market_scan,
+    get_quick_market_status,   # NEW: Uses batch snapshots
+    get_quick_sector_status,   # NEW: Uses batch snapshots
 )
 
 # Step 1: Check overall market health (S&P 500, Nasdaq, Dow, Russell 2000)
@@ -575,27 +860,80 @@ for sector_stocks in scan['top_stocks']:
     print(f"\n  {sector_stocks['sector_name']}:")
     for stock in sector_stocks['leaders']:
         print(f"    {stock['symbol']}: {stock['score']}%")
+
+# NEW: Quick status using batch snapshots (10x faster!)
+quick_market = get_quick_market_status()
+print(f"Quick market: {quick_market['market_signal']}")
+
+quick_sectors = get_quick_sector_status()
+for sector in quick_sectors['sectors'][:3]:
+    print(f"{sector['name']}: {sector['change_pct']:.1f}%")
+```
+
+### Real-Time Streaming Tools (AlgoTrader Plus)
+
+```python
+from app.tools.streaming import get_streamer, reset_streamer
+
+# Get the singleton streamer instance
+streamer = get_streamer()
+
+# Define async handlers for real-time data
+async def on_quote(quote):
+    print(f"{quote.symbol}: ${quote.bid_price} / ${quote.ask_price}")
+
+async def on_trade(trade):
+    print(f"{trade.symbol}: ${trade.price} x {trade.size}")
+
+async def on_bar(bar):
+    print(f"{bar.symbol}: O={bar.open} H={bar.high} L={bar.low} C={bar.close}")
+
+# Subscribe to real-time updates
+streamer.subscribe_quotes(on_quote, "AAPL", "MSFT", "GOOGL")
+streamer.subscribe_trades(on_trade, "AAPL")
+streamer.subscribe_bars(on_bar, "AAPL")
+
+# Run in background (non-blocking)
+streamer.run_in_background()
+
+# Check subscription status
+status = streamer.get_subscription_status()
+print(f"Running: {status['running']}")
+print(f"Subscribed quotes: {status['quotes']}")
+
+# Unsubscribe when done
+streamer.unsubscribe_quotes("AAPL")
+
+# Stop the streamer
+streamer.stop()
+
+# Reset for a fresh connection
+reset_streamer()
 ```
 
 ## Analysis Algorithm
 
-The recommendation engine uses a comprehensive weighted scoring system with **13 factors**:
+The recommendation engine uses a comprehensive weighted scoring system with **15 factors**:
 
 | Factor | Weight | Details |
 |--------|--------|---------|
-| Sentiment | 20% | Based on price momentum and volume trends |
-| EMA Trend | 25% | Multiple EMAs (9, 20, 50) for trend confirmation |
-| RSI | 15% | Momentum indicator (optimal range: 40-70) |
-| VWAP | 15% | Price relative to volume-weighted average |
-| **Volume** | **20%** | **OBV, relative volume, accumulation/distribution** |
-| **MACD** | **15%** | **Crossovers and momentum direction** |
-| **Bollinger Bands** | **10%** | **Volatility, overbought/oversold, squeeze patterns** |
-| **Multi-Timeframe Confluence** | **15%** | **Alignment across daily/hourly/15min** |
-| **Support/Resistance** | **10%** | **Enhanced with round numbers, gaps, period highs/lows** |
-| **Divergence Detection** | **15%** | **RSI/MACD divergences for reversal signals** |
-| ATR Volatility | 5% | Risk assessment based on volatility |
-| **Volume Profile** | **10%** | **VPOC, value area, HVN/LVN institutional positioning** |
-| **Chart Patterns** | **15%** | **H&S, Double Tops/Bottoms, Triangles, Flags** |
+| Sentiment | 10% | Based on price momentum and volume trends |
+| EMA Trend | 12% | Multiple EMAs (9, 20, 50) for trend confirmation |
+| RSI | 8% | Momentum indicator (optimal range: 40-70) |
+| VWAP | 8% | Price relative to volume-weighted average |
+| **Volume** | **10%** | **OBV, relative volume, accumulation/distribution** |
+| **MACD** | **10%** | **Crossovers and momentum direction** |
+| **Bollinger Bands** | **8%** | **Volatility, overbought/oversold, squeeze patterns** |
+| **Multi-Timeframe Confluence** | **8%** | **Alignment across daily/hourly/15min** |
+| **Support/Resistance** | **5%** | **Enhanced with round numbers, gaps, period highs/lows** |
+| **Divergence Detection** | **8%** | **RSI/MACD divergences for reversal signals** |
+| **Volume Profile** | **5%** | **VPOC, value area, HVN/LVN institutional positioning** |
+| **Chart Patterns** | **8%** | **H&S, Double Tops/Bottoms, Triangles, Flags** |
+| **Fibonacci** (NEW) | **0-5%** | **Retracement/extension levels (swing trader weighted)** |
+| **ADX** (NEW) | **0-3%** | **Trend strength measurement (position trader weighted)** |
+| **Stochastic** (NEW) | **0-2%** | **Overbought/oversold with crossovers (swing weighted)** |
+
+**Note**: Weights are customized per trader profile. The table above shows default weights. See `/profiles` endpoint for profile-specific weights.
 
 **Enhanced Features**:
 - **MACD Crossover Detection**: +20 points for bullish crossover (strong entry signal)
@@ -608,33 +946,51 @@ The recommendation engine uses a comprehensive weighted scoring system with **13
 - **Bollinger Squeeze**: +5 points for potential breakout setups
 - **ATR-Based Stop Losses**: Dynamic stops based on volatility (2x ATR for swing trades)
 
-**Recommendation Thresholds**:
-- **BUY**: Confidence ≥ 65%
-- **NO_BUY**: Confidence < 65%
+**Recommendation Thresholds** (profile-specific):
+| Profile | BUY Threshold |
+|---------|---------------|
+| Day Trader | ≥ 70% |
+| Swing Trader | ≥ 65% |
+| Position Trader | ≥ 65% |
+| Long-Term Investor | ≥ 60% |
+| Default (no profile) | ≥ 65% |
 
 ## Trade Plan Generation
 
-When a BUY recommendation is issued, the system generates a detailed trade plan:
+When a BUY recommendation is issued, the system generates a detailed trade plan customized to the trader profile:
 
-1. **Trade Type Determination**:
-   - **Long**: Strong multi-timeframe uptrend (EMA 9 > 20 > 50)
-   - **Swing**: Moderate trend alignment (days to weeks)
-   - **Day**: Short-term momentum only (intraday)
+1. **Trade Type Determination** (profile-based):
+   - **Day Trader**: Always generates day trades
+   - **Swing Trader**: Multi-day swing trades
+   - **Position Trader**: Swing or long positions
+   - **Long-Term Investor**: Long positions only
+   - **Default**: Based on market structure (EMA alignment)
 
 2. **Entry Price**: Slightly below current price (0.2%) for better entry
 
-3. **Stop Loss** (ATR-Based - Professional Approach):
-   - Primary: ATR-based (1.5x ATR for day trades, 2x ATR for swing trades)
-   - Secondary: Below nearest strong support level
-   - Fallback: 2-3% below entry if no ATR data
+3. **Stop Loss** (Profile-Specific Methods):
+   | Profile | Stop Method | ATR Multiplier |
+   |---------|-------------|----------------|
+   | Day Trader | ATR-based | 1.5x (tight) |
+   | Swing Trader | Structure-based | 2.0x |
+   | Position Trader | Structure-based | 2.5x |
+   | Long-Term | Percentage-based | 3.0x (wide) |
 
-4. **Price Targets**:
-   - Based on resistance levels or risk/reward ratios (1.5:1, 2.5:1, 3.5:1)
-   - Up to 3 targets for scaling out
+4. **Price Targets** (Profile-Specific Methods):
+   | Profile | Target Method | R:R Ratios |
+   |---------|---------------|------------|
+   | Day Trader | R:R Ratio | 1.0, 1.5, 2.0 |
+   | Swing Trader | Fibonacci Extensions | 1.5, 2.5, 3.5 |
+   | Position Trader | Structure-based | 2.0, 3.0, 5.0 |
+   | Long-Term | Structure-based | 3.0, 5.0, 10.0 |
 
-5. **Position Sizing**:
-   - Risk-based: 1% of account at risk per trade
-   - Respects maximum position size (20% of account)
+5. **Position Sizing** (Profile-Specific):
+   | Profile | Risk % | Max Position |
+   |---------|--------|--------------|
+   | Day Trader | 0.5% | 15% |
+   | Swing Trader | 1.0% | 20% |
+   | Position Trader | 1.5% | 25% |
+   | Long-Term | 2.0% | 30% |
 
 ## Testing
 
@@ -769,7 +1125,7 @@ ALPACA_BASE_URL=https://api.alpaca.markets  # Live trading
 
 ### Future Enhancements
 
-- [ ] Real-time WebSocket streaming for live price updates
+- [x] ~~Real-time WebSocket streaming for live price updates~~ ✅ **Implemented with AlgoTrader Plus!**
 - [ ] Portfolio management and tracking
 - [ ] Advanced AI/ML models for prediction (use_ai flag)
 - [ ] Multi-asset support (crypto, forex, commodities)

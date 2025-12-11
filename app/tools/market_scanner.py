@@ -21,7 +21,7 @@ from typing import List, Dict, Literal, Optional
 from datetime import datetime, timedelta
 import logging
 
-from app.tools.market_data import fetch_price_bars
+from app.tools.market_data import fetch_price_bars, fetch_snapshots
 from app.tools.indicators import calculate_ema, calculate_rsi, analyze_volume
 from app.tools.analysis import run_analysis
 
@@ -479,5 +479,176 @@ def run_market_scan(
             "top_sectors": top_sectors,
             "stocks_per_sector": stocks_per_sector,
         },
+        "timestamp": datetime.utcnow(),
+    }
+
+
+def get_quick_market_status() -> Dict:
+    """Get quick market status using real-time snapshots.
+
+    This is a fast version of market overview that uses the batch snapshots API
+    to get real-time prices for all market indices in a single API call.
+    It provides instant price data but without full indicator analysis.
+
+    With AlgoTrader Plus, this provides real-time data from the SIP feed.
+
+    Returns:
+        Dictionary containing:
+        - indices: Real-time price data for major indices
+        - market_direction: Quick assessment (up/down/mixed)
+        - timestamp: Current timestamp
+
+    Example:
+        >>> status = get_quick_market_status()
+        >>> print(f"Market: {status['market_direction']}")
+        >>> for idx in status['indices']:
+        >>>     print(f"{idx['name']}: ${idx['price']:.2f} ({idx['change_pct']:+.2f}%)")
+    """
+    logger.info("Fetching quick market status via snapshots")
+
+    symbols = list(MARKET_INDICES.keys())
+
+    try:
+        snapshots = fetch_snapshots(symbols)
+    except Exception as e:
+        logger.error(f"Error fetching snapshots: {e}")
+        return {"error": str(e), "timestamp": datetime.utcnow()}
+
+    indices_data = []
+    up_count = 0
+    down_count = 0
+
+    for symbol, name in MARKET_INDICES.items():
+        snapshot = snapshots.get(symbol)
+        if not snapshot or not snapshot.get("daily_bar") or not snapshot.get("prev_daily_bar"):
+            continue
+
+        daily = snapshot["daily_bar"]
+        prev = snapshot["prev_daily_bar"]
+
+        current_price = daily["close"]
+        prev_close = prev["close"]
+        change = current_price - prev_close
+        change_pct = (change / prev_close) * 100
+
+        if change_pct > 0:
+            up_count += 1
+        elif change_pct < 0:
+            down_count += 1
+
+        # Get real-time quote data
+        quote = snapshot.get("latest_quote")
+        trade = snapshot.get("latest_trade")
+
+        indices_data.append({
+            "symbol": symbol,
+            "name": name,
+            "price": round(current_price, 2),
+            "change": round(change, 2),
+            "change_pct": round(change_pct, 2),
+            "day_high": round(daily["high"], 2),
+            "day_low": round(daily["low"], 2),
+            "day_volume": daily["volume"],
+            "bid": quote["bid_price"] if quote else None,
+            "ask": quote["ask_price"] if quote else None,
+            "last_trade_price": trade["price"] if trade else None,
+        })
+
+    # Determine market direction
+    if up_count > down_count:
+        market_direction = "up"
+    elif down_count > up_count:
+        market_direction = "down"
+    else:
+        market_direction = "mixed"
+
+    avg_change = sum(idx["change_pct"] for idx in indices_data) / len(indices_data) if indices_data else 0
+
+    logger.info(f"Quick market status: {market_direction} (avg: {avg_change:+.2f}%)")
+
+    return {
+        "indices": indices_data,
+        "market_direction": market_direction,
+        "up_count": up_count,
+        "down_count": down_count,
+        "average_change_pct": round(avg_change, 2),
+        "timestamp": datetime.utcnow(),
+    }
+
+
+def get_quick_sector_status() -> Dict:
+    """Get quick sector status using real-time snapshots.
+
+    This is a fast version of sector performance that uses the batch snapshots API
+    to get real-time prices for all sector ETFs in a single API call.
+
+    With AlgoTrader Plus, this provides real-time data from the SIP feed.
+
+    Returns:
+        Dictionary containing:
+        - sectors: Real-time price data for all sectors
+        - leading: Top 3 sectors by daily change
+        - lagging: Bottom 3 sectors by daily change
+        - timestamp: Current timestamp
+
+    Example:
+        >>> status = get_quick_sector_status()
+        >>> print(f"Leading: {status['leading']}")
+        >>> for sector in status['sectors'][:5]:
+        >>>     print(f"{sector['name']}: {sector['change_pct']:+.2f}%")
+    """
+    logger.info("Fetching quick sector status via snapshots")
+
+    symbols = list(SECTOR_ETFS.keys())
+
+    try:
+        snapshots = fetch_snapshots(symbols)
+    except Exception as e:
+        logger.error(f"Error fetching snapshots: {e}")
+        return {"error": str(e), "timestamp": datetime.utcnow()}
+
+    sectors_data = []
+
+    for symbol, name in SECTOR_ETFS.items():
+        snapshot = snapshots.get(symbol)
+        if not snapshot or not snapshot.get("daily_bar") or not snapshot.get("prev_daily_bar"):
+            continue
+
+        daily = snapshot["daily_bar"]
+        prev = snapshot["prev_daily_bar"]
+
+        current_price = daily["close"]
+        prev_close = prev["close"]
+        change = current_price - prev_close
+        change_pct = (change / prev_close) * 100
+
+        quote = snapshot.get("latest_quote")
+
+        sectors_data.append({
+            "symbol": symbol,
+            "name": name,
+            "price": round(current_price, 2),
+            "change": round(change, 2),
+            "change_pct": round(change_pct, 2),
+            "day_high": round(daily["high"], 2),
+            "day_low": round(daily["low"], 2),
+            "day_volume": daily["volume"],
+            "bid": quote["bid_price"] if quote else None,
+            "ask": quote["ask_price"] if quote else None,
+        })
+
+    # Sort by change percentage
+    sectors_data.sort(key=lambda x: x["change_pct"], reverse=True)
+
+    leading = [s["name"] for s in sectors_data[:3]] if sectors_data else []
+    lagging = [s["name"] for s in sectors_data[-3:]] if sectors_data else []
+
+    logger.info(f"Quick sector status: Leading={leading}")
+
+    return {
+        "sectors": sectors_data,
+        "leading": leading,
+        "lagging": lagging,
+        "total_sectors": len(sectors_data),
         "timestamp": datetime.utcnow(),
     }

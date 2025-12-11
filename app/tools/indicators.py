@@ -981,3 +981,279 @@ def detect_divergences(
             "price_swing_lows_count": len(price_lows),
         }
     )
+
+
+def calculate_adx(
+    price_bars: List[PriceBar],
+    period: int = 14,
+) -> Indicator:
+    """Calculate Average Directional Index (ADX) for trend strength.
+
+    ADX measures trend strength regardless of direction:
+    - ADX < 20: Weak trend or ranging market (avoid trend-following strategies)
+    - ADX 20-25: Trend emerging
+    - ADX 25-50: Strong trend (ideal for trend-following)
+    - ADX > 50: Very strong trend (may be extended)
+
+    Also calculates +DI and -DI for directional bias.
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        period: ADX period (default: 14)
+
+    Returns:
+        Indicator object with ADX value and trend strength assessment
+
+    Raises:
+        ValueError: If price_bars is empty or insufficient
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 50)
+        >>> adx = calculate_adx(bars)
+        >>> if adx.value > 25 and adx.metadata['plus_di'] > adx.metadata['minus_di']:
+        >>>     print("Strong uptrend - trend-following strategies work well")
+    """
+    logger.info(f"Calculating ADX({period}) for {len(price_bars)} bars")
+
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    if len(price_bars) < period * 2:
+        raise ValueError(f"Need at least {period * 2} bars for ADX({period})")
+
+    highs = np.array([bar.high for bar in price_bars])
+    lows = np.array([bar.low for bar in price_bars])
+    closes = np.array([bar.close for bar in price_bars])
+
+    # Calculate +DM and -DM
+    plus_dm = np.zeros(len(highs))
+    minus_dm = np.zeros(len(highs))
+
+    for i in range(1, len(highs)):
+        up_move = highs[i] - highs[i - 1]
+        down_move = lows[i - 1] - lows[i]
+
+        if up_move > down_move and up_move > 0:
+            plus_dm[i] = up_move
+        if down_move > up_move and down_move > 0:
+            minus_dm[i] = down_move
+
+    # Calculate True Range
+    tr = np.zeros(len(highs))
+    for i in range(1, len(highs)):
+        tr[i] = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+
+    # Smooth with Wilder's smoothing (similar to EMA)
+    def wilders_smooth(data: np.ndarray, period: int) -> np.ndarray:
+        """Apply Wilder's smoothing method."""
+        smoothed = np.zeros(len(data))
+        smoothed[period] = np.sum(data[1 : period + 1])
+        for i in range(period + 1, len(data)):
+            smoothed[i] = smoothed[i - 1] - (smoothed[i - 1] / period) + data[i]
+        return smoothed
+
+    smoothed_tr = wilders_smooth(tr, period)
+    smoothed_plus_dm = wilders_smooth(plus_dm, period)
+    smoothed_minus_dm = wilders_smooth(minus_dm, period)
+
+    # Calculate +DI and -DI
+    plus_di = np.zeros(len(highs))
+    minus_di = np.zeros(len(highs))
+
+    for i in range(period, len(highs)):
+        if smoothed_tr[i] > 0:
+            plus_di[i] = 100 * smoothed_plus_dm[i] / smoothed_tr[i]
+            minus_di[i] = 100 * smoothed_minus_dm[i] / smoothed_tr[i]
+
+    # Calculate DX
+    dx = np.zeros(len(highs))
+    for i in range(period, len(highs)):
+        di_sum = plus_di[i] + minus_di[i]
+        if di_sum > 0:
+            dx[i] = 100 * abs(plus_di[i] - minus_di[i]) / di_sum
+
+    # Calculate ADX (smoothed DX)
+    adx = wilders_smooth(dx, period)
+
+    current_adx = float(adx[-1])
+    current_plus_di = float(plus_di[-1])
+    current_minus_di = float(minus_di[-1])
+
+    # Determine trend strength
+    if current_adx < 20:
+        trend_strength = "weak"
+        signal = "neutral"
+    elif current_adx < 25:
+        trend_strength = "emerging"
+        signal = "bullish" if current_plus_di > current_minus_di else "bearish"
+    elif current_adx < 50:
+        trend_strength = "strong"
+        signal = "bullish" if current_plus_di > current_minus_di else "bearish"
+    else:
+        trend_strength = "very_strong"
+        signal = "neutral"  # May be extended, be cautious
+
+    # Determine trend direction
+    if current_plus_di > current_minus_di:
+        trend_direction = "bullish"
+    elif current_minus_di > current_plus_di:
+        trend_direction = "bearish"
+    else:
+        trend_direction = "neutral"
+
+    logger.info(
+        f"ADX({period}): {current_adx:.1f} ({trend_strength}), "
+        f"+DI: {current_plus_di:.1f}, -DI: {current_minus_di:.1f}"
+    )
+
+    return Indicator(
+        name=f"ADX_{period}",
+        value=round(current_adx, 2),
+        signal=signal,
+        metadata={
+            "period": period,
+            "plus_di": round(current_plus_di, 2),
+            "minus_di": round(current_minus_di, 2),
+            "trend_strength": trend_strength,
+            "trend_direction": trend_direction,
+            "is_trending": current_adx >= 25,
+        },
+    )
+
+
+def calculate_stochastic(
+    price_bars: List[PriceBar],
+    k_period: int = 14,
+    d_period: int = 3,
+    smooth_k: int = 3,
+) -> Indicator:
+    """Calculate Stochastic Oscillator (%K and %D).
+
+    Stochastic measures where the close is relative to the high-low range:
+    - Overbought: %K > 80 (potential reversal down)
+    - Oversold: %K < 20 (potential reversal up)
+    - Bullish crossover: %K crosses above %D in oversold zone
+    - Bearish crossover: %K crosses below %D in overbought zone
+
+    Best used in ranging markets or for timing entries in trending markets.
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        k_period: Lookback period for %K (default: 14)
+        d_period: Smoothing period for %D (default: 3)
+        smooth_k: Smoothing for slow stochastic (default: 3)
+
+    Returns:
+        Indicator object with stochastic values and trading signal
+
+    Raises:
+        ValueError: If price_bars is empty or insufficient
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 50)
+        >>> stoch = calculate_stochastic(bars)
+        >>> if stoch.metadata['bullish_crossover'] and stoch.value < 30:
+        >>>     print("Bullish reversal signal - oversold with crossover")
+    """
+    logger.info(
+        f"Calculating Stochastic({k_period}, {d_period}, {smooth_k}) "
+        f"for {len(price_bars)} bars"
+    )
+
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    min_bars = k_period + d_period + smooth_k
+    if len(price_bars) < min_bars:
+        raise ValueError(f"Need at least {min_bars} bars for Stochastic")
+
+    highs = np.array([bar.high for bar in price_bars])
+    lows = np.array([bar.low for bar in price_bars])
+    closes = np.array([bar.close for bar in price_bars])
+
+    # Calculate raw %K
+    raw_k = np.zeros(len(closes))
+    for i in range(k_period - 1, len(closes)):
+        period_high = np.max(highs[i - k_period + 1 : i + 1])
+        period_low = np.min(lows[i - k_period + 1 : i + 1])
+
+        if period_high != period_low:
+            raw_k[i] = 100 * (closes[i] - period_low) / (period_high - period_low)
+        else:
+            raw_k[i] = 50  # Neutral if no range
+
+    # Smooth %K for "slow stochastic"
+    slow_k = pd.Series(raw_k).rolling(window=smooth_k).mean().values
+
+    # Calculate %D (signal line)
+    slow_d = pd.Series(slow_k).rolling(window=d_period).mean().values
+
+    current_k = float(slow_k[-1]) if not np.isnan(slow_k[-1]) else 50
+    current_d = float(slow_d[-1]) if not np.isnan(slow_d[-1]) else 50
+    prev_k = (
+        float(slow_k[-2])
+        if len(slow_k) > 1 and not np.isnan(slow_k[-2])
+        else current_k
+    )
+    prev_d = (
+        float(slow_d[-2])
+        if len(slow_d) > 1 and not np.isnan(slow_d[-2])
+        else current_d
+    )
+
+    # Detect crossovers
+    bullish_crossover = prev_k <= prev_d and current_k > current_d
+    bearish_crossover = prev_k >= prev_d and current_k < current_d
+
+    # Determine signal
+    if current_k < 20:
+        if bullish_crossover:
+            signal = "bullish"
+            interpretation = "oversold_crossover"
+        else:
+            signal = "bullish"  # Oversold is generally bullish
+            interpretation = "oversold"
+    elif current_k > 80:
+        if bearish_crossover:
+            signal = "bearish"
+            interpretation = "overbought_crossover"
+        else:
+            signal = "bearish"  # Overbought is generally bearish
+            interpretation = "overbought"
+    elif bullish_crossover:
+        signal = "bullish"
+        interpretation = "bullish_crossover"
+    elif bearish_crossover:
+        signal = "bearish"
+        interpretation = "bearish_crossover"
+    else:
+        signal = "neutral"
+        interpretation = "neutral"
+
+    logger.info(
+        f"Stochastic: %K={current_k:.1f}, %D={current_d:.1f}, "
+        f"Signal: {signal}, "
+        f"Crossover: {'bullish' if bullish_crossover else 'bearish' if bearish_crossover else 'none'}"
+    )
+
+    return Indicator(
+        name="Stochastic",
+        value=round(current_k, 2),
+        signal=signal,
+        metadata={
+            "k_period": k_period,
+            "d_period": d_period,
+            "smooth_k": smooth_k,
+            "percent_k": round(current_k, 2),
+            "percent_d": round(current_d, 2),
+            "bullish_crossover": bullish_crossover,
+            "bearish_crossover": bearish_crossover,
+            "interpretation": interpretation,
+            "is_oversold": current_k < 20,
+            "is_overbought": current_k > 80,
+        },
+    )

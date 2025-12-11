@@ -119,3 +119,82 @@ class MarketSnapshot(BaseModel):
     indicators: List[Indicator] = Field(default_factory=list)
     pivots: List[StructuralPivot] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================================================
+# AlgoTrader Plus Real-Time Data Models
+# ============================================================================
+
+
+class Quote(BaseModel):
+    """Real-time bid/ask quote data.
+
+    Represents the current best bid and ask prices from the market.
+    With AlgoTrader Plus, this data comes from the SIP feed (all US exchanges).
+
+    Attributes:
+        symbol: Stock ticker symbol
+        bid_price: Current best bid price
+        ask_price: Current best ask price
+        bid_size: Number of shares at best bid
+        ask_size: Number of shares at best ask
+        spread: Absolute spread (ask - bid)
+        spread_pct: Spread as percentage of mid price
+        mid_price: Midpoint between bid and ask
+        timestamp: Quote timestamp
+    """
+
+    symbol: str
+    bid_price: float = Field(ge=0)
+    ask_price: float = Field(ge=0)
+    bid_size: int = Field(ge=0)
+    ask_size: int = Field(ge=0)
+    spread: float = Field(ge=0)
+    spread_pct: float = Field(ge=0)
+    mid_price: float = Field(ge=0)
+    timestamp: Optional[datetime] = None
+
+
+class Trade(BaseModel):
+    """Real-time trade execution data.
+
+    Represents the most recent trade execution from the market.
+    With AlgoTrader Plus, this data comes from the SIP feed (all US exchanges).
+
+    Attributes:
+        symbol: Stock ticker symbol
+        price: Trade execution price
+        size: Number of shares traded
+        exchange: Exchange where trade occurred
+        timestamp: Trade timestamp
+        conditions: Trade conditions/flags (if available)
+    """
+
+    symbol: str
+    price: float = Field(gt=0)
+    size: int = Field(ge=0)
+    exchange: Optional[str] = None
+    timestamp: Optional[datetime] = None
+    conditions: List[str] = Field(default_factory=list)
+
+
+class RealTimeSnapshot(BaseModel):
+    """Complete real-time snapshot from AlgoTrader Plus.
+
+    Contains latest quote, latest trade, current daily bar, and previous
+    daily bar for a symbol. This is more efficient than fetching each
+    piece of data separately.
+
+    Attributes:
+        symbol: Stock ticker symbol
+        latest_quote: Most recent bid/ask quote
+        latest_trade: Most recent trade execution
+        daily_bar: Current day's OHLCV bar
+        prev_daily_bar: Previous day's OHLCV bar
+    """
+
+    symbol: str
+    latest_quote: Optional[Quote] = None
+    latest_trade: Optional[Trade] = None
+    daily_bar: Optional[PriceBar] = None
+    prev_daily_bar: Optional[PriceBar] = None

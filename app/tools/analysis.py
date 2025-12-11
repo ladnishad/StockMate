@@ -18,7 +18,7 @@ from app.models.data import (
     MarketSnapshot,
 )
 from app.models.response import AnalysisResponse, TradePlan
-from app.tools.market_data import fetch_price_bars, fetch_fundamentals, fetch_sentiment
+from app.tools.market_data import fetch_price_bars, fetch_fundamentals, fetch_sentiment, fetch_latest_quote
 from app.tools.indicators import (
     calculate_vwap,
     calculate_ema,
@@ -1171,16 +1171,29 @@ def generate_trade_plan(
     snapshot: MarketSnapshot,
     account_size: float,
     risk_percentage: float = 1.0,
+    use_live_quote: bool = True,
+    profile: Optional["TraderProfile"] = None,
 ) -> Optional[TradePlan]:
     """Generate a trade plan based on market snapshot.
 
     This tool analyzes the market snapshot and generates a detailed trade plan
     including entry, stop loss, targets, and position sizing.
 
+    With AlgoTrader Plus, this function can optionally fetch real-time bid/ask
+    quotes for more accurate entry pricing and spread analysis.
+
+    When a trader profile is provided, the trade plan is customized:
+    - Stop method: ATR-based, structure-based, or percentage-based
+    - Target method: R:R ratios, resistance levels, or Fibonacci extensions
+    - Risk parameters: Profile-specific risk % and position limits
+    - Trade type: Aligned with profile's allowed trade types
+
     Args:
         snapshot: MarketSnapshot containing all market data
         account_size: Total account size in dollars
         risk_percentage: Percentage of account to risk per trade (default: 1%)
+        use_live_quote: Whether to fetch real-time quote for entry price (default: True)
+        profile: Optional TraderProfile for customized trade planning
 
     Returns:
         TradePlan object if conditions are favorable, None otherwise
@@ -1190,14 +1203,15 @@ def generate_trade_plan(
 
     Example:
         >>> snapshot = build_snapshot("AAPL")
-        >>> trade_plan = generate_trade_plan(snapshot, account_size=10000)
+        >>> trade_plan = generate_trade_plan(snapshot, account_size=10000, use_live_quote=True)
         >>> if trade_plan:
         ...     print(f"Trade Type: {trade_plan.trade_type}")
         ...     print(f"Entry: ${trade_plan.entry_price:.2f}")
         ...     print(f"Stop: ${trade_plan.stop_loss:.2f}")
         ...     print(f"Position Size: {trade_plan.position_size} shares")
     """
-    logger.info(f"Generating trade plan for {snapshot.symbol}")
+    profile_name = profile.name if profile else "default"
+    logger.info(f"Generating trade plan for {snapshot.symbol} (profile: {profile_name})")
 
     if account_size <= 0:
         raise ValueError("account_size must be > 0")
@@ -1206,6 +1220,27 @@ def generate_trade_plan(
         raise ValueError("risk_percentage must be between 0 and 100")
 
     current_price = snapshot.current_price
+    live_quote = None
+    spread_warning = None
+
+    # Try to fetch real-time quote for better entry pricing
+    if use_live_quote:
+        try:
+            live_quote = fetch_latest_quote(snapshot.symbol)
+            if live_quote:
+                # Use mid-price as reference, ask price for entry
+                current_price = live_quote["mid_price"]
+
+                # Check spread and warn if too wide
+                spread_pct = live_quote["spread_pct"]
+                if spread_pct > 0.5:  # Spread > 0.5%
+                    spread_warning = f"Wide spread ({spread_pct:.2f}%)"
+                    logger.warning(f"{snapshot.symbol} has wide spread: {spread_pct:.2f}%")
+
+                logger.info(f"Using live quote for {snapshot.symbol}: bid=${live_quote['bid_price']:.2f} ask=${live_quote['ask_price']:.2f} spread={spread_pct:.3f}%")
+        except Exception as e:
+            logger.warning(f"Could not fetch live quote for {snapshot.symbol}: {e}. Using historical price.")
+            live_quote = None
 
     # Find nearest support and resistance levels
     supports = [p for p in snapshot.pivots if p.type == "support" and p.price < current_price]
@@ -1215,49 +1250,88 @@ def generate_trade_plan(
     supports.sort(key=lambda x: current_price - x.price)
     resistances.sort(key=lambda x: x.price - current_price)
 
-    # Determine trade type based on market structure and indicators
-    # Get EMAs
+    # Determine trade type based on profile or market structure
+    # Get EMAs for trend analysis
     ema_9 = next((i for i in snapshot.indicators if i.name == "EMA_9"), None)
     ema_20 = next((i for i in snapshot.indicators if i.name == "EMA_20"), None)
     ema_50 = next((i for i in snapshot.indicators if i.name == "EMA_50"), None)
 
-    # Determine trend and trade type
-    if ema_9 and ema_20 and ema_50:
-        if ema_9.value > ema_20.value > ema_50.value:
-            # Strong uptrend - prefer swing/long
-            if current_price > ema_9.value * 1.02:
+    # If profile specified, use profile's preferred trade type
+    if profile:
+        # Use the first allowed trade type from the profile
+        trade_type = profile.allowed_trade_types[0]
+    else:
+        # Determine trend and trade type from market structure
+        if ema_9 and ema_20 and ema_50:
+            if ema_9.value > ema_20.value > ema_50.value:
+                # Strong uptrend - prefer swing/long
+                if current_price > ema_9.value * 1.02:
+                    trade_type = "swing"
+                else:
+                    trade_type = "long"
+            elif ema_9.value > ema_20.value:
+                # Moderate uptrend - swing trade
                 trade_type = "swing"
             else:
-                trade_type = "long"
-        elif ema_9.value > ema_20.value:
-            # Moderate uptrend - swing trade
-            trade_type = "swing"
+                # Short-term momentum - day trade
+                trade_type = "day"
         else:
-            # Short-term momentum - day trade
-            trade_type = "day"
-    else:
-        # Default to swing if we can't determine trend
-        trade_type = "swing"
+            # Default to swing if we can't determine trend
+            trade_type = "swing"
 
-    # Set entry price (current price or slightly below for better entry)
-    entry_price = current_price * 0.998  # 0.2% below current
+    # Get profile-specific parameters or defaults
+    if profile:
+        stop_method = profile.risk.stop_method
+        atr_multiplier = profile.risk.atr_multiplier
+        max_position_pct = profile.risk.max_position_percent
+        target_method = profile.targets.method
+        rr_ratios = profile.targets.rr_ratios
+        validate_targets = profile.targets.validate_against_resistance
+        use_fib_extensions = profile.targets.use_fibonacci_extensions
+    else:
+        stop_method = "atr"
+        atr_multiplier = 2.0
+        max_position_pct = 20.0
+        target_method = "rr_ratio"
+        rr_ratios = [1.5, 2.5, 3.5]
+        validate_targets = True
+        use_fib_extensions = False
+
+    # Set entry price based on live quote or historical data
+    if live_quote:
+        # Use ask price for market buy, or mid-price minus small buffer for limit order
+        entry_price = live_quote["ask_price"]  # Use ask for guaranteed fill
+    else:
+        # Fallback: use current price minus small buffer
+        entry_price = current_price * 0.998  # 0.2% below current
 
     # Get ATR for volatility-based stop loss
     atr_indicator = next((i for i in snapshot.indicators if i.name.startswith("ATR")), None)
 
-    # Set stop loss based on ATR (professional approach) or nearest support
-    if atr_indicator:
-        # Use ATR-based stop loss (2x ATR for swing, 1.5x for day trades)
+    # Set stop loss based on profile's stop method
+    if stop_method == "atr" and atr_indicator:
+        # Use ATR-based stop loss with profile's multiplier
         atr_value = atr_indicator.value
-        atr_multiplier = 1.5 if trade_type == "day" else 2.0
         atr_stop_distance = atr_value * atr_multiplier
         stop_loss = entry_price - atr_stop_distance
 
         # If we have support nearby, use the better of the two
         if supports and supports[0].price > stop_loss:
             stop_loss = supports[0].price * 0.995  # Support with buffer
+    elif stop_method == "structure" and supports:
+        # Structure-based: use nearest support level
+        stop_loss = supports[0].price * 0.995  # 0.5% below support
+    elif stop_method == "percentage":
+        # Percentage-based stop
+        stop_pct = 0.02 if trade_type == "day" else 0.03 if trade_type == "swing" else 0.05
+        stop_loss = entry_price * (1 - stop_pct)
+    elif atr_indicator:
+        # Default fallback to ATR if available
+        atr_value = atr_indicator.value
+        atr_stop_distance = atr_value * atr_multiplier
+        stop_loss = entry_price - atr_stop_distance
     else:
-        # Fallback: use support or percentage-based
+        # Final fallback: use support or percentage-based
         if supports:
             stop_loss = supports[0].price * 0.995
         else:
@@ -1277,8 +1351,8 @@ def generate_trade_plan(
     risk_amount = account_size * (risk_percentage / 100)
     position_size = int(risk_amount / risk_per_share)
 
-    # Ensure position size is reasonable
-    max_position_value = account_size * 0.2  # Max 20% of account
+    # Ensure position size is reasonable using profile's max position
+    max_position_value = account_size * (max_position_pct / 100)
     max_shares = int(max_position_value / entry_price)
     position_size = min(position_size, max_shares)
 
@@ -1286,21 +1360,49 @@ def generate_trade_plan(
         logger.warning(f"Position size too small for {snapshot.symbol}")
         return None
 
-    # Set price targets based on resistance levels or R:R ratios
+    # Set price targets based on profile's target method
     targets = []
 
-    if resistances:
-        # Use actual resistance levels
-        for i, resistance in enumerate(resistances[:3]):
+    # Calculate Fibonacci levels if needed for targets
+    fib_indicator = None
+    if use_fib_extensions or target_method == "fibonacci":
+        try:
+            fib_indicator = calculate_fibonacci_levels(snapshot.price_bars_1d)
+        except Exception as e:
+            logger.warning(f"Could not calculate Fibonacci for targets: {e}")
+
+    if target_method == "fibonacci" and fib_indicator:
+        # Use Fibonacci extension levels
+        extensions = fib_indicator.metadata.get("extension", {})
+        for level_name in ["1.272", "1.618", "2.000"]:
+            if level_name in extensions and extensions[level_name] > entry_price:
+                targets.append(extensions[level_name])
+    elif target_method == "structure" and resistances:
+        # Use resistance levels
+        for resistance in resistances[:3]:
             if resistance.price > entry_price:
                 targets.append(resistance.price)
 
-    # Fill in targets with R:R ratios if we don't have enough resistance levels
-    risk_reward_ratios = [1.5, 2.5, 3.5]
-    for i, rr in enumerate(risk_reward_ratios):
+    # Fill in targets with R:R ratios if we don't have enough levels
+    for i, rr in enumerate(rr_ratios):
         if len(targets) <= i:
             target = entry_price + (risk_per_share * rr)
             targets.append(target)
+
+    # Validate targets against resistance if configured
+    if validate_targets and resistances:
+        try:
+            validation = validate_targets_against_structure(
+                targets=targets,
+                current_price=entry_price,
+                resistances=list(resistances),
+                fibonacci_indicator=fib_indicator,
+            )
+            if validation["warnings"]:
+                for warning in validation["warnings"]:
+                    logger.warning(warning)
+        except Exception as e:
+            logger.warning(f"Could not validate targets: {e}")
 
     trade_plan = TradePlan(
         trade_type=trade_type,
@@ -1314,20 +1416,35 @@ def generate_trade_plan(
         risk_percentage=risk_percentage,
     )
 
-    logger.info(f"Generated trade plan for {snapshot.symbol}: {trade_type} trade, {position_size} shares")
+    quote_source = "live quote" if live_quote else "historical"
+    spread_info = f" [{spread_warning}]" if spread_warning else ""
+    logger.info(f"Generated trade plan for {snapshot.symbol}: {trade_type} trade, {position_size} shares (entry from {quote_source}){spread_info}")
     return trade_plan
 
 
-def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> AnalysisResponse:
+def run_analysis(
+    symbol: str,
+    account_size: float,
+    use_ai: bool = False,
+    trader_profile: Optional[str] = None,
+) -> AnalysisResponse:
     """Run complete stock analysis and generate trading recommendation.
 
     This is the main orchestration function that ties together all analysis tools
     to produce a final BUY or NO_BUY recommendation with detailed trade plan.
 
+    When a trader profile is specified, the analysis is customized:
+    - Scoring weights are adjusted based on the profile's trading style
+    - Profile-specific indicators (ADX, Stochastic, Fibonacci) are included
+    - Risk parameters and thresholds are profile-specific
+    - Trade plans use profile-appropriate stop/target methods
+
     Args:
         symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
         account_size: Total account size in dollars
         use_ai: Whether to use AI-enhanced analysis (future feature)
+        trader_profile: Optional profile name ('day_trader', 'swing_trader',
+                        'position_trader', 'long_term_investor')
 
     Returns:
         AnalysisResponse object with recommendation and trade plan
@@ -1337,15 +1454,25 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
         Exception: If analysis fails
 
     Example:
-        >>> result = run_analysis("AAPL", account_size=10000)
+        >>> result = run_analysis("AAPL", account_size=10000, trader_profile="swing_trader")
         >>> print(f"Recommendation: {result.recommendation}")
         >>> print(f"Confidence: {result.confidence:.1f}%")
         >>> if result.trade_plan:
         ...     print(f"Entry: ${result.trade_plan.entry_price:.2f}")
     """
-    logger.info(f"Running analysis for {symbol} (account: ${account_size:.2f})")
+    logger.info(
+        f"Running analysis for {symbol} (account: ${account_size:.2f}, "
+        f"profile: {trader_profile or 'default'})"
+    )
 
     try:
+        # Load profile if specified
+        profile = None
+        if trader_profile:
+            from app.models.profile_presets import get_profile
+            profile = get_profile(trader_profile)
+            logger.info(f"Using trader profile: {profile.name}")
+
         # Build market snapshot
         snapshot = build_snapshot(symbol)
 
@@ -1353,26 +1480,57 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
         # True percentage-based weights that sum to 100%.
         # Each factor contributes a percentage of the final score.
         # Starting from 0, factors add/subtract their weighted percentages.
-        # Final score clamped to [0,100] with 65%+ triggering BUY recommendation.
+        # Final score clamped to [0,100] with threshold triggering BUY recommendation.
         score = 0  # Start at 0
         reasons = []
 
-        # Weight configuration (percentages that sum to 100%)
-        # Total: 100.0% distributed across 12 active factors
-        WEIGHTS = {
-            "sentiment": 10.26,      # Sentiment strength
-            "ema_trend": 12.82,      # Trend alignment (most important)
-            "rsi": 7.69,             # Momentum oscillator
-            "vwap": 7.69,            # Institutional positioning
-            "volume": 10.26,         # Volume confirmation (critical)
-            "macd": 10.26,           # Momentum and crossovers
-            "bollinger": 7.69,       # Volatility bands
-            "multi_tf": 7.69,        # Multi-timeframe confluence
-            "support_resistance": 5.13,  # Key levels
-            "divergence": 7.69,      # Reversal signals
-            "volume_profile": 5.13,  # Institutional volume
-            "chart_patterns": 7.69,  # Pattern recognition
-        }
+        # Get weights from profile or use defaults
+        if profile:
+            WEIGHTS = {
+                "sentiment": profile.weights.sentiment,
+                "ema_trend": profile.weights.ema_trend,
+                "rsi": profile.weights.rsi,
+                "vwap": profile.weights.vwap,
+                "volume": profile.weights.volume,
+                "macd": profile.weights.macd,
+                "bollinger": profile.weights.bollinger,
+                "multi_tf": profile.weights.multi_tf,
+                "support_resistance": profile.weights.support_resistance,
+                "divergence": profile.weights.divergence,
+                "volume_profile": profile.weights.volume_profile,
+                "chart_patterns": profile.weights.chart_patterns,
+                "fibonacci": profile.weights.fibonacci,
+                "adx": profile.weights.adx,
+                "stochastic": profile.weights.stochastic,
+            }
+            confidence_threshold = profile.buy_confidence_threshold
+            rsi_overbought = profile.rsi_overbought
+            rsi_oversold = profile.rsi_oversold
+            adx_threshold = profile.adx_trend_threshold
+        else:
+            # Default weights (percentages that sum to 100%)
+            # Total: 100.0% distributed across 12 active factors
+            WEIGHTS = {
+                "sentiment": 10.26,      # Sentiment strength
+                "ema_trend": 12.82,      # Trend alignment (most important)
+                "rsi": 7.69,             # Momentum oscillator
+                "vwap": 7.69,            # Institutional positioning
+                "volume": 10.26,         # Volume confirmation (critical)
+                "macd": 10.26,           # Momentum and crossovers
+                "bollinger": 7.69,       # Volatility bands
+                "multi_tf": 7.69,        # Multi-timeframe confluence
+                "support_resistance": 5.13,  # Key levels
+                "divergence": 7.69,      # Reversal signals
+                "volume_profile": 5.13,  # Institutional volume
+                "chart_patterns": 7.69,  # Pattern recognition
+                "fibonacci": 0.0,        # Not used in default
+                "adx": 0.0,              # Not used in default
+                "stochastic": 0.0,       # Not used in default
+            }
+            confidence_threshold = 65.0
+            rsi_overbought = 70.0
+            rsi_oversold = 30.0
+            adx_threshold = 25.0
         # Note: ATR excluded (0%) - informational only, non-directional
 
         # 1. Sentiment Analysis (weight: 10.26%)
@@ -1400,20 +1558,20 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
             elif ema_score < 0:
                 reasons.append(f"Price below key EMAs ({bearish_emas}/{len(ema_signals)} bearish)")
 
-        # 3. RSI Analysis (weight: 7.69%)
+        # 3. RSI Analysis (weight varies by profile)
         rsi_indicator = next((i for i in snapshot.indicators if i.name.startswith("RSI")), None)
-        if rsi_indicator:
+        if rsi_indicator and WEIGHTS["rsi"] > 0:
             rsi_value = rsi_indicator.value
 
-            if 40 <= rsi_value <= 70:
+            if 40 <= rsi_value <= rsi_overbought:
                 # Sweet spot - bullish momentum without overbought
                 score += WEIGHTS["rsi"]
                 reasons.append(f"RSI in bullish zone ({rsi_value:.1f})")
-            elif rsi_value < 30:
+            elif rsi_value < rsi_oversold:
                 # Oversold - potential bounce (partial weight)
                 score += WEIGHTS["rsi"] * 0.67
                 reasons.append(f"RSI oversold ({rsi_value:.1f}) - potential bounce")
-            elif rsi_value > 80:
+            elif rsi_value > rsi_overbought:
                 # Overbought - risky
                 score -= WEIGHTS["rsi"]
                 reasons.append(f"RSI overbought ({rsi_value:.1f}) - caution")
@@ -1665,6 +1823,63 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
         except Exception as e:
             logger.warning(f"Could not detect chart patterns: {e}")
 
+        # 14. Fibonacci Analysis (profile-specific, weight varies)
+        if WEIGHTS.get("fibonacci", 0) > 0:
+            try:
+                fib_indicator = calculate_fibonacci_levels(snapshot.price_bars_1d)
+                if fib_indicator.signal == "bullish" and fib_indicator.metadata.get("at_entry_level"):
+                    score += WEIGHTS["fibonacci"]
+                    reasons.append(
+                        f"At Fibonacci {fib_indicator.metadata['nearest_level']} entry level"
+                    )
+                elif fib_indicator.signal == "bearish":
+                    score -= WEIGHTS["fibonacci"] * 0.5
+                elif fib_indicator.metadata.get("near_fib_level"):
+                    # Near a Fib level but not ideal entry
+                    score += WEIGHTS["fibonacci"] * 0.3
+                    reasons.append(f"Near Fibonacci {fib_indicator.metadata['nearest_level']} level")
+            except Exception as e:
+                logger.warning(f"Could not calculate Fibonacci: {e}")
+
+        # 15. ADX Trend Strength (profile-specific, weight varies)
+        if WEIGHTS.get("adx", 0) > 0:
+            try:
+                from app.tools.indicators import calculate_adx
+                adx = calculate_adx(snapshot.price_bars_1d)
+
+                if adx.value >= adx_threshold:
+                    if adx.metadata.get("trend_direction") == "bullish":
+                        score += WEIGHTS["adx"]
+                        reasons.append(f"Strong uptrend (ADX: {adx.value:.0f})")
+                    elif adx.metadata.get("trend_direction") == "bearish":
+                        score -= WEIGHTS["adx"]
+                        reasons.append(f"Strong downtrend (ADX: {adx.value:.0f})")
+                else:
+                    # Ranging market - not ideal for trend-following
+                    score -= WEIGHTS["adx"] * 0.3
+                    reasons.append(f"Weak trend (ADX: {adx.value:.0f}) - ranging market")
+            except Exception as e:
+                logger.warning(f"Could not calculate ADX: {e}")
+
+        # 16. Stochastic Oscillator (profile-specific, weight varies)
+        if WEIGHTS.get("stochastic", 0) > 0:
+            try:
+                from app.tools.indicators import calculate_stochastic
+                stoch = calculate_stochastic(snapshot.price_bars_1d)
+
+                if stoch.metadata.get("bullish_crossover") and stoch.metadata.get("is_oversold"):
+                    score += WEIGHTS["stochastic"]
+                    reasons.append("Stochastic bullish crossover from oversold")
+                elif stoch.metadata.get("bearish_crossover") and stoch.metadata.get("is_overbought"):
+                    score -= WEIGHTS["stochastic"]
+                    reasons.append("Stochastic bearish crossover from overbought")
+                elif stoch.signal == "bullish":
+                    score += WEIGHTS["stochastic"] * 0.5
+                elif stoch.signal == "bearish":
+                    score -= WEIGHTS["stochastic"] * 0.5
+            except Exception as e:
+                logger.warning(f"Could not calculate Stochastic: {e}")
+
         # Normalize score to 0-100
         # Score already calculated as percentage (0-100 range), just clamp
         confidence = max(0, min(100, score))
@@ -1673,15 +1888,24 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
         # (all bullish = ~100%, all bearish = ~0%, neutral mix = ~50%)
         confidence = max(0, min(100, score + 50))
 
-        # Generate recommendation
-        if confidence >= 65:
+        # Generate recommendation using profile-specific threshold
+        if confidence >= confidence_threshold:
             recommendation = "BUY"
-            # Generate trade plan
-            trade_plan = generate_trade_plan(snapshot, account_size, risk_percentage=1.0)
+            # Generate trade plan with profile-specific parameters
+            risk_pct = profile.risk.risk_percentage if profile else 1.0
+            trade_plan = generate_trade_plan(
+                snapshot,
+                account_size,
+                risk_percentage=risk_pct,
+                profile=profile,
+            )
         else:
             recommendation = "NO_BUY"
             trade_plan = None
-            reasons.append(f"Confidence too low ({confidence:.1f}%) - wait for better setup")
+            reasons.append(
+                f"Confidence too low ({confidence:.1f}%) - "
+                f"threshold: {confidence_threshold}%"
+            )
 
         # Build reasoning text
         reasoning = " | ".join(reasons[:5])  # Top 5 reasons
@@ -1710,18 +1934,24 @@ def run_analysis(symbol: str, account_size: float, use_ai: bool = False) -> Anal
 def calculate_fibonacci_levels(
     price_bars: List[PriceBar],
     swing_lookback: int = 20,
-) -> dict:
+) -> Indicator:
     """Calculate Fibonacci retracement and extension levels.
 
     Fibonacci levels are critical for swing traders - the market respects these
     levels consistently, making them self-fulfilling prophecies.
+
+    Key levels for entries:
+    - 0.382 (38.2%): Shallow retracement, strong trend
+    - 0.500 (50%): Common retracement level
+    - 0.618 (61.8%): Golden ratio, strongest level
+    - 0.786 (78.6%): Deep retracement, last chance
 
     Args:
         price_bars: List of PriceBar objects (OHLCV data)
         swing_lookback: Period to identify swing high and low
 
     Returns:
-        Dictionary containing Fibonacci levels and metadata
+        Indicator object with Fibonacci analysis and signal for scoring
 
     Raises:
         ValueError: If price_bars is empty or insufficient data
@@ -1729,7 +1959,8 @@ def calculate_fibonacci_levels(
     Example:
         >>> bars = fetch_price_bars("AAPL", "1d", 100)
         >>> fib = calculate_fibonacci_levels(bars)
-        >>> print(f"61.8% Retracement: ${fib['retracement']['0.618']:.2f}")
+        >>> if fib.signal == "bullish" and fib.metadata['at_entry_level']:
+        >>>     print(f"Entry at {fib.metadata['nearest_level']} level")
     """
     logger.info(f"Calculating Fibonacci levels for {len(price_bars)} bars")
 
@@ -1743,7 +1974,7 @@ def calculate_fibonacci_levels(
     recent_bars = price_bars[-swing_lookback:]
     swing_high = max(bar.high for bar in recent_bars)
     swing_low = min(bar.low for bar in recent_bars)
-    
+
     current_price = price_bars[-1].close
 
     # Determine trend direction (for retracement vs extension)
@@ -1781,25 +2012,136 @@ def calculate_fibonacci_levels(
     # Find nearest Fibonacci level to current price
     all_levels = {**retracement_levels, **extension_levels}
     nearest_level = min(all_levels.items(), key=lambda x: abs(x[1] - current_price))
-    
+
     # Check if price is near a Fibonacci level (within 1%)
     near_fib = abs(nearest_level[1] - current_price) / current_price < 0.01
 
+    # Determine if at a favorable entry level
+    key_entry_levels = ["0.382", "0.500", "0.618", "0.786"]
+    at_entry_level = nearest_level[0] in key_entry_levels and near_fib
+
+    # Calculate midpoint for position check
+    midpoint = (swing_high + swing_low) / 2
+
+    # Determine signal for scoring
+    if trend == "uptrend" and at_entry_level and current_price < midpoint * 1.05:
+        # Good pullback entry in uptrend
+        signal = "bullish"
+    elif trend == "downtrend" and at_entry_level and current_price > midpoint * 0.95:
+        # Good bounce entry in downtrend (potential reversal)
+        signal = "bearish"
+    elif near_fib:
+        # Near a Fib level but not ideal entry
+        signal = "neutral"
+    else:
+        signal = "neutral"
+
     logger.info(
         f"Fibonacci: Swing High={swing_high:.2f}, Swing Low={swing_low:.2f}, "
-        f"Trend={trend}, Near Level={nearest_level[0]}"
+        f"Trend={trend}, Near Level={nearest_level[0]}, Signal={signal}"
     )
 
+    return Indicator(
+        name="Fibonacci",
+        value=round(current_price, 2),
+        signal=signal,
+        metadata={
+            "swing_high": round(swing_high, 2),
+            "swing_low": round(swing_low, 2),
+            "trend": trend,
+            "retracement": {k: round(v, 2) for k, v in retracement_levels.items()},
+            "extension": {k: round(v, 2) for k, v in extension_levels.items()},
+            "nearest_level": nearest_level[0],
+            "nearest_price": round(nearest_level[1], 2),
+            "near_fib_level": near_fib,
+            "at_entry_level": at_entry_level,
+            "current_price": round(current_price, 2),
+        },
+    )
+
+
+def validate_targets_against_structure(
+    targets: List[float],
+    current_price: float,
+    resistances: List[StructuralPivot],
+    fibonacci_indicator: Optional[Indicator] = None,
+) -> dict:
+    """Validate price targets against known resistance levels.
+
+    Checks if proposed targets will hit major resistance levels before
+    being reached, and provides warnings/adjustments. This helps ensure
+    targets are realistic and achievable.
+
+    Args:
+        targets: List of proposed target prices
+        current_price: Current stock price
+        resistances: List of StructuralPivot resistance levels
+        fibonacci_indicator: Optional Fibonacci indicator for extension validation
+
+    Returns:
+        Dictionary with validated targets and warnings
+
+    Example:
+        >>> validated = validate_targets_against_structure(
+        ...     targets=[185.0, 190.0, 195.0],
+        ...     current_price=180.0,
+        ...     resistances=pivots
+        ... )
+        >>> if validated['warnings']:
+        ...     print(f"Target concerns: {validated['warnings']}")
+    """
+    validated_targets = []
+    warnings = []
+
+    # Sort resistances by price (ascending), only those above current price
+    sorted_resistances = sorted(
+        [r for r in resistances if r.price > current_price],
+        key=lambda x: x.price,
+    )
+
+    for i, target in enumerate(targets):
+        target_info = {
+            "original_target": round(target, 2),
+            "validated_target": round(target, 2),
+            "blocked_by_resistance": False,
+            "resistance_level": None,
+            "resistance_strength": None,
+            "suggested_target": None,
+            "near_fib_extension": None,
+        }
+
+        # Check if target is beyond any strong resistance
+        for resistance in sorted_resistances:
+            if resistance.price < target:
+                # Target is beyond this resistance
+                if resistance.strength >= 60:  # Strong resistance
+                    target_info["blocked_by_resistance"] = True
+                    target_info["resistance_level"] = round(resistance.price, 2)
+                    target_info["resistance_strength"] = round(resistance.strength, 1)
+
+                    # Suggest adjusted target just below resistance
+                    suggested_target = resistance.price * 0.995
+                    target_info["suggested_target"] = round(suggested_target, 2)
+
+                    warnings.append(
+                        f"Target {i + 1} (${target:.2f}) may be blocked by "
+                        f"resistance at ${resistance.price:.2f} (strength: {resistance.strength:.0f})"
+                    )
+                    break
+
+        # Also validate against Fibonacci extensions if provided
+        if fibonacci_indicator and "extension" in fibonacci_indicator.metadata:
+            for level_name, level_price in fibonacci_indicator.metadata["extension"].items():
+                if abs(target - level_price) / target < 0.02:  # Within 2%
+                    target_info["near_fib_extension"] = level_name
+
+        validated_targets.append(target_info)
+
     return {
-        "swing_high": round(swing_high, 2),
-        "swing_low": round(swing_low, 2),
-        "trend": trend,
-        "retracement": {k: round(v, 2) for k, v in retracement_levels.items()},
-        "extension": {k: round(v, 2) for k, v in extension_levels.items()},
-        "nearest_level": nearest_level[0],
-        "nearest_price": round(nearest_level[1], 2),
-        "near_fib_level": near_fib,
-        "current_price": round(current_price, 2),
+        "targets": validated_targets,
+        "warnings": warnings,
+        "has_blocked_targets": any(t["blocked_by_resistance"] for t in validated_targets),
+        "resistance_count_ahead": len(sorted_resistances),
     }
 
 
