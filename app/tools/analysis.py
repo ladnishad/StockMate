@@ -139,6 +139,155 @@ def find_structural_pivots(
     return sorted(unique_pivots, key=lambda x: x.strength, reverse=True)
 
 
+def find_comprehensive_levels(
+    price_bars: List[PriceBar],
+    current_price: Optional[float] = None,
+    ema_9: Optional[List[float]] = None,
+    ema_21: Optional[List[float]] = None,
+    vwap: Optional[float] = None,
+) -> dict:
+    """Find comprehensive support and resistance levels for traders.
+
+    Identifies all key levels a trader would want to know:
+    - Swing highs (resistance to break on the way up)
+    - Swing lows (support levels)
+    - Moving averages as dynamic S/R (EMA 9, EMA 21, VWAP)
+    - Round/psychological numbers ($1.00, $1.50, etc.)
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        current_price: Current price (optional, uses last bar if not provided)
+        ema_9: EMA 9 values (optional)
+        ema_21: EMA 21 values (optional)
+        vwap: VWAP value (optional)
+
+    Returns:
+        Dictionary with 'support' and 'resistance' arrays, each containing
+        levels with price, type, and distance from current price.
+    """
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    if current_price is None:
+        current_price = price_bars[-1].close
+
+    support_levels = []
+    resistance_levels = []
+
+    highs = [b.high for b in price_bars]
+    lows = [b.low for b in price_bars]
+
+    # 1. Find swing highs (resistance) - local maxima
+    for i in range(5, len(price_bars) - 5):
+        if highs[i] == max(highs[i-5:i+6]):
+            level = round(highs[i], 2)
+            if level > current_price * 1.01:  # Above current price
+                resistance_levels.append({
+                    "price": level,
+                    "type": "swing_high",
+                    "date": str(price_bars[i].timestamp.date()) if hasattr(price_bars[i].timestamp, 'date') else str(price_bars[i].timestamp)[:10],
+                })
+
+    # 2. Find swing lows (support) - local minima
+    for i in range(5, len(price_bars) - 5):
+        if lows[i] == min(lows[i-5:i+6]):
+            level = round(lows[i], 2)
+            if level < current_price * 0.99:  # Below current price
+                support_levels.append({
+                    "price": level,
+                    "type": "swing_low",
+                    "date": str(price_bars[i].timestamp.date()) if hasattr(price_bars[i].timestamp, 'date') else str(price_bars[i].timestamp)[:10],
+                })
+
+    # 3. Add moving averages as dynamic S/R
+    if ema_9 and len(ema_9) > 0:
+        ema9_val = round(ema_9[-1], 2)
+        level_data = {"price": ema9_val, "type": "ema_9"}
+        if ema9_val > current_price:
+            resistance_levels.append(level_data)
+        else:
+            support_levels.append(level_data)
+
+    if ema_21 and len(ema_21) > 0:
+        ema21_val = round(ema_21[-1], 2)
+        level_data = {"price": ema21_val, "type": "ema_21"}
+        if ema21_val > current_price:
+            resistance_levels.append(level_data)
+        else:
+            support_levels.append(level_data)
+
+    if vwap:
+        vwap_val = round(vwap, 2)
+        level_data = {"price": vwap_val, "type": "vwap"}
+        if vwap_val > current_price:
+            resistance_levels.append(level_data)
+        else:
+            support_levels.append(level_data)
+
+    # 4. Add round number levels (psychological)
+    # Determine appropriate increments based on price
+    if current_price < 5:
+        increments = [0.25, 0.50, 1.00]
+    elif current_price < 20:
+        increments = [1.00, 2.50, 5.00]
+    elif current_price < 100:
+        increments = [5.00, 10.00, 25.00]
+    else:
+        increments = [10.00, 25.00, 50.00]
+
+    for inc in increments:
+        # Find round numbers above current price (resistance)
+        level = ((current_price // inc) + 1) * inc
+        for _ in range(3):  # Next 3 round levels
+            if level > current_price * 1.005:
+                resistance_levels.append({
+                    "price": round(level, 2),
+                    "type": "round_number",
+                })
+            level += inc
+
+        # Find round numbers below current price (support)
+        level = (current_price // inc) * inc
+        for _ in range(3):  # Previous 3 round levels
+            if level < current_price * 0.995 and level > 0:
+                support_levels.append({
+                    "price": round(level, 2),
+                    "type": "round_number",
+                })
+            level -= inc
+
+    # Remove duplicates and sort
+    def dedupe_levels(levels):
+        seen = set()
+        unique = []
+        for l in levels:
+            price_key = round(l["price"], 2)
+            if price_key not in seen:
+                seen.add(price_key)
+                unique.append(l)
+        return unique
+
+    resistance_levels = dedupe_levels(resistance_levels)
+    support_levels = dedupe_levels(support_levels)
+
+    # Sort resistance ascending (nearest first), support descending (nearest first)
+    resistance_levels.sort(key=lambda x: x["price"])
+    support_levels.sort(key=lambda x: x["price"], reverse=True)
+
+    # Add distance percentage
+    for level in resistance_levels:
+        level["distance_pct"] = round(((level["price"] - current_price) / current_price) * 100, 1)
+
+    for level in support_levels:
+        level["distance_pct"] = round(((level["price"] - current_price) / current_price) * 100, 1)
+
+    return {
+        "current_price": round(current_price, 2),
+        "resistance": resistance_levels[:10],  # Top 10 nearest
+        "support": support_levels[:10],  # Top 10 nearest
+    }
+
+
 def detect_key_levels(
     price_bars: List[PriceBar],
     current_price: Optional[float] = None,
@@ -1567,6 +1716,10 @@ def run_analysis(
                 # Sweet spot - bullish momentum without overbought
                 score += WEIGHTS["rsi"]
                 reasons.append(f"RSI in bullish zone ({rsi_value:.1f})")
+            elif rsi_oversold <= rsi_value < 40:
+                # Recovering from oversold - partial bullish
+                score += WEIGHTS["rsi"] * 0.5
+                reasons.append(f"RSI recovering from oversold ({rsi_value:.1f})")
             elif rsi_value < rsi_oversold:
                 # Oversold - potential bounce (partial weight)
                 score += WEIGHTS["rsi"] * 0.67
@@ -1880,12 +2033,12 @@ def run_analysis(
             except Exception as e:
                 logger.warning(f"Could not calculate Stochastic: {e}")
 
-        # Normalize score to 0-100
-        # Score already calculated as percentage (0-100 range), just clamp
-        confidence = max(0, min(100, score))
-
-        # Shift to make 50% neutral baseline for comparison
-        # (all bullish = ~100%, all bearish = ~0%, neutral mix = ~50%)
+        # Normalize score to 0-100 confidence scale
+        # Raw score ranges from approximately -50 to +50:
+        # - All bearish signals: ~-50 (becomes ~0% confidence)
+        # - Neutral/mixed signals: ~0 (becomes ~50% confidence)
+        # - All bullish signals: ~+50 (becomes ~100% confidence)
+        # Adding 50 shifts the range to 0-100 for display
         confidence = max(0, min(100, score + 50))
 
         # Generate recommendation using profile-specific threshold
@@ -1914,6 +2067,7 @@ def run_analysis(
             symbol=symbol,
             recommendation=recommendation,
             confidence=round(confidence, 1),
+            current_price=snapshot.current_price,
             trade_plan=trade_plan,
             reasoning=reasoning,
             timestamp=datetime.utcnow().isoformat() + "Z",

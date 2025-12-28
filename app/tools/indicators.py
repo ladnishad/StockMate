@@ -162,6 +162,49 @@ def calculate_ema(
     )
 
 
+def calculate_ema_series(
+    price_bars: List[PriceBar],
+    period: int = 20,
+) -> List[float]:
+    """Calculate EMA series for all bars (for chart overlay).
+
+    Unlike calculate_ema() which returns just the latest value, this function
+    returns the full EMA series for use in chart overlays.
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        period: EMA period (default: 20)
+
+    Returns:
+        List of EMA values, one for each input bar.
+        Early values (before period) will still be calculated using available data.
+
+    Raises:
+        ValueError: If price_bars is empty
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 100)
+        >>> ema_9 = calculate_ema_series(bars, period=9)
+        >>> ema_21 = calculate_ema_series(bars, period=21)
+        >>> # Use for chart overlay - each value corresponds to a bar
+        >>> print(f"EMA values count: {len(ema_9)} (same as bars)")
+    """
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    if period < 1:
+        raise ValueError("period must be >= 1")
+
+    # Extract closing prices
+    closes = [bar.close for bar in price_bars]
+
+    # Calculate EMA series using pandas
+    ema_series = pd.Series(closes).ewm(span=period, adjust=False).mean()
+
+    # Round to 2 decimal places for cleaner output
+    return [round(v, 2) for v in ema_series.tolist()]
+
+
 def calculate_rsi(
     price_bars: List[PriceBar],
     period: int = 14,
@@ -536,10 +579,20 @@ def calculate_atr(
         )
         true_ranges.append(tr)
 
-    # Calculate ATR using smoothed moving average
-    tr_series = pd.Series(true_ranges)
-    atr_series = tr_series.rolling(window=period).mean()
-    current_atr = float(atr_series.iloc[-1])
+    # Calculate ATR using Wilder's smoothing (industry standard)
+    # This is more responsive to recent volatility than simple moving average
+    atr_values = np.zeros(len(true_ranges))
+
+    # First ATR is simple mean of first 'period' true ranges
+    if len(true_ranges) >= period:
+        atr_values[period - 1] = np.mean(true_ranges[:period])
+
+        # Subsequent ATRs use Wilder's smoothing
+        for i in range(period, len(true_ranges)):
+            atr_values[i] = (atr_values[i - 1] * (period - 1) + true_ranges[i]) / period
+
+    atr_series = pd.Series(atr_values)
+    current_atr = float(atr_series.iloc[-1]) if atr_series.iloc[-1] > 0 else float(np.mean(true_ranges[-period:]))
 
     # ATR as percentage of price (for comparison across stocks)
     current_price = price_bars[-1].close
@@ -838,13 +891,17 @@ def detect_divergences(
         for val in indicator_values
     ])
 
-    # Only use indicator values where we have valid data
+    # Forward-fill invalid indicator values to avoid false swing points
+    # Using 0 as placeholder creates artificial swings that trigger false divergences
     indicator_data = []
-    for i, val in enumerate(valid_indicator):
+    first_valid = next((v for v in valid_indicator if v is not None), 50)  # Default to 50 (neutral RSI)
+    last_valid = first_valid
+    for val in valid_indicator:
         if val is not None:
             indicator_data.append(val)
+            last_valid = val
         else:
-            indicator_data.append(0)  # Placeholder for invalid data
+            indicator_data.append(last_valid)  # Forward-fill with last valid value
 
     indicator_highs, indicator_lows = find_swing_points(
         np.array(indicator_data),

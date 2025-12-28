@@ -1,0 +1,61 @@
+# Git
+.git
+.gitignore
+
+# Environment files (secrets)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.eggs
+*.egg-info
+.pytest_cache
+.coverage
+htmlcov
+
+# Virtual environments
+venv
+.venv
+env
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local data
+data/
+*.db
+*.sqlite
+
+# iOS app (not needed in backend container)
+ios/
+
+# Logs
+*.log
+
+# Documentation
+*.md
+!README.md
+
+# Test files
+tests/
+*_test.py
+test_*.py
+
+# Makefile (not needed in container)
+Makefile
+
+# Plans
+.claude/

@@ -367,19 +367,27 @@ def find_sector_leaders(
     for symbol in stocks:
         try:
             # Run full StockMate analysis
-            analysis = run_analysis(symbol, account_size=10000, risk_percentage=1.0)
+            analysis = run_analysis(symbol, account_size=10000)
+
+            # Extract reasons from reasoning string (pipe-separated)
+            reasons = []
+            if analysis.reasoning:
+                reasons = [r.strip() for r in analysis.reasoning.split(" | ")][:3]
+
+            # Get current price from analysis (now includes current_price field)
+            current_price = analysis.current_price or 0.0
 
             analyzed_stocks.append({
                 "symbol": symbol,
-                "score": analysis["confidence"],
-                "recommendation": analysis["recommendation"],
-                "current_price": analysis["current_price"],
-                "reasons": analysis["reasons"][:3],  # Top 3 reasons
+                "score": analysis.confidence,
+                "recommendation": analysis.recommendation,
+                "current_price": current_price,
+                "reasons": reasons,
                 "trade_plan": {
-                    "entry": analysis["trade_plan"]["entry_price"] if analysis["trade_plan"] else None,
-                    "stop": analysis["trade_plan"]["stop_loss"] if analysis["trade_plan"] else None,
-                    "target": analysis["trade_plan"]["target_1"] if analysis["trade_plan"] else None,
-                } if analysis["trade_plan"] else None,
+                    "entry": analysis.trade_plan.entry_price if analysis.trade_plan else None,
+                    "stop": analysis.trade_plan.stop_loss if analysis.trade_plan else None,
+                    "target": analysis.trade_plan.target_1 if analysis.trade_plan else None,
+                } if analysis.trade_plan else None,
             })
 
         except Exception as e:

@@ -170,3 +170,13 @@ extension Animation {
         .spring(response: 0.4, dampingFraction: 0.6)
     }
 }
+
+// MARK: - Notification Names
+
+extension Notification.Name {
+    /// Posted when a plan evaluation is triggered (e.g., after position entry/exit)
+    static let planEvaluationTriggered = Notification.Name("planEvaluationTriggered")
+
+    /// Posted when plan evaluation completes
+    static let planEvaluationCompleted = Notification.Name("planEvaluationCompleted")
+}

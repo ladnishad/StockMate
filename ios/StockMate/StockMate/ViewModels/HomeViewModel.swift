@@ -1,20 +1,15 @@
 import SwiftUI
 import Combine
 
-/// ViewModel for the Home screen managing market data and watchlist
+/// ViewModel for the Home screen managing market data and user watchlist
 @MainActor
 class HomeViewModel: ObservableObject {
     // MARK: - Published State
 
     @Published var indices: [MarketIndex] = []
-    @Published var selectedProfile: TraderProfile = .swingTrader {
-        didSet {
-            if oldValue != selectedProfile {
-                Task { await loadWatchlist() }
-            }
-        }
-    }
-    @Published var watchlistStocks: [Stock] = []
+
+    // User-managed watchlist (not auto-populated)
+    @Published var watchlistItems: [WatchlistItem] = []
     @Published var marketDirection: MarketDirection = .mixed
 
     @Published var isLoadingIndices = false
@@ -25,6 +20,10 @@ class HomeViewModel: ObservableObject {
     @Published var error: String?
 
     @Published var lastUpdated: Date?
+
+    // MARK: - Services
+
+    private let watchlistService = WatchlistService.shared
 
     // MARK: - Computed Properties
 
@@ -43,14 +42,19 @@ class HomeViewModel: ObservableObject {
         return formatter.localizedString(for: lastUpdated, relativeTo: Date())
     }
 
+    var watchlistCount: Int {
+        watchlistItems.count
+    }
+
+    var hasWatchlistItems: Bool {
+        !watchlistItems.isEmpty
+    }
+
     // MARK: - Initialization
 
     init() {
-        // Load persisted profile preference
-        if let savedProfile = UserDefaults.standard.string(forKey: "selectedProfile"),
-           let profile = TraderProfile(rawValue: savedProfile) {
-            selectedProfile = profile
-        }
+        // Load cached watchlist immediately for fast UI
+        watchlistItems = watchlistService.getCachedItems()
     }
 
     // MARK: - Data Loading
@@ -107,43 +111,89 @@ class HomeViewModel: ObservableObject {
         isLoadingIndices = false
     }
 
-    /// Load watchlist based on current profile
+    /// Load user's watchlist
     func loadWatchlist() async {
         isLoadingWatchlist = true
         watchlistError = nil
 
         do {
-            let stocks = try await APIService.shared.fetchWatchlist(profile: selectedProfile)
+            let items = try await watchlistService.getWatchlist()
             withAnimation(.easeInOut(duration: 0.3)) {
-                self.watchlistStocks = stocks
+                self.watchlistItems = items
             }
         } catch {
             watchlistError = error.localizedDescription
             // Use sample data for development/preview
-            if watchlistStocks.isEmpty {
-                watchlistStocks = Stock.samples
+            if watchlistItems.isEmpty {
+                watchlistItems = WatchlistItem.samples
             }
         }
 
         isLoadingWatchlist = false
     }
 
-    // MARK: - Profile Management
+    // MARK: - Watchlist Management
 
-    /// Change the selected profile
-    func changeProfile(_ profile: TraderProfile) {
-        guard profile != selectedProfile else { return }
+    /// Add a symbol to the watchlist
+    func addToWatchlist(_ symbol: String) async -> Bool {
+        do {
+            let item = try await watchlistService.addSymbol(symbol)
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                // Add at the beginning
+                watchlistItems.insert(item, at: 0)
+            }
 
-        // Haptic feedback
-        let generator = UIImpactFeedbackGenerator(style: .medium)
-        generator.impactOccurred()
+            // Haptic feedback
+            let generator = UINotificationFeedbackGenerator()
+            generator.notificationOccurred(.success)
 
-        // Save preference
-        UserDefaults.standard.set(profile.rawValue, forKey: "selectedProfile")
+            return true
+        } catch {
+            self.error = error.localizedDescription
 
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-            selectedProfile = profile
+            // Haptic feedback for error
+            let generator = UINotificationFeedbackGenerator()
+            generator.notificationOccurred(.error)
+
+            return false
         }
+    }
+
+    /// Remove a symbol from the watchlist
+    func removeFromWatchlist(_ symbol: String) async {
+        // Optimistic removal
+        let removedIndex = watchlistItems.firstIndex { $0.symbol == symbol }
+        let removedItem = watchlistItems.first { $0.symbol == symbol }
+
+        withAnimation(.easeOut(duration: 0.2)) {
+            watchlistItems.removeAll { $0.symbol == symbol }
+        }
+
+        do {
+            try await watchlistService.removeSymbol(symbol)
+
+            // Haptic feedback
+            let generator = UINotificationFeedbackGenerator()
+            generator.notificationOccurred(.success)
+        } catch {
+            // Rollback on failure
+            if let item = removedItem, let index = removedIndex {
+                withAnimation {
+                    watchlistItems.insert(item, at: min(index, watchlistItems.count))
+                }
+            }
+
+            self.error = error.localizedDescription
+
+            // Haptic feedback for error
+            let generator = UINotificationFeedbackGenerator()
+            generator.notificationOccurred(.error)
+        }
+    }
+
+    /// Check if a symbol is in the watchlist
+    func isInWatchlist(_ symbol: String) -> Bool {
+        watchlistItems.contains { $0.symbol.uppercased() == symbol.uppercased() }
     }
 
     // MARK: - Private Helpers

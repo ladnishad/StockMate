@@ -46,7 +46,7 @@ def _get_trading_client() -> TradingClient:
 
 def fetch_price_bars(
     symbol: str,
-    timeframe: Literal["1d", "1h", "15m", "5m"] = "1d",
+    timeframe: Literal["1d", "1h", "15m", "5m", "1m", "1w"] = "1d",
     days_back: int = 100,
     feed: Optional[str] = None,
 ) -> List[PriceBar]:
@@ -62,7 +62,7 @@ def fetch_price_bars(
 
     Args:
         symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
-        timeframe: Bar timeframe - '1d' (daily), '1h' (hourly), '15m' (15-minute), '5m' (5-minute)
+        timeframe: Bar timeframe - '1d' (daily), '1h' (hourly), '15m' (15-minute), '5m' (5-minute), '1w' (weekly)
         days_back: Number of days of historical data to fetch
         feed: Data feed to use ('iex', 'sip', or None for auto). Default: None
 
@@ -85,6 +85,8 @@ def fetch_price_bars(
     timeframe_map = {
         "1d": TimeFrame.Day,
         "1h": TimeFrame.Hour,
+        "1w": TimeFrame.Week,
+        "1m": TimeFrame.Minute,   # 1 minute
         "15m": TimeFrame.Minute,  # Will use 15 multiplier
         "5m": TimeFrame.Minute,   # Will use 5 multiplier
     }
@@ -98,6 +100,8 @@ def fetch_price_bars(
         tf = TimeFrame(15, TimeFrame.Minute)
     elif timeframe == "5m":
         tf = TimeFrame(5, TimeFrame.Minute)
+    elif timeframe == "1m":
+        tf = TimeFrame.Minute
     else:
         tf = timeframe_map[timeframe]
 
@@ -119,7 +123,8 @@ def fetch_price_bars(
 
         bars_data = client.get_stock_bars(request_params)
 
-        if symbol not in bars_data:
+        # BarSet object requires checking .data dict for 'in' operator
+        if symbol not in bars_data.data:
             raise ValueError(f"No data available for symbol: {symbol}")
 
         bars = bars_data[symbol]

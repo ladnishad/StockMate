@@ -25,7 +25,11 @@ wheels/
 
 # Environment
 .env
+.env.example
 .venv
+
+# Local data
+data/
 
 # IDE
 .vscode/
@@ -42,3 +46,6 @@ htmlcov/
 
 # Logs
 *.log
+
+# Documentation (local only)
+*.md

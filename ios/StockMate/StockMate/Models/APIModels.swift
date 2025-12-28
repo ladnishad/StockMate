@@ -285,3 +285,234 @@ struct ThresholdInfo: Codable {
 struct APIError: Codable, Error {
     let detail: String
 }
+
+
+// MARK: - Smart Analysis Response (Profile-Less AI Analysis)
+
+struct SmartAnalysisResponse: Codable {
+    let symbol: String
+    let currentPrice: Double
+    let recommendation: String
+    let tradePlan: EnhancedTradePlan
+    let timestamp: String
+
+    enum CodingKeys: String, CodingKey {
+        case symbol
+        case currentPrice = "current_price"
+        case recommendation
+        case tradePlan = "trade_plan"
+        case timestamp
+    }
+
+    var isBuy: Bool {
+        recommendation == "BUY"
+    }
+}
+
+struct EnhancedTradePlan: Codable {
+    let tradeStyle: TradeStyleRecommendation
+    let bias: String
+    let thesis: String
+    let confidence: Int
+    let entryZoneLow: Double?
+    let entryZoneHigh: Double?
+    let stopLoss: Double?
+    let stopReasoning: String
+    let targets: [PriceTarget]
+    let riskReward: Double?
+    let positionSizePct: Double?
+    let keySupports: [Double]
+    let keyResistances: [Double]
+    let invalidationCriteria: String
+    let educational: EducationalContent
+
+    enum CodingKeys: String, CodingKey {
+        case tradeStyle = "trade_style"
+        case bias
+        case thesis
+        case confidence
+        case entryZoneLow = "entry_zone_low"
+        case entryZoneHigh = "entry_zone_high"
+        case stopLoss = "stop_loss"
+        case stopReasoning = "stop_reasoning"
+        case targets
+        case riskReward = "risk_reward"
+        case positionSizePct = "position_size_pct"
+        case keySupports = "key_supports"
+        case keyResistances = "key_resistances"
+        case invalidationCriteria = "invalidation_criteria"
+        case educational
+    }
+
+    var isBullish: Bool {
+        bias == "bullish"
+    }
+
+    var isBearish: Bool {
+        bias == "bearish"
+    }
+
+    var hasEntry: Bool {
+        entryZoneLow != nil && entryZoneHigh != nil
+    }
+
+    /// Formatted entry zone string
+    var formattedEntryZone: String {
+        guard let low = entryZoneLow, let high = entryZoneHigh else {
+            return "N/A"
+        }
+        return "$\(String(format: "%.2f", low)) - $\(String(format: "%.2f", high))"
+    }
+
+    /// First target price and reasoning
+    var primaryTarget: PriceTarget? {
+        targets.first
+    }
+}
+
+struct TradeStyleRecommendation: Codable {
+    let recommendedStyle: String
+    let reasoning: String
+    let holdingPeriod: String
+
+    enum CodingKeys: String, CodingKey {
+        case recommendedStyle = "recommended_style"
+        case reasoning
+        case holdingPeriod = "holding_period"
+    }
+
+    var displayName: String {
+        switch recommendedStyle {
+        case "day": return "Day Trade"
+        case "swing": return "Swing Trade"
+        case "position": return "Position Trade"
+        default: return recommendedStyle.capitalized
+        }
+    }
+
+    var icon: String {
+        switch recommendedStyle {
+        case "day": return "bolt.fill"
+        case "swing": return "waveform.path.ecg"
+        case "position": return "chart.line.uptrend.xyaxis"
+        default: return "chart.bar"
+        }
+    }
+
+    var accentColor: String {
+        switch recommendedStyle {
+        case "day": return "orange"
+        case "swing": return "blue"
+        case "position": return "purple"
+        default: return "gray"
+        }
+    }
+}
+
+struct PriceTarget: Codable {
+    let price: Double
+    let reasoning: String
+
+    var formattedPrice: String {
+        "$\(String(format: "%.2f", price))"
+    }
+}
+
+struct EducationalContent: Codable {
+    let setupExplanation: String
+    let levelExplanations: [String: String]
+    let whatToWatch: [String]
+    let scenarios: [ScenarioPath]
+    let riskWarnings: [String]
+    let chartAnnotations: [ChartAnnotation]
+
+    enum CodingKeys: String, CodingKey {
+        case setupExplanation = "setup_explanation"
+        case levelExplanations = "level_explanations"
+        case whatToWatch = "what_to_watch"
+        case scenarios
+        case riskWarnings = "risk_warnings"
+        case chartAnnotations = "chart_annotations"
+    }
+
+    var hasContent: Bool {
+        !setupExplanation.isEmpty || !scenarios.isEmpty || !whatToWatch.isEmpty
+    }
+
+    /// Get the bullish scenario
+    var bullishScenario: ScenarioPath? {
+        scenarios.first { $0.scenario == "bullish" }
+    }
+
+    /// Get the bearish scenario
+    var bearishScenario: ScenarioPath? {
+        scenarios.first { $0.scenario == "bearish" }
+    }
+
+    /// Get the sideways scenario
+    var sidewaysScenario: ScenarioPath? {
+        scenarios.first { $0.scenario == "sideways" }
+    }
+}
+
+struct ScenarioPath: Codable, Identifiable {
+    let scenario: String
+    let probability: Int
+    let description: String
+    let priceTarget: Double?
+    let keyTrigger: String
+
+    enum CodingKeys: String, CodingKey {
+        case scenario
+        case probability
+        case description
+        case priceTarget = "price_target"
+        case keyTrigger = "key_trigger"
+    }
+
+    var id: String { scenario }
+
+    var displayName: String {
+        scenario.capitalized
+    }
+
+    var icon: String {
+        switch scenario {
+        case "bullish": return "arrow.up.right"
+        case "bearish": return "arrow.down.right"
+        case "sideways": return "arrow.left.and.right"
+        default: return "questionmark"
+        }
+    }
+
+    var color: String {
+        switch scenario {
+        case "bullish": return "green"
+        case "bearish": return "red"
+        case "sideways": return "gray"
+        default: return "gray"
+        }
+    }
+}
+
+struct ChartAnnotation: Codable, Identifiable {
+    let type: String
+    let price: Double?
+    let priceHigh: Double?
+    let priceLow: Double?
+    let label: String
+    let color: String
+    let description: String
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case price
+        case priceHigh = "price_high"
+        case priceLow = "price_low"
+        case label
+        case color
+        case description
+    }
+
+    var id: String { "\(type)-\(label)-\(price ?? 0)" }
+}

@@ -1,16 +1,19 @@
 """FastAPI application for StockMate - Intelligent Stock Analysis Backend."""
 
+import json
 import logging
-from typing import List
+from typing import List, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, status, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, status, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.models.request import AnalysisRequest
-from app.models.response import AnalysisResponse
+from app.auth import auth_router, get_current_user, get_optional_user, User
+from app.models.response import AnalysisResponse, SmartAnalysisResponse
+from app.agent.planning_agent import StockPlanningAgent
 from app.models.profile_presets import list_profiles, get_profile, PROFILE_REGISTRY
 from app.tools.analysis import run_analysis
 from app.tools.market_scanner import (
@@ -25,9 +28,24 @@ from app.tools.market_data import (
     fetch_latest_quote,
     fetch_latest_trade,
     fetch_snapshots,
+    fetch_price_bars,
 )
 from app.tools.streaming import get_streamer
 from app.config import get_settings
+from app.storage.watchlist_store import get_watchlist_store
+from app.services.watchlist_service import remove_symbol_with_cleanup
+from app.storage.database import init_database
+from app.storage.position_store import get_position_store, Position
+from app.storage.alert_history import get_alert_history, Alert
+from app.storage.device_store import get_device_store, DeviceToken
+from app.services.plan_evaluator import get_plan_evaluator
+from app.models.watchlist import (
+    WatchlistItem,
+    WatchlistResponse,
+    SearchResult,
+    StockDetailResponse,
+    PriceBarResponse,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -45,7 +63,57 @@ async def lifespan(app: FastAPI):
     logger.info(f"Environment: {settings.app_env}")
     logger.info(f"Alpaca API configured: {bool(settings.alpaca_api_key)}")
     logger.info(f"Data feed: {settings.alpaca_data_feed.upper()} (AlgoTrader Plus: {settings.alpaca_data_feed == 'sip'})")
+
+    # Initialize SQLite database for positions, alerts, and device tokens
+    await init_database()
+    logger.info("Database initialized")
+
+    # Test Alpaca API connectivity at startup
+    if settings.alpaca_api_key and settings.alpaca_secret_key:
+        try:
+            from alpaca.trading.client import TradingClient
+            from alpaca.common.exceptions import APIError
+
+            is_paper = "paper" in settings.alpaca_base_url.lower()
+            client = TradingClient(
+                settings.alpaca_api_key,
+                settings.alpaca_secret_key,
+                paper=is_paper
+            )
+
+            # Test connectivity by getting a single asset
+            asset = client.get_asset("AAPL")
+            if asset:
+                logger.info(f"✓ Alpaca API connection verified (tested with AAPL: {asset.name})")
+            else:
+                logger.warning("⚠ Alpaca API connected but returned no data for test asset")
+        except APIError as e:
+            logger.error(f"✗ Alpaca API error at startup: {str(e)}")
+            logger.warning("Search and live data features may use fallback data")
+        except Exception as e:
+            logger.error(f"✗ Failed to connect to Alpaca API: {type(e).__name__}: {str(e)}")
+            logger.warning("Search and live data features may use fallback data")
+    else:
+        logger.warning("⚠ Alpaca API keys not configured - search will use fallback data")
+
+    # Start plan evaluator if Claude API is configured
+    plan_evaluator = None
+    if settings.claude_api_key:
+        try:
+            from app.services.plan_evaluator import get_plan_evaluator
+            plan_evaluator = get_plan_evaluator()
+            await plan_evaluator.start()
+            logger.info("✓ Plan evaluator started (30-min periodic + key level triggers)")
+        except Exception as e:
+            logger.error(f"Failed to start plan evaluator: {e}")
+    else:
+        logger.warning("⚠ Claude API key not configured - plan evaluator disabled")
+
     yield
+
+    # Cleanup
+    if plan_evaluator:
+        await plan_evaluator.stop()
     logger.info("Shutting down StockMate backend...")
 
 
@@ -57,14 +125,61 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add CORS middleware for mobile app integration
+# Get settings for CORS configuration
+settings = get_settings()
+
+# Configure CORS based on environment
+if settings.is_production and settings.cors_origin_list:
+    # Production: Use configured origins
+    cors_origins = settings.cors_origin_list
+else:
+    # Development: Allow all origins
+    cors_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include authentication router
+app.include_router(auth_router)
+
+# Add rate limiting
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from app.middleware.rate_limit import limiter
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+# Add security headers middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers to all responses."""
+
+    async def dispatch(self, request, call_next) -> Response:
+        response = await call_next(request)
+        # Security headers
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+        # HSTS header for production (HTTPS only)
+        if settings.is_production:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 @app.get("/")
@@ -86,6 +201,10 @@ async def root():
             "sector_leaders": "/sectors/{symbol}/leaders",
             "market_scan": "/market/scan",
             "watchlist_smart": "/watchlist/smart",
+            "watchlist": "/watchlist",
+            "watchlist_add": "/watchlist/{symbol}",
+            "watchlist_search": "/watchlist/search",
+            "stock_detail": "/stock/{symbol}/detail",
             "profiles": "/profiles",
             "quote": "/quote/{symbol}",
             "trade": "/trade/{symbol}",
@@ -110,6 +229,133 @@ async def health_check():
         "status": "healthy",
         "alpaca_configured": bool(settings.alpaca_api_key and settings.alpaca_secret_key),
     }
+
+
+@app.get(
+    "/debug/alpaca",
+    summary="Alpaca API diagnostics",
+    description="Debug endpoint to verify Alpaca API connectivity and configuration.",
+)
+async def debug_alpaca():
+    """Verify Alpaca API connection and return diagnostic information."""
+    from alpaca.trading.client import TradingClient
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.common.exceptions import APIError
+
+    settings = get_settings()
+
+    # Mask API keys for display (show first 4 and last 4 chars)
+    def mask_key(key: str) -> str:
+        if not key:
+            return "NOT SET"
+        if len(key) <= 8:
+            return "***"
+        return f"{key[:4]}...{key[-4:]}"
+
+    diagnostics = {
+        "configuration": {
+            "api_key": mask_key(settings.alpaca_api_key),
+            "secret_key": mask_key(settings.alpaca_secret_key),
+            "base_url": settings.alpaca_base_url,
+            "data_feed": settings.alpaca_data_feed,
+            "is_paper": "paper" in settings.alpaca_base_url.lower(),
+        },
+        "trading_api": {
+            "status": "unknown",
+            "message": None,
+            "account_info": None,
+        },
+        "data_api": {
+            "status": "unknown",
+            "message": None,
+            "test_quote": None,
+        },
+        "overall_status": "unknown",
+    }
+
+    # Check if API keys are configured
+    if not settings.alpaca_api_key or not settings.alpaca_secret_key:
+        diagnostics["overall_status"] = "error"
+        diagnostics["trading_api"]["status"] = "error"
+        diagnostics["trading_api"]["message"] = "API keys not configured"
+        diagnostics["data_api"]["status"] = "error"
+        diagnostics["data_api"]["message"] = "API keys not configured"
+        return diagnostics
+
+    # Test Trading API
+    try:
+        is_paper = "paper" in settings.alpaca_base_url.lower()
+        trading_client = TradingClient(
+            settings.alpaca_api_key,
+            settings.alpaca_secret_key,
+            paper=is_paper
+        )
+
+        # Try to get account info (simple connectivity test)
+        account = trading_client.get_account()
+        diagnostics["trading_api"]["status"] = "healthy"
+        diagnostics["trading_api"]["message"] = "Successfully connected to Trading API"
+        diagnostics["trading_api"]["account_info"] = {
+            "account_number": account.account_number,
+            "status": account.status.value if account.status else None,
+            "buying_power": float(account.buying_power) if account.buying_power else None,
+        }
+    except APIError as e:
+        diagnostics["trading_api"]["status"] = "error"
+        diagnostics["trading_api"]["message"] = f"API Error: {str(e)}"
+    except Exception as e:
+        diagnostics["trading_api"]["status"] = "error"
+        diagnostics["trading_api"]["message"] = f"{type(e).__name__}: {str(e)}"
+
+    # Test Data API
+    try:
+        from alpaca.data.requests import StockLatestQuoteRequest
+
+        data_client = StockHistoricalDataClient(
+            api_key=settings.alpaca_api_key,
+            secret_key=settings.alpaca_secret_key,
+        )
+
+        # Try to get a quote for AAPL (simple connectivity test)
+        request = StockLatestQuoteRequest(
+            symbol_or_symbols="AAPL",
+            feed=settings.alpaca_data_feed,
+        )
+        quotes = data_client.get_stock_latest_quote(request)
+
+        if "AAPL" in quotes:
+            quote = quotes["AAPL"]
+            diagnostics["data_api"]["status"] = "healthy"
+            diagnostics["data_api"]["message"] = f"Successfully connected to Data API (feed: {settings.alpaca_data_feed})"
+            diagnostics["data_api"]["test_quote"] = {
+                "symbol": "AAPL",
+                "bid": float(quote.bid_price) if quote.bid_price else None,
+                "ask": float(quote.ask_price) if quote.ask_price else None,
+                "timestamp": quote.timestamp.isoformat() if quote.timestamp else None,
+            }
+        else:
+            diagnostics["data_api"]["status"] = "warning"
+            diagnostics["data_api"]["message"] = "Connected but no quote data returned"
+    except APIError as e:
+        diagnostics["data_api"]["status"] = "error"
+        diagnostics["data_api"]["message"] = f"API Error: {str(e)}"
+    except Exception as e:
+        diagnostics["data_api"]["status"] = "error"
+        diagnostics["data_api"]["message"] = f"{type(e).__name__}: {str(e)}"
+
+    # Determine overall status
+    trading_ok = diagnostics["trading_api"]["status"] == "healthy"
+    data_ok = diagnostics["data_api"]["status"] == "healthy"
+
+    if trading_ok and data_ok:
+        diagnostics["overall_status"] = "healthy"
+    elif trading_ok or data_ok:
+        diagnostics["overall_status"] = "partial"
+    else:
+        diagnostics["overall_status"] = "error"
+
+    logger.info(f"Alpaca diagnostics: {diagnostics['overall_status']}")
+    return diagnostics
 
 
 @app.get(
@@ -304,6 +550,107 @@ async def analyze_stock(request: AnalysisRequest):
 
 
 @app.get(
+    "/analyze/smart/{symbol}",
+    response_model=SmartAnalysisResponse,
+    summary="Smart stock analysis with AI agent",
+    description="""
+    **Intelligent Profile-Less Stock Analysis**
+
+    This endpoint uses the AI planning agent to:
+    1. **Determine optimal trade style** - Agent analyzes volatility, patterns, and timeframe to recommend day/swing/position trade
+    2. **Generate comprehensive analysis** - Full technical analysis with precise levels
+    3. **Provide educational content** - Hand-holding guidance explaining the setup in plain English
+    4. **Create scenario paths** - Bullish, bearish, and sideways scenarios with probabilities
+
+    **Key Features:**
+    - No profile selection needed - agent is smart enough to determine the best approach
+    - Educational explanations for each level (why support/resistance matters)
+    - Multiple scenario paths with probability assessments
+    - "What to watch" guidance for novice traders
+    - Risk warnings and invalidation criteria
+
+    **Response includes:**
+    - Trade style recommendation (day/swing/position) with reasoning
+    - Entry zone, stop loss, and targets with explanations
+    - Educational content (expandable in the app)
+    - Chart annotations for visualization
+    """,
+    responses={
+        200: {"description": "Smart analysis completed successfully"},
+        400: {"description": "Invalid symbol"},
+        500: {"description": "Internal server error during analysis"},
+    }
+)
+async def smart_analyze_stock(symbol: str):
+    """
+    Run intelligent stock analysis with the AI planning agent.
+
+    This endpoint doesn't require a trader profile - the agent determines
+    the optimal trade style based on the stock's setup.
+
+    Args:
+        symbol: Stock ticker symbol (e.g., AAPL, TSLA)
+
+    Returns:
+        SmartAnalysisResponse with trade plan and educational content
+    """
+    symbol = symbol.upper().strip()
+    logger.info(f"Received smart analysis request for {symbol}")
+
+    try:
+        # Validate Alpaca configuration
+        settings = get_settings()
+        if not settings.alpaca_api_key or not settings.alpaca_secret_key:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Alpaca API credentials not configured"
+            )
+
+        # Create planning agent and generate smart plan
+        agent = StockPlanningAgent(symbol)
+        enhanced_plan = await agent.generate_smart_plan()
+
+        # Get current price from agent's cached data
+        current_price = agent._market_data.get("price", {}).get("price", 0)
+
+        # Determine recommendation based on confidence and entry zone
+        has_entry = enhanced_plan.entry_zone_low is not None
+        recommendation = "BUY" if has_entry and enhanced_plan.confidence >= 60 else "NO_BUY"
+
+        # Build response
+        from datetime import datetime
+        response = SmartAnalysisResponse(
+            symbol=symbol,
+            current_price=current_price,
+            recommendation=recommendation,
+            trade_plan=enhanced_plan,
+            timestamp=datetime.utcnow().isoformat() + "Z"
+        )
+
+        logger.info(
+            f"Smart analysis complete for {symbol}: "
+            f"{recommendation} ({enhanced_plan.trade_style.recommended_style}, "
+            f"confidence: {enhanced_plan.confidence}%)"
+        )
+
+        return response
+
+    except ValueError as e:
+        logger.error(f"Validation error for {symbol}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    except Exception as e:
+        logger.error(f"Error in smart analysis for {symbol}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Smart analysis failed: {str(e)}"
+        )
+
+
+@app.get(
     "/market",
     summary="Get market overview",
     description="Analyze major market indices (S&P 500, Nasdaq, Dow) to determine overall market health.",
@@ -477,7 +824,7 @@ async def smart_watchlist(
                     "score": stock.get("score", 0),
                     "recommendation": stock.get("recommendation", "NO_BUY"),
                     "current_price": stock.get("current_price", 0),
-                    "reasons": stock.get("key_reasons", []),
+                    "reasons": stock.get("reasons", []),
                     "sector_name": sector_name,
                     "trade_plan": None,
                 }
@@ -530,6 +877,762 @@ async def smart_watchlist(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Smart watchlist failed: {str(e)}"
+        )
+
+
+# ============================================================================
+# User Watchlist CRUD Endpoints
+# ============================================================================
+
+
+@app.get(
+    "/watchlist",
+    response_model=WatchlistResponse,
+    summary="Get user's watchlist",
+    description="""
+    Get the user's watchlist with latest price data.
+
+    Returns all symbols the user has added to their watchlist,
+    along with current prices and basic analysis data.
+
+    Requires authentication.
+    """,
+)
+async def get_user_watchlist(user: User = Depends(get_current_user)):
+    """Get user's watchlist with latest quotes."""
+    user_id = user.id
+    try:
+        store = get_watchlist_store()
+        items = store.get_watchlist(user_id)
+
+        # Enrich with live price data
+        if items:
+            symbols = [item["symbol"] for item in items]
+            try:
+                snapshots = fetch_snapshots(symbols)
+                for item in items:
+                    symbol = item["symbol"]
+                    if symbol in snapshots:
+                        snap = snapshots[symbol]
+                        item["current_price"] = snap.get("latest_trade", {}).get("price")
+                        daily = snap.get("daily_bar", {})
+                        prev = snap.get("prev_daily_bar", {})
+                        if daily and prev and prev.get("close"):
+                            change = daily.get("close", 0) - prev.get("close", 0)
+                            change_pct = (change / prev["close"]) * 100
+                            item["change"] = round(change, 2)
+                            item["change_pct"] = round(change_pct, 2)
+            except Exception as e:
+                logger.warning(f"Failed to fetch snapshots for watchlist: {e}")
+
+        watchlist_items = [WatchlistItem(**item) for item in items]
+
+        return WatchlistResponse(
+            user_id=user_id,
+            items=watchlist_items,
+            count=len(watchlist_items),
+        )
+
+    except Exception as e:
+        logger.error(f"Error fetching watchlist: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch watchlist: {str(e)}"
+        )
+
+
+@app.post(
+    "/watchlist/{symbol}",
+    response_model=WatchlistItem,
+    summary="Add ticker to watchlist",
+    description="Add a stock ticker to the user's watchlist. Requires authentication.",
+)
+async def add_to_watchlist(
+    symbol: str,
+    notes: str = None,
+    background_tasks: BackgroundTasks = None,
+    user: User = Depends(get_current_user),
+):
+    """Add ticker to user's watchlist."""
+    user_id = user.id
+    try:
+        store = get_watchlist_store()
+        item = store.add_symbol(user_id, symbol.upper(), notes=notes)
+
+        # Fetch current price
+        try:
+            quote = fetch_latest_quote(symbol.upper())
+            item["current_price"] = quote.get("mid_price") or quote.get("ask_price")
+        except Exception:
+            pass
+
+        # Proactively generate trading plan in background
+        if background_tasks:
+            background_tasks.add_task(
+                generate_plan_for_stock,
+                symbol.upper(),
+                user_id
+            )
+            logger.info(f"Queued plan generation for {symbol.upper()}")
+
+        logger.info(f"Added {symbol.upper()} to watchlist for user {user_id}")
+        return WatchlistItem(**item)
+
+    except Exception as e:
+        logger.error(f"Error adding to watchlist: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to add to watchlist: {str(e)}"
+        )
+
+
+async def generate_plan_for_stock(symbol: str, user_id: str):
+    """Background task to generate a trading plan for a newly added stock."""
+    from app.agent.planning_agent import StockPlanningAgent
+
+    try:
+        logger.info(f"Generating initial plan for {symbol}")
+        agent = StockPlanningAgent(symbol, user_id)
+        plan = await agent.generate_plan(force_new=True)
+        logger.info(f"Created plan for {symbol}: {plan.bias} bias")
+    except Exception as e:
+        logger.error(f"Failed to generate plan for {symbol}: {e}")
+
+
+@app.delete(
+    "/watchlist/{symbol}",
+    summary="Remove ticker from watchlist",
+    description="Remove a stock ticker from the user's watchlist and clean up all related data. Requires authentication.",
+)
+async def remove_from_watchlist(symbol: str, user: User = Depends(get_current_user)):
+    """Remove ticker from user's watchlist and clean up all related data.
+
+    This endpoint performs comprehensive cleanup including:
+    - Watchlist entry removal
+    - Trading plan deletion
+    - Position deletion
+    - Conversation history clearing
+    - Alert history deletion
+    - Agent context cache clearing
+    """
+    user_id = user.id
+    try:
+        # Perform comprehensive cleanup
+        results = await remove_symbol_with_cleanup(user_id, symbol.upper())
+
+        if not results["watchlist"]:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Symbol {symbol.upper()} not in watchlist"
+            )
+
+        logger.info(f"Removed {symbol.upper()} with cleanup for user {user_id}: {results}")
+        return {
+            "status": "removed",
+            "symbol": symbol.upper(),
+            "cleanup": results
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error removing from watchlist: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to remove from watchlist: {str(e)}"
+        )
+
+
+@app.get(
+    "/watchlist/search",
+    response_model=List[SearchResult],
+    summary="Search tickers",
+    description="""
+    Search for stock tickers by symbol or company name.
+
+    Returns matching tickers from US exchanges.
+    The response includes a 'source' field indicating whether results came from Alpaca API or fallback data.
+    """,
+)
+async def search_tickers(query: str, limit: int = 10):
+    """Search for tickers by symbol or company name."""
+    if not query or len(query) < 1:
+        return []
+
+    query_upper = query.upper().strip().lstrip("$")
+    query_lower = query.lower().strip().lstrip("$")
+
+    # Fallback list of popular stocks for when API fails
+    POPULAR_STOCKS = [
+        ("AAPL", "Apple Inc.", "NASDAQ", "stock"),
+        ("MSFT", "Microsoft Corporation", "NASDAQ", "stock"),
+        ("GOOGL", "Alphabet Inc.", "NASDAQ", "stock"),
+        ("AMZN", "Amazon.com Inc.", "NASDAQ", "stock"),
+        ("NVDA", "NVIDIA Corporation", "NASDAQ", "stock"),
+        ("META", "Meta Platforms Inc.", "NASDAQ", "stock"),
+        ("TSLA", "Tesla Inc.", "NASDAQ", "stock"),
+        ("BRK.B", "Berkshire Hathaway Inc.", "NYSE", "stock"),
+        ("JPM", "JPMorgan Chase & Co.", "NYSE", "stock"),
+        ("V", "Visa Inc.", "NYSE", "stock"),
+        ("JNJ", "Johnson & Johnson", "NYSE", "stock"),
+        ("WMT", "Walmart Inc.", "NYSE", "stock"),
+        ("MA", "Mastercard Inc.", "NYSE", "stock"),
+        ("PG", "Procter & Gamble Co.", "NYSE", "stock"),
+        ("HD", "Home Depot Inc.", "NYSE", "stock"),
+        ("DIS", "Walt Disney Co.", "NYSE", "stock"),
+        ("NFLX", "Netflix Inc.", "NASDAQ", "stock"),
+        ("PYPL", "PayPal Holdings Inc.", "NASDAQ", "stock"),
+        ("ADBE", "Adobe Inc.", "NASDAQ", "stock"),
+        ("CRM", "Salesforce Inc.", "NYSE", "stock"),
+        ("AMD", "Advanced Micro Devices Inc.", "NASDAQ", "stock"),
+        ("INTC", "Intel Corporation", "NASDAQ", "stock"),
+        ("CSCO", "Cisco Systems Inc.", "NASDAQ", "stock"),
+        ("PEP", "PepsiCo Inc.", "NASDAQ", "stock"),
+        ("KO", "Coca-Cola Co.", "NYSE", "stock"),
+        ("MCD", "McDonald's Corp.", "NYSE", "stock"),
+        ("NKE", "Nike Inc.", "NYSE", "stock"),
+        ("BA", "Boeing Co.", "NYSE", "stock"),
+        ("GS", "Goldman Sachs Group Inc.", "NYSE", "stock"),
+        ("MS", "Morgan Stanley", "NYSE", "stock"),
+        ("C", "Citigroup Inc.", "NYSE", "stock"),
+        ("BAC", "Bank of America Corp.", "NYSE", "stock"),
+        ("WFC", "Wells Fargo & Co.", "NYSE", "stock"),
+        ("T", "AT&T Inc.", "NYSE", "stock"),
+        ("VZ", "Verizon Communications Inc.", "NYSE", "stock"),
+        ("XOM", "Exxon Mobil Corp.", "NYSE", "stock"),
+        ("CVX", "Chevron Corp.", "NYSE", "stock"),
+        ("PFE", "Pfizer Inc.", "NYSE", "stock"),
+        ("MRK", "Merck & Co. Inc.", "NYSE", "stock"),
+        ("ABBV", "AbbVie Inc.", "NYSE", "stock"),
+        ("UNH", "UnitedHealth Group Inc.", "NYSE", "stock"),
+        ("LLY", "Eli Lilly and Co.", "NYSE", "stock"),
+        ("COST", "Costco Wholesale Corp.", "NASDAQ", "stock"),
+        ("AVGO", "Broadcom Inc.", "NASDAQ", "stock"),
+        ("TXN", "Texas Instruments Inc.", "NASDAQ", "stock"),
+        ("QCOM", "Qualcomm Inc.", "NASDAQ", "stock"),
+        ("LOW", "Lowe's Companies Inc.", "NYSE", "stock"),
+        ("SBUX", "Starbucks Corp.", "NASDAQ", "stock"),
+        ("HOOD", "Robinhood Markets Inc.", "NASDAQ", "stock"),
+        ("PLTR", "Palantir Technologies Inc.", "NYSE", "stock"),
+        ("SOFI", "SoFi Technologies Inc.", "NASDAQ", "stock"),
+        ("COIN", "Coinbase Global Inc.", "NASDAQ", "stock"),
+        ("RBLX", "Roblox Corp.", "NYSE", "stock"),
+        ("SNAP", "Snap Inc.", "NYSE", "stock"),
+        ("UBER", "Uber Technologies Inc.", "NYSE", "stock"),
+        ("LYFT", "Lyft Inc.", "NASDAQ", "stock"),
+        ("SQ", "Block Inc.", "NYSE", "stock"),
+        ("SHOP", "Shopify Inc.", "NYSE", "stock"),
+        ("ROKU", "Roku Inc.", "NASDAQ", "stock"),
+        ("ZM", "Zoom Video Communications Inc.", "NASDAQ", "stock"),
+        ("DOCU", "DocuSign Inc.", "NASDAQ", "stock"),
+        ("SNOW", "Snowflake Inc.", "NYSE", "stock"),
+        ("CRWD", "CrowdStrike Holdings Inc.", "NASDAQ", "stock"),
+        ("DDOG", "Datadog Inc.", "NASDAQ", "stock"),
+        ("NET", "Cloudflare Inc.", "NYSE", "stock"),
+        ("PANW", "Palo Alto Networks Inc.", "NASDAQ", "stock"),
+        ("ZS", "Zscaler Inc.", "NASDAQ", "stock"),
+        ("OKTA", "Okta Inc.", "NASDAQ", "stock"),
+        ("MDB", "MongoDB Inc.", "NASDAQ", "stock"),
+        ("ABNB", "Airbnb Inc.", "NASDAQ", "stock"),
+        ("DASH", "DoorDash Inc.", "NASDAQ", "stock"),
+        ("SPY", "SPDR S&P 500 ETF Trust", "NYSE", "etf"),
+        ("QQQ", "Invesco QQQ Trust", "NASDAQ", "etf"),
+        ("IWM", "iShares Russell 2000 ETF", "NYSE", "etf"),
+        ("DIA", "SPDR Dow Jones Industrial Average ETF", "NYSE", "etf"),
+        ("VTI", "Vanguard Total Stock Market ETF", "NYSE", "etf"),
+        ("VOO", "Vanguard S&P 500 ETF", "NYSE", "etf"),
+        ("ARKK", "ARK Innovation ETF", "NYSE", "etf"),
+        ("XLF", "Financial Select Sector SPDR Fund", "NYSE", "etf"),
+        ("XLE", "Energy Select Sector SPDR Fund", "NYSE", "etf"),
+        ("XLK", "Technology Select Sector SPDR Fund", "NYSE", "etf"),
+        ("GLD", "SPDR Gold Shares", "NYSE", "etf"),
+        ("SLV", "iShares Silver Trust", "NYSE", "etf"),
+        ("TLT", "iShares 20+ Year Treasury Bond ETF", "NASDAQ", "etf"),
+    ]
+
+    def search_fallback(query_upper: str, query_lower: str, limit: int):
+        """Search using fallback stock list."""
+        results = []
+        for symbol, name, exchange, asset_type in POPULAR_STOCKS:
+            symbol_match = query_upper in symbol
+            name_match = query_lower in name.lower()
+
+            if symbol_match or name_match:
+                priority = 0 if symbol == query_upper else (1 if symbol.startswith(query_upper) else 2)
+                results.append((priority, SearchResult(
+                    symbol=symbol,
+                    name=name,
+                    exchange=exchange,
+                    asset_type=asset_type,
+                    source="fallback",
+                )))
+
+        results.sort(key=lambda x: (x[0], x[1].symbol))
+        return [r[1] for r in results[:limit]]
+
+    # Try Alpaca API first
+    try:
+        from alpaca.trading.client import TradingClient
+        from alpaca.trading.requests import GetAssetsRequest
+        from alpaca.trading.enums import AssetClass, AssetStatus
+        from alpaca.common.exceptions import APIError
+
+        settings = get_settings()
+
+        # Check if API keys are configured
+        if not settings.alpaca_api_key or not settings.alpaca_secret_key:
+            logger.warning("Alpaca API keys not configured, using fallback")
+            return search_fallback(query_upper, query_lower, limit)
+
+        # Determine if using paper trading based on base URL
+        is_paper = "paper" in settings.alpaca_base_url.lower()
+
+        logger.info(f"Searching Alpaca API for query: '{query}' (paper={is_paper})")
+
+        client = TradingClient(
+            settings.alpaca_api_key,
+            settings.alpaca_secret_key,
+            paper=is_paper
+        )
+
+        # Use GetAssetsRequest for server-side filtering (more efficient)
+        request = GetAssetsRequest(
+            asset_class=AssetClass.US_EQUITY,
+            status=AssetStatus.ACTIVE
+        )
+        assets = client.get_all_assets(request)
+
+        logger.info(f"Alpaca returned {len(assets)} active US equity assets")
+
+        results = []
+        for asset in assets:
+            # Only include tradable assets
+            if not asset.tradable:
+                continue
+
+            # Match by symbol or name
+            symbol_match = query_upper in asset.symbol
+            name_match = query_lower in (asset.name or "").lower()
+
+            if symbol_match or name_match:
+                # Prioritize exact symbol matches
+                priority = 0 if asset.symbol == query_upper else (1 if asset.symbol.startswith(query_upper) else 2)
+                results.append((priority, SearchResult(
+                    symbol=asset.symbol,
+                    name=asset.name or asset.symbol,
+                    exchange=asset.exchange.value if asset.exchange else "UNKNOWN",
+                    asset_type="etf" if "ETF" in (asset.name or "").upper() else "stock",
+                    source="alpaca",
+                )))
+
+        # Sort by priority and limit
+        results.sort(key=lambda x: (x[0], x[1].symbol))
+        final_results = [r[1] for r in results[:limit]]
+        logger.info(f"Search returned {len(final_results)} results from Alpaca API")
+        return final_results
+
+    except APIError as e:
+        logger.error(f"Alpaca API error during search: {str(e)}")
+        logger.warning("Falling back to local stock list due to Alpaca API error")
+        return search_fallback(query_upper, query_lower, limit)
+    except Exception as e:
+        logger.error(f"Unexpected error during Alpaca search: {type(e).__name__}: {str(e)}")
+        logger.warning("Falling back to local stock list due to unexpected error")
+        return search_fallback(query_upper, query_lower, limit)
+
+
+@app.get(
+    "/stock/{symbol}/detail",
+    response_model=StockDetailResponse,
+    summary="Get stock detail with charts",
+    description="""
+    Get comprehensive stock detail for the detail page.
+
+    Includes:
+    - Current price and change
+    - Analysis score and recommendation
+    - Trade plan (if BUY recommendation)
+    - Multi-timeframe bar data for charts (1D, 1H, 15M)
+    - Support and resistance levels
+    """,
+)
+async def get_stock_detail(symbol: str):
+    """Get comprehensive stock detail with multi-timeframe bar data."""
+    try:
+        symbol = symbol.upper()
+
+        # Run full analysis
+        analysis = run_analysis(
+            symbol=symbol,
+            account_size=10000.0,  # Default account size
+            use_ai=False,
+        )
+
+        # Fetch multi-timeframe bars
+        bars_1d = []
+        bars_1h = []
+        bars_15m = []
+
+        try:
+            # Daily bars (365 days for 52-week high/low calculation)
+            daily_bars = fetch_price_bars(symbol, timeframe="1d", days_back=365)
+            bars_1d = [
+                PriceBarResponse(
+                    timestamp=str(bar.timestamp),
+                    open=bar.open,
+                    high=bar.high,
+                    low=bar.low,
+                    close=bar.close,
+                    volume=bar.volume,
+                )
+                for bar in daily_bars
+            ]
+        except Exception as e:
+            logger.warning(f"Failed to fetch daily bars for {symbol}: {e}")
+
+        try:
+            # Hourly bars (7 days)
+            hourly_bars = fetch_price_bars(symbol, timeframe="1h", days_back=7)
+            bars_1h = [
+                PriceBarResponse(
+                    timestamp=str(bar.timestamp),
+                    open=bar.open,
+                    high=bar.high,
+                    low=bar.low,
+                    close=bar.close,
+                    volume=bar.volume,
+                )
+                for bar in hourly_bars
+            ]
+        except Exception as e:
+            logger.warning(f"Failed to fetch hourly bars for {symbol}: {e}")
+
+        try:
+            # 15-minute bars (2 days)
+            m15_bars = fetch_price_bars(symbol, timeframe="15m", days_back=2)
+            bars_15m = [
+                PriceBarResponse(
+                    timestamp=str(bar.timestamp),
+                    open=bar.open,
+                    high=bar.high,
+                    low=bar.low,
+                    close=bar.close,
+                    volume=bar.volume,
+                )
+                for bar in m15_bars
+            ]
+        except Exception as e:
+            logger.warning(f"Failed to fetch 15m bars for {symbol}: {e}")
+
+        # Calculate EMA series for chart overlays
+        ema_9_values = []
+        ema_21_values = []
+        vwap_value = None
+
+        if daily_bars and len(daily_bars) >= 9:
+            try:
+                from app.tools.indicators import calculate_ema_series, calculate_vwap
+
+                ema_9_values = calculate_ema_series(daily_bars, period=9)
+                logger.info(f"Calculated EMA 9 series: {len(ema_9_values)} values")
+
+                if len(daily_bars) >= 21:
+                    ema_21_values = calculate_ema_series(daily_bars, period=21)
+                    logger.info(f"Calculated EMA 21 series: {len(ema_21_values)} values")
+
+                # Calculate VWAP
+                vwap_result = calculate_vwap(daily_bars)
+                vwap_value = vwap_result.value
+                logger.info(f"Calculated VWAP: {vwap_value}")
+            except Exception as e:
+                logger.warning(f"Failed to calculate indicators for {symbol}: {e}")
+
+        # Get company name from Alpaca
+        company_name = symbol
+        try:
+            from alpaca.trading.client import TradingClient
+
+            settings = get_settings()
+            if settings.alpaca_api_key and settings.alpaca_secret_key:
+                is_paper = "paper" in settings.alpaca_base_url.lower()
+                client = TradingClient(
+                    settings.alpaca_api_key,
+                    settings.alpaca_secret_key,
+                    paper=is_paper
+                )
+                asset = client.get_asset(symbol)
+                if asset and asset.name:
+                    company_name = asset.name
+                    logger.info(f"Found company name: {company_name}")
+        except Exception as e:
+            logger.warning(f"Failed to get company name for {symbol}: {e}")
+
+        # Get current price from latest quote
+        current_price = 0.0
+        change = 0.0
+        change_pct = 0.0
+
+        try:
+            quote = fetch_latest_quote(symbol)
+            current_price = quote.get("mid_price") or quote.get("ask_price", 0)
+        except Exception:
+            if bars_1d:
+                current_price = bars_1d[-1].close
+
+        # Calculate change from previous close
+        if len(bars_1d) >= 2:
+            prev_close = bars_1d[-2].close
+            change = current_price - prev_close
+            change_pct = (change / prev_close) * 100 if prev_close else 0
+
+        # Calculate key statistics
+        open_price = None
+        high_price = None
+        low_price = None
+        volume = None
+        fifty_two_week_high = None
+        fifty_two_week_low = None
+        avg_volume = None
+
+        if daily_bars and len(daily_bars) > 0:
+            # Today's OHLCV from the latest bar
+            latest_bar = daily_bars[-1]
+            open_price = round(latest_bar.open, 2)
+            high_price = round(latest_bar.high, 2)
+            low_price = round(latest_bar.low, 2)
+            volume = latest_bar.volume
+
+            # 52-week high/low from all available bars
+            all_highs = [bar.high for bar in daily_bars]
+            all_lows = [bar.low for bar in daily_bars]
+            fifty_two_week_high = round(max(all_highs), 2) if all_highs else None
+            fifty_two_week_low = round(min(all_lows), 2) if all_lows else None
+
+            # 30-day average volume
+            recent_bars = daily_bars[-30:] if len(daily_bars) >= 30 else daily_bars
+            volumes = [bar.volume for bar in recent_bars]
+            avg_volume = int(sum(volumes) / len(volumes)) if volumes else None
+
+            logger.info(
+                f"Key stats for {symbol}: Open={open_price}, High={high_price}, "
+                f"Low={low_price}, Vol={volume}, 52WH={fifty_two_week_high}, "
+                f"52WL={fifty_two_week_low}, AvgVol={avg_volume}"
+            )
+
+        # Calculate comprehensive support/resistance levels
+        support_levels = []
+        resistance_levels = []
+
+        if daily_bars and len(daily_bars) >= 10:
+            try:
+                from app.tools.analysis import find_comprehensive_levels
+
+                levels = find_comprehensive_levels(
+                    price_bars=daily_bars,
+                    current_price=current_price,
+                    ema_9=ema_9_values if ema_9_values else None,
+                    ema_21=ema_21_values if ema_21_values else None,
+                    vwap=vwap_value,
+                )
+                # Extract prices from level objects
+                support_levels = [lvl["price"] for lvl in levels["support"]]
+                resistance_levels = [lvl["price"] for lvl in levels["resistance"]]
+
+                # Log level details for debugging
+                logger.info(f"Found {len(support_levels)} support levels: {support_levels[:5]}")
+                logger.info(f"Found {len(resistance_levels)} resistance levels: {resistance_levels[:5]}")
+            except Exception as e:
+                logger.warning(f"Failed to calculate comprehensive levels for {symbol}: {e}")
+
+        # Build trade plan dict
+        trade_plan = None
+        if analysis.trade_plan:
+            tp = analysis.trade_plan
+            trade_plan = {
+                "trade_type": tp.trade_type,
+                "entry_price": tp.entry_price,
+                "stop_loss": tp.stop_loss,
+                "target_1": tp.target_1,
+                "target_2": tp.target_2,
+                "target_3": tp.target_3,
+                "position_size": tp.position_size,
+                "risk_amount": tp.risk_amount,
+                "risk_percentage": tp.risk_percentage,
+            }
+            # Add trade plan levels to support/resistance if not already present
+            if tp.stop_loss and tp.stop_loss not in support_levels:
+                support_levels.append(round(tp.stop_loss, 2))
+            for target in [tp.target_1, tp.target_2, tp.target_3]:
+                if target and target not in resistance_levels:
+                    resistance_levels.append(round(target, 2))
+
+        # Parse reasons from analysis
+        reasons = analysis.reasoning.split(" | ") if analysis.reasoning else []
+
+        logger.info(f"Stock detail for {symbol}: {analysis.recommendation} ({analysis.confidence}%)")
+
+        return StockDetailResponse(
+            symbol=symbol,
+            name=company_name,
+            current_price=round(current_price, 2),
+            change=round(change, 2),
+            change_pct=round(change_pct, 2),
+            # Key statistics
+            open_price=open_price,
+            high_price=high_price,
+            low_price=low_price,
+            volume=volume,
+            fifty_two_week_high=fifty_two_week_high,
+            fifty_two_week_low=fifty_two_week_low,
+            avg_volume=avg_volume,
+            # Analysis data
+            score=analysis.confidence,
+            recommendation=analysis.recommendation,
+            reasoning=analysis.reasoning,
+            reasons=reasons[:5],  # Top 5 reasons
+            trade_plan=trade_plan,
+            bars_1d=bars_1d,
+            bars_1h=bars_1h,
+            bars_15m=bars_15m,
+            support_levels=support_levels,
+            resistance_levels=resistance_levels,
+            ema_9=ema_9_values,
+            ema_21=ema_21_values,
+            vwap=vwap_value,
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error fetching stock detail for {symbol}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch stock detail: {str(e)}"
+        )
+
+
+@app.get(
+    "/stock/{symbol}/bars",
+    response_model=List[PriceBarResponse],
+    summary="Get chart bars for a specific timeframe",
+    description="""
+    Fetch price bars for a specific timeframe on demand.
+
+    Timeframe options:
+    - 1d: Intraday (5-minute bars for 1 day)
+    - 1w: 1 week (hourly bars)
+    - 1m: 1 month (daily bars)
+    - 3m: 3 months (daily bars)
+    - 6m: 6 months (daily bars)
+    - 1y: 1 year (daily bars)
+    - ytd: Year-to-date (daily bars)
+    - 5y: 5 years (weekly bars)
+    - all: All available history (weekly bars)
+    """,
+)
+async def get_stock_bars(
+    symbol: str,
+    timeframe: str = "1m",
+):
+    """Get chart bars for a specific timeframe."""
+    try:
+        symbol = symbol.upper()
+
+        # Define timeframe configurations
+        # Maps API timeframe param -> (Alpaca timeframe, days_back)
+        from datetime import date
+
+        # Calculate YTD days
+        today = date.today()
+        ytd_days = (today - date(today.year, 1, 1)).days + 1
+
+        timeframe_config = {
+            "1d": ("1m", 3),       # Intraday: 1-min bars (3 days to cover weekends)
+            "1w": ("1h", 7),       # 1 week: hourly bars
+            "1m": ("1d", 30),      # 1 month: daily bars
+            "3m": ("1d", 90),      # 3 months: daily bars
+            "6m": ("1d", 180),     # 6 months: daily bars
+            "1y": ("1d", 365),     # 1 year: daily bars
+            "ytd": ("1d", ytd_days),  # Year-to-date: daily bars
+            "5y": ("1w", 1825),    # 5 years: weekly bars
+            "all": ("1w", 3650),   # ~10 years: weekly bars
+        }
+
+        if timeframe not in timeframe_config:
+            raise ValueError(
+                f"Invalid timeframe: {timeframe}. "
+                f"Valid options: {', '.join(timeframe_config.keys())}"
+            )
+
+        alpaca_tf, days_back = timeframe_config[timeframe]
+
+        logger.info(f"Fetching {timeframe} bars for {symbol}: {alpaca_tf} bars for {days_back} days")
+
+        bars = fetch_price_bars(symbol, timeframe=alpaca_tf, days_back=days_back)
+
+        # For 1D (intraday), filter to only show the last real trading day (extended hours)
+        if timeframe == "1d" and bars:
+            from collections import defaultdict
+            import pytz
+
+            # Extended trading hours: 4:00 AM - 8:00 PM ET
+            # Pre-market: 4:00 AM - 9:30 AM
+            # Regular: 9:30 AM - 4:00 PM
+            # After-hours: 4:00 PM - 8:00 PM
+            et = pytz.timezone('America/New_York')
+            extended_open_hour = 4   # 4:00 AM ET
+            extended_close_hour = 20  # 8:00 PM ET
+
+            # Group bars by date, filtering to extended trading hours
+            bars_by_date = defaultdict(list)
+            for bar in bars:
+                # Convert to ET
+                bar_et = bar.timestamp.astimezone(et)
+                # Only include bars during extended trading hours (4 AM - 8 PM ET)
+                if extended_open_hour <= bar_et.hour < extended_close_hour:
+                    bars_by_date[bar_et.date()].append(bar)
+
+            # Find the most recent date with meaningful data (at least 100 bars for 1-min data)
+            sorted_dates = sorted(bars_by_date.keys(), reverse=True)
+            last_trading_date = None
+            for d in sorted_dates:
+                if len(bars_by_date[d]) >= 100:
+                    last_trading_date = d
+                    break
+
+            # Fallback to most recent date if no day has enough bars
+            if last_trading_date is None and sorted_dates:
+                last_trading_date = sorted_dates[0]
+
+            if last_trading_date:
+                bars = bars_by_date[last_trading_date]
+                logger.info(f"Filtered to {len(bars)} extended-hours bars for {last_trading_date}")
+
+        return [
+            PriceBarResponse(
+                timestamp=str(bar.timestamp),
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                volume=bar.volume,
+            )
+            for bar in bars
+        ]
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error fetching bars for {symbol}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch bars: {str(e)}"
         )
 
 
@@ -951,6 +2054,1148 @@ async def streaming_status():
     """Get the current status of the WebSocket streaming connection."""
     streamer = get_streamer()
     return streamer.get_subscription_status()
+
+
+# ============================================================================
+# Position Management Endpoints
+# ============================================================================
+
+
+class CreatePositionRequest(BaseModel):
+    """Request body for creating a position."""
+    symbol: str
+    stop_loss: float
+    trade_type: str = "swing"
+    target_1: Optional[float] = None
+    target_2: Optional[float] = None
+    target_3: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class EnterPositionRequest(BaseModel):
+    """Request body for entering a position."""
+    entry_price: float
+    size: int
+
+
+class UpdatePositionRequest(BaseModel):
+    """Request body for updating a position."""
+    stop_loss: Optional[float] = None
+    shares_sold: Optional[int] = None
+    target_hit: Optional[int] = None
+
+
+class AddEntryRequest(BaseModel):
+    """Request body for adding an entry to a position."""
+    price: float
+    shares: int
+    date: Optional[str] = None
+
+
+class AddExitRequest(BaseModel):
+    """Request body for adding an exit from a position."""
+    price: float
+    shares: int
+    reason: str = "manual"  # target_1, target_2, target_3, stop_loss, manual
+    date: Optional[str] = None
+
+
+@app.post(
+    "/positions",
+    summary="Create a position",
+    description="Create a new position to track (starts in 'watching' status).",
+)
+async def create_position(request: CreatePositionRequest, user: User = Depends(get_current_user)):
+    """Create a new position for tracking."""
+    user_id = user.id
+    try:
+        store = get_position_store()
+        position = await store.create_position(
+            user_id=user_id,
+            symbol=request.symbol.upper(),
+            stop_loss=request.stop_loss,
+            trade_type=request.trade_type,
+            target_1=request.target_1,
+            target_2=request.target_2,
+            target_3=request.target_3,
+            notes=request.notes,
+        )
+        logger.info(f"Created position for {request.symbol.upper()}")
+        return position.model_dump()
+    except Exception as e:
+        logger.error(f"Error creating position: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create position: {str(e)}"
+        )
+
+
+@app.get(
+    "/positions",
+    summary="Get all positions",
+    description="Get all positions for a user.",
+)
+async def get_positions(active_only: bool = True, user: User = Depends(get_current_user)):
+    """Get all positions for a user."""
+    user_id = user.id
+    try:
+        store = get_position_store()
+        if active_only:
+            positions = await store.get_active_positions(user_id)
+        else:
+            positions = await store.get_all_positions(user_id)
+        return [p.model_dump() for p in positions]
+    except Exception as e:
+        logger.error(f"Error getting positions: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get positions: {str(e)}"
+        )
+
+
+@app.get(
+    "/positions/{symbol}",
+    summary="Get position for symbol",
+    description="Get position details for a specific symbol.",
+)
+async def get_position(symbol: str, user: User = Depends(get_current_user)):
+    """Get position for a specific symbol."""
+    user_id = user.id
+    try:
+        store = get_position_store()
+        position = await store.get_position(user_id, symbol.upper())
+        if not position:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No position found for {symbol.upper()}"
+            )
+        return position.model_dump()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting position: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get position: {str(e)}"
+        )
+
+
+@app.post(
+    "/positions/{symbol}/enter",
+    summary="Enter a position",
+    description="Mark a position as entered with entry price and size.",
+)
+async def enter_position(symbol: str, request: EnterPositionRequest, user: User = Depends(get_current_user)):
+    """Enter a position with price and size."""
+    user_id = user.id
+    try:
+        store = get_position_store()
+        position = await store.enter_position(
+            user_id=user_id,
+            symbol=symbol.upper(),
+            entry_price=request.entry_price,
+            size=request.size,
+        )
+        if not position:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No position found for {symbol.upper()}"
+            )
+        logger.info(f"Entered position {symbol.upper()} @ ${request.entry_price}")
+        return position.model_dump()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error entering position: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to enter position: {str(e)}"
+        )
+
+
+@app.post(
+    "/positions/{symbol}/entries",
+    summary="Add entry to position",
+    description="Add an entry to an existing position (scale in or initial entry). Recalculates average entry price automatically.",
+)
+async def add_position_entry(symbol: str, request: AddEntryRequest, user: User = Depends(get_current_user)):
+    """Add an entry to a position."""
+    user_id = user.id
+    try:
+        store = get_position_store()
+        position = await store.add_entry(
+            user_id=user_id,
+            symbol=symbol.upper(),
+            price=request.price,
+            shares=request.shares,
+            date=request.date,
+        )
+        if not position:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No position found for {symbol.upper()}"
+            )
+        logger.info(f"Added entry to {symbol.upper()}: {request.shares} shares @ ${request.price}")
+
+        return position.model_dump()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error adding entry: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to add entry: {str(e)}"
+        )
+
+
+@app.post(
+    "/positions/{symbol}/exits",
+    summary="Add exit from position",
+    description="Add an exit from a position (partial or full). Calculates realized P&L automatically.",
+)
+async def add_position_exit(symbol: str, request: AddExitRequest, user: User = Depends(get_current_user)):
+    """Add an exit from a position."""
+    user_id = user.id
+    try:
+        store = get_position_store()
+        position = await store.add_exit(
+            user_id=user_id,
+            symbol=symbol.upper(),
+            price=request.price,
+            shares=request.shares,
+            reason=request.reason,
+            date=request.date,
+        )
+        if not position:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No position found for {symbol.upper()}"
+            )
+        logger.info(f"Added exit from {symbol.upper()}: {request.shares} shares @ ${request.price}")
+
+        return position.model_dump()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error adding exit: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to add exit: {str(e)}"
+        )
+
+
+@app.get(
+    "/positions/{symbol}/pnl",
+    summary="Get position with live P&L",
+    description="Get position details with unrealized P&L calculated from current market price.",
+)
+async def get_position_with_pnl(symbol: str, user: User = Depends(get_current_user)):
+    """Get position with live P&L calculated."""
+    user_id = user.id
+    try:
+        from app.tools.market_data import fetch_latest_trade
+
+        store = get_position_store()
+        symbol_upper = symbol.upper()
+
+        # Get current price for P&L calculation
+        current_price = None
+        try:
+            trade_data = fetch_latest_trade(symbol_upper)
+            current_price = trade_data.get("price")
+        except Exception as price_error:
+            logger.warning(f"Could not fetch price for {symbol_upper}: {price_error}")
+
+        position = await store.get_position_with_pnl(
+            user_id=user_id,
+            symbol=symbol_upper,
+            current_price=current_price,
+        )
+        if not position:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No position found for {symbol_upper}"
+            )
+
+        result = position.model_dump()
+        result["current_price"] = current_price
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting position with P&L: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get position with P&L: {str(e)}"
+        )
+
+
+@app.patch(
+    "/positions/{symbol}",
+    summary="Update a position",
+    description="Update position (move stop loss, scale out).",
+)
+async def update_position(symbol: str, request: UpdatePositionRequest, user: User = Depends(get_current_user)):
+    """Update a position."""
+    user_id = user.id
+    try:
+        store = get_position_store()
+        position = None
+
+        if request.stop_loss is not None:
+            position = await store.update_stop_loss(user_id, symbol.upper(), request.stop_loss)
+            logger.info(f"Updated stop loss for {symbol.upper()} to ${request.stop_loss}")
+
+        if request.shares_sold is not None and request.target_hit is not None:
+            position = await store.scale_out(
+                user_id, symbol.upper(), request.shares_sold, request.target_hit
+            )
+            logger.info(f"Scaled out {request.shares_sold} shares of {symbol.upper()}")
+
+        if not position:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No position found for {symbol.upper()}"
+            )
+
+        return position.model_dump()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating position: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update position: {str(e)}"
+        )
+
+
+@app.delete(
+    "/positions/{symbol}",
+    summary="Delete a position",
+    description="Delete a position completely, removing all entries and exits.",
+)
+async def delete_position_endpoint(symbol: str, user: User = Depends(get_current_user)):
+    """Delete a position completely."""
+    user_id = user.id
+    try:
+        store = get_position_store()
+        deleted = await store.delete_position(user_id, symbol.upper())
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No position found for {symbol.upper()}"
+            )
+        logger.info(f"Deleted position {symbol.upper()}")
+        return {"status": "deleted", "symbol": symbol.upper()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting position: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete position: {str(e)}"
+        )
+
+
+# ============================================================================
+# Device Registration Endpoints (Push Notifications)
+# ============================================================================
+
+
+class RegisterDeviceRequest(BaseModel):
+    """Request body for device registration."""
+    device_token: str
+    platform: str = "ios"
+
+
+@app.post(
+    "/devices/register",
+    summary="Register device for push notifications",
+    description="Register a device token for receiving push notifications.",
+)
+async def register_device(request: RegisterDeviceRequest, user: User = Depends(get_current_user)):
+    """Register a device for push notifications."""
+    user_id = user.id
+    try:
+        store = get_device_store()
+        device = await store.register_device(
+            user_id=user_id,
+            device_token=request.device_token,
+            platform=request.platform,
+        )
+        logger.info(f"Registered device for user {user_id}")
+        return device.model_dump()
+    except Exception as e:
+        logger.error(f"Error registering device: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to register device: {str(e)}"
+        )
+
+
+@app.delete(
+    "/devices/{device_token}",
+    summary="Unregister device",
+    description="Remove a device from push notifications.",
+)
+async def unregister_device(device_token: str):
+    """Unregister a device from push notifications."""
+    try:
+        store = get_device_store()
+        removed = await store.unregister_device(device_token)
+        if not removed:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Device not found"
+            )
+        logger.info("Unregistered device")
+        return {"status": "unregistered"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error unregistering device: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to unregister device: {str(e)}"
+        )
+
+
+@app.get(
+    "/devices",
+    summary="Get registered devices",
+    description="Get all registered devices for a user.",
+)
+async def get_devices(user: User = Depends(get_current_user)):
+    """Get all registered devices for a user."""
+    user_id = user.id
+    try:
+        store = get_device_store()
+        devices = await store.get_user_devices(user_id)
+        return [d.model_dump() for d in devices]
+    except Exception as e:
+        logger.error(f"Error getting devices: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get devices: {str(e)}"
+        )
+
+
+# ============================================================================
+# Alert History Endpoints
+# ============================================================================
+
+
+@app.get(
+    "/alerts/history",
+    summary="Get alert history",
+    description="Get recent alerts for a user, optionally filtered by symbol.",
+)
+async def get_alert_history_endpoint(
+    user_id: str = "default",
+    symbol: Optional[str] = None,
+    limit: int = 50,
+):
+    """Get alert history for a user."""
+    try:
+        history = get_alert_history()
+        alerts = await history.get_recent_alerts(
+            user_id=user_id,
+            limit=limit,
+            symbol=symbol.upper() if symbol else None,
+        )
+        return [a.model_dump() for a in alerts]
+    except Exception as e:
+        logger.error(f"Error getting alert history: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get alert history: {str(e)}"
+        )
+
+
+@app.post(
+    "/alerts/{alert_id}/acknowledge",
+    summary="Acknowledge an alert",
+    description="Mark an alert as acknowledged.",
+)
+async def acknowledge_alert(alert_id: str):
+    """Acknowledge an alert."""
+    try:
+        history = get_alert_history()
+        acknowledged = await history.acknowledge_alert(alert_id)
+        if not acknowledged:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Alert not found"
+            )
+        return {"status": "acknowledged", "alert_id": alert_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error acknowledging alert: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to acknowledge alert: {str(e)}"
+        )
+
+
+# ============================================================================
+# Agent Control Endpoints
+# ============================================================================
+
+
+@app.get(
+    "/agent/status",
+    summary="Get agent monitoring status",
+    description="Get the current status of the AI stock monitoring agent and plan evaluator.",
+)
+async def get_agent_status():
+    """Get agent monitoring status."""
+    from app.agent.master_agent import get_master_agent
+    from app.services.scheduler import is_market_open, get_next_market_open
+    from app.services.push_notification import get_apns_service
+    from app.services.plan_evaluator import get_plan_evaluator
+
+    agent = get_master_agent()
+    apns = get_apns_service()
+    evaluator = get_plan_evaluator()
+
+    return {
+        "agent": agent.get_stats(),
+        "plan_evaluator": evaluator.get_status(),
+        "push_notifications": apns.get_status(),
+        "market_hours": {
+            "is_open": is_market_open(),
+            "next_open": get_next_market_open().isoformat() if not is_market_open() else None,
+        },
+    }
+
+
+@app.post(
+    "/agent/start",
+    summary="Start agent monitoring",
+    description="Start the AI stock monitoring agent for the current user.",
+)
+async def start_agent():
+    """Start the agent monitoring system."""
+    from app.agent.master_agent import get_master_agent
+    from app.services.push_notification import send_trading_alert
+
+    # Set up alert callback to send push notifications
+    async def alert_callback(user_id, symbol, alert_type, message, price):
+        await send_trading_alert(user_id, symbol, alert_type, message, price)
+
+    agent = get_master_agent(alert_callback)
+
+    if agent._running:
+        return {"status": "already_running", "message": "Agent is already running"}
+
+    try:
+        await agent.start()
+        return {
+            "status": "started",
+            "message": "Agent monitoring started",
+            "stats": agent.get_stats(),
+        }
+    except Exception as e:
+        logger.error(f"Error starting agent: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start agent: {str(e)}"
+        )
+
+
+@app.post(
+    "/agent/stop",
+    summary="Stop agent monitoring",
+    description="Stop the AI stock monitoring agent.",
+)
+async def stop_agent():
+    """Stop the agent monitoring system."""
+    from app.agent.master_agent import get_master_agent
+
+    agent = get_master_agent()
+
+    if not agent._running:
+        return {"status": "not_running", "message": "Agent is not running"}
+
+    try:
+        await agent.stop()
+        return {
+            "status": "stopped",
+            "message": "Agent monitoring stopped",
+        }
+    except Exception as e:
+        logger.error(f"Error stopping agent: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to stop agent: {str(e)}"
+        )
+
+
+@app.post(
+    "/agent/symbols/{symbol}",
+    summary="Add symbol to agent monitoring",
+    description="Add a symbol to be monitored by the AI agent.",
+)
+async def add_symbol_to_agent(symbol: str, user: User = Depends(get_current_user)):
+    """Add a symbol to agent monitoring."""
+    from app.agent.master_agent import get_master_agent
+
+    user_id = user.id
+    agent = get_master_agent()
+
+    if not agent._running:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Agent is not running. Start the agent first."
+        )
+
+    success = await agent.add_symbol(symbol.upper(), user_id)
+
+    if success:
+        return {
+            "status": "added",
+            "symbol": symbol.upper(),
+            "monitored_symbols": list(agent._stock_agents.keys()),
+        }
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to add {symbol} to monitoring"
+        )
+
+
+@app.delete(
+    "/agent/symbols/{symbol}",
+    summary="Remove symbol from agent monitoring",
+    description="Remove a symbol from AI agent monitoring.",
+)
+async def remove_symbol_from_agent(symbol: str):
+    """Remove a symbol from agent monitoring."""
+    from app.agent.master_agent import get_master_agent
+
+    agent = get_master_agent()
+    await agent.remove_symbol(symbol.upper())
+
+    return {
+        "status": "removed",
+        "symbol": symbol.upper(),
+        "monitored_symbols": list(agent._stock_agents.keys()),
+    }
+
+
+# ============================================================================
+# Chat & Planning Agent Endpoints
+# ============================================================================
+
+
+class ChatRequest(BaseModel):
+    """Request body for chat."""
+    message: str
+
+
+class ChatResponse(BaseModel):
+    """Response from chat."""
+    symbol: str
+    response: str
+    context: dict
+    has_plan: bool = False
+    plan_status: Optional[str] = None
+
+
+class PlanResponse(BaseModel):
+    """Response containing a trading plan."""
+    symbol: str
+    bias: str
+    thesis: str
+    entry_zone_low: Optional[float]
+    entry_zone_high: Optional[float]
+    stop_loss: Optional[float]
+    stop_reasoning: str
+    target_1: Optional[float]
+    target_2: Optional[float]
+    target_3: Optional[float]
+    target_reasoning: str
+    risk_reward: Optional[float]
+    key_supports: List[float]
+    key_resistances: List[float]
+    invalidation_criteria: str
+    technical_summary: str
+    status: str
+    created_at: str
+    last_evaluation: Optional[str]
+    evaluation_notes: Optional[str]
+    # Trade style fields
+    trade_style: Optional[str] = None
+    trade_style_reasoning: Optional[str] = None
+    holding_period: Optional[str] = None
+    confidence: Optional[int] = None
+    # External sentiment from web search
+    news_summary: Optional[str] = None
+    reddit_sentiment: Optional[str] = None
+    reddit_buzz: Optional[str] = None
+
+
+@app.post(
+    "/chat/{symbol}",
+    response_model=ChatResponse,
+    summary="Chat with stock planning agent",
+    description="""
+    Chat with an AI planning agent about a specific stock. The agent has full context of:
+    - ALL technical indicators (RSI, MACD, EMAs, Bollinger, ADX, etc.)
+    - Key support/resistance levels
+    - Volume analysis and chart patterns
+    - Your trading plan (if any)
+    - Your position status
+    - Previous conversation history
+
+    The agent can:
+    - Answer questions about the stock
+    - Create trading plans with entry, stop, targets
+    - Evaluate plans as price progresses
+    - Discuss trade management
+
+    Example questions:
+    - "Create a trading plan for this stock"
+    - "What are the key levels I should watch?"
+    - "Is my stop loss still valid?"
+    - "Should I take profit here?"
+    - "Has anything changed since you created the plan?"
+    """,
+)
+async def chat_with_stock(symbol: str, request: ChatRequest, user: User = Depends(get_current_user)):
+    """Chat with the planning agent about a specific stock."""
+    from app.agent.planning_agent import StockPlanningAgent
+
+    user_id = user.id
+    symbol = symbol.upper()
+
+    try:
+        # Create planning agent
+        agent = StockPlanningAgent(symbol, user_id)
+
+        # Check for plan creation/update requests
+        msg_lower = request.message.lower()
+
+        # Phrases that trigger plan creation
+        create_phrases = [
+            "create a plan", "make a plan", "generate a plan", "new plan",
+            "build a plan", "make me a plan", "create plan", "trading plan for",
+            "give me a plan", "set up a plan", "develop a plan"
+        ]
+
+        # Phrases that trigger plan evaluation
+        evaluate_phrases = [
+            "evaluate", "still valid", "update the plan", "check the plan",
+            "review the plan", "how's the plan", "is the plan still good",
+            "reassess", "re-evaluate", "recheck", "validate the plan",
+            "is my plan", "what about my plan", "plan status",
+            "anything changed", "has anything changed", "what changed",
+            "still on track", "how are we doing", "where are we",
+            "should i adjust", "need to adjust", "modify the plan"
+        ]
+
+        evaluation_result = None
+
+        if any(phrase in msg_lower for phrase in create_phrases):
+            # Generate a new plan
+            await agent.generate_plan(force_new=True)
+            response_text = await agent.chat(request.message)
+
+        elif any(phrase in msg_lower for phrase in evaluate_phrases):
+            # Evaluate existing plan and get result
+            evaluation_result = await agent.evaluate_plan()
+            # Chat will now have access to the fresh evaluation in context
+            response_text = await agent.chat(request.message)
+
+        else:
+            # Regular chat
+            response_text = await agent.chat(request.message)
+
+        # Get current plan status
+        plan = await agent.get_plan()
+        summary = await agent.get_summary()
+
+        # Build context with evaluation info if available
+        context = {
+            "has_position": summary.get("has_position", False),
+            "market_direction": summary.get("market_direction"),
+            "current_price": summary.get("current_price"),
+        }
+
+        # Add evaluation result if we just evaluated
+        if evaluation_result and not evaluation_result.get("error"):
+            context["just_evaluated"] = True
+            context["evaluation_status"] = evaluation_result.get("plan_status")
+            context["price_at_creation"] = evaluation_result.get("price_at_creation")
+
+        return ChatResponse(
+            symbol=symbol,
+            response=response_text,
+            context=context,
+            has_plan=plan is not None,
+            plan_status=plan.status if plan else None,
+        )
+
+    except Exception as e:
+        logger.error(f"Chat error for {symbol}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Chat failed: {str(e)}"
+        )
+
+
+@app.get(
+    "/chat/{symbol}/plan",
+    response_model=PlanResponse,
+    summary="Get existing trading plan",
+    description="Get the existing AI trading plan for a stock (does not create new).",
+)
+async def get_plan(
+    symbol: str,
+    user_id: str = "default"
+):
+    """Get an existing trading plan for a stock."""
+    from app.storage.plan_store import get_plan_store
+
+    symbol = symbol.upper()
+    plan_store = get_plan_store()
+    plan = await plan_store.get_plan(user_id, symbol)
+
+    if not plan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No trading plan found for {symbol}"
+        )
+
+    return PlanResponse(
+        symbol=plan.symbol,
+        bias=plan.bias,
+        thesis=plan.thesis,
+        entry_zone_low=plan.entry_zone_low,
+        entry_zone_high=plan.entry_zone_high,
+        stop_loss=plan.stop_loss,
+        stop_reasoning=plan.stop_reasoning,
+        target_1=plan.target_1,
+        target_2=plan.target_2,
+        target_3=plan.target_3,
+        target_reasoning=plan.target_reasoning,
+        risk_reward=plan.risk_reward,
+        key_supports=plan.key_supports,
+        key_resistances=plan.key_resistances,
+        invalidation_criteria=plan.invalidation_criteria,
+        technical_summary=plan.technical_summary,
+        status=plan.status,
+        created_at=plan.created_at,
+        last_evaluation=plan.last_evaluation,
+        evaluation_notes=plan.evaluation_notes,
+        trade_style=plan.trade_style,
+        trade_style_reasoning=plan.trade_style_reasoning,
+        holding_period=plan.holding_period,
+        confidence=plan.confidence,
+        news_summary=plan.news_summary,
+        reddit_sentiment=plan.reddit_sentiment,
+        reddit_buzz=plan.reddit_buzz,
+    )
+
+
+@app.post(
+    "/chat/{symbol}/plan",
+    response_model=PlanResponse,
+    summary="Generate trading plan",
+    description="Generate a new AI trading plan.",
+)
+async def create_plan(
+    symbol: str,
+    force_new: bool = False,
+    user_id: str = "default"
+):
+    """Generate a trading plan for a stock."""
+    from app.agent.planning_agent import StockPlanningAgent
+
+    symbol = symbol.upper()
+
+    try:
+        agent = StockPlanningAgent(symbol, user_id)
+        plan = await agent.generate_plan(force_new=force_new)
+
+        return PlanResponse(
+            symbol=plan.symbol,
+            bias=plan.bias,
+            thesis=plan.thesis,
+            entry_zone_low=plan.entry_zone_low,
+            entry_zone_high=plan.entry_zone_high,
+            stop_loss=plan.stop_loss,
+            stop_reasoning=plan.stop_reasoning,
+            target_1=plan.target_1,
+            target_2=plan.target_2,
+            target_3=plan.target_3,
+            target_reasoning=plan.target_reasoning,
+            risk_reward=plan.risk_reward,
+            key_supports=plan.key_supports,
+            key_resistances=plan.key_resistances,
+            invalidation_criteria=plan.invalidation_criteria,
+            technical_summary=plan.technical_summary,
+            status=plan.status,
+            created_at=plan.created_at,
+            last_evaluation=plan.last_evaluation,
+            evaluation_notes=plan.evaluation_notes,
+            trade_style=plan.trade_style,
+            trade_style_reasoning=plan.trade_style_reasoning,
+            holding_period=plan.holding_period,
+            confidence=plan.confidence,
+            news_summary=plan.news_summary,
+            reddit_sentiment=plan.reddit_sentiment,
+            reddit_buzz=plan.reddit_buzz,
+        )
+
+    except Exception as e:
+        logger.error(f"Plan error for {symbol}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Plan generation failed: {str(e)}"
+        )
+
+
+@app.post(
+    "/chat/{symbol}/plan/stream",
+    summary="Generate trading plan with streaming",
+    description="Generate a new AI trading plan with Server-Sent Events streaming.",
+)
+async def create_plan_stream(
+    symbol: str,
+    force_new: bool = True,
+    user_id: str = "default"
+):
+    """Generate a trading plan with real-time streaming output."""
+    from app.agent.planning_agent import StockPlanningAgent
+
+    symbol = symbol.upper()
+
+    async def generate_stream():
+        try:
+            agent = StockPlanningAgent(symbol, user_id)
+
+            # Phase 1: Gathering data
+            yield f"data: {json.dumps({'type': 'phase', 'phase': 'gathering_data'})}\n\n"
+            await agent.gather_comprehensive_data()
+
+            # Phase 2: Analyzing
+            yield f"data: {json.dumps({'type': 'phase', 'phase': 'analyzing'})}\n\n"
+
+            # Phase 3: Stream the plan generation
+            yield f"data: {json.dumps({'type': 'phase', 'phase': 'generating'})}\n\n"
+
+            async for chunk in agent.generate_plan_streaming(force_new=force_new):
+                yield f"data: {json.dumps(chunk)}\n\n"
+
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.error(f"Streaming plan error for {symbol}: {str(e)}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@app.post(
+    "/chat/{symbol}/evaluate",
+    summary="Evaluate trading plan",
+    description="Re-evaluate the trading plan against current market conditions.",
+)
+async def evaluate_plan(symbol: str, user: User = Depends(get_current_user)):
+    """Evaluate an existing trading plan."""
+    from app.agent.planning_agent import StockPlanningAgent
+
+    user_id = user.id
+    symbol = symbol.upper()
+
+    try:
+        agent = StockPlanningAgent(symbol, user_id)
+        result = await agent.evaluate_plan()
+
+        if "error" in result:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=result["error"]
+            )
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Evaluation error for {symbol}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Evaluation failed: {str(e)}"
+        )
+
+
+@app.delete(
+    "/chat/{symbol}/conversation",
+    summary="Clear conversation history",
+    description="Clear the chat history for a stock.",
+)
+async def clear_conversation(symbol: str, user: User = Depends(get_current_user)):
+    """Clear conversation history for a stock."""
+    from app.agent.planning_agent import StockPlanningAgent
+
+    user_id = user.id
+    symbol = symbol.upper()
+
+    try:
+        agent = StockPlanningAgent(symbol, user_id)
+        cleared = await agent.clear_conversation()
+
+        return {"success": cleared, "symbol": symbol}
+
+    except Exception as e:
+        logger.error(f"Clear conversation error for {symbol}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to clear conversation: {str(e)}"
+        )
+
+
+@app.post(
+    "/chat",
+    summary="Portfolio chat with AI agent",
+    description="""
+    Chat with the Portfolio Agent about your watchlist and positions.
+
+    The Portfolio Agent can:
+    - Summarize your entire portfolio with current prices and P&L
+    - Analyze individual stocks (delegates to specialized stock subagents)
+    - Provide market context and direction
+    - Track positions across all watchlist stocks
+
+    Conversation history is persisted on the server.
+
+    Example questions:
+    - "How is my portfolio doing?"
+    - "Summarize AAPL for me"
+    - "Which of my stocks are near support?"
+    - "What's the market direction today?"
+    """,
+)
+async def chat_portfolio(request: ChatRequest, user: User = Depends(get_current_user)):
+    """Chat with the portfolio agent about your watchlist and positions."""
+    from app.agent.portfolio_agent import get_portfolio_agent
+
+    user_id = user.id
+    try:
+        agent = get_portfolio_agent(user_id)
+        response_text = await agent.chat(request.message)
+
+        # Get portfolio summary for context
+        summary = await agent.get_summary()
+
+        return {
+            "response": response_text,
+            "portfolio_summary": summary,
+            "conversation_key": "portfolio",
+        }
+
+    except Exception as e:
+        logger.error(f"Portfolio chat error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Chat failed: {str(e)}"
+        )
+
+
+@app.get(
+    "/chat/history",
+    summary="Get chat history",
+    description="Get persisted chat history for the portfolio or a specific stock.",
+)
+async def get_chat_history(
+    symbol: Optional[str] = None,
+    user_id: str = "default",
+    limit: int = 50,
+):
+    """Get chat history from server.
+
+    Args:
+        symbol: Stock symbol for stock-specific chat, or None for portfolio chat
+        user_id: User identifier
+        limit: Maximum number of messages to return
+
+    Returns:
+        Chat history with messages
+    """
+    from app.storage.conversation_store import get_conversation_store
+
+    try:
+        conversation_store = get_conversation_store()
+        key = symbol.upper() if symbol else "portfolio"
+
+        conversation = await conversation_store.get_conversation(user_id, key)
+
+        return {
+            "key": key,
+            "messages": [
+                {
+                    "role": msg.role,
+                    "content": msg.content,
+                    "timestamp": msg.timestamp,
+                }
+                for msg in conversation.messages[-limit:]
+            ],
+            "count": len(conversation.messages),
+        }
+
+    except Exception as e:
+        logger.error(f"Get chat history error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get chat history: {str(e)}"
+        )
+
+
+@app.delete(
+    "/chat/history",
+    summary="Clear chat history",
+    description="Clear chat history for the portfolio or a specific stock.",
+)
+async def clear_chat_history(
+    symbol: Optional[str] = None,
+    user_id: str = "default",
+):
+    """Clear chat history on server.
+
+    Args:
+        symbol: Stock symbol for stock-specific chat, or None for portfolio chat
+        user_id: User identifier
+
+    Returns:
+        Success status
+    """
+    from app.storage.conversation_store import get_conversation_store
+
+    try:
+        conversation_store = get_conversation_store()
+        key = symbol.upper() if symbol else "portfolio"
+
+        cleared = await conversation_store.clear_conversation(user_id, key)
+
+        return {"success": cleared, "key": key}
+
+    except Exception as e:
+        logger.error(f"Clear chat history error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to clear chat history: {str(e)}"
+        )
 
 
 @app.exception_handler(Exception)
