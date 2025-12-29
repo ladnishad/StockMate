@@ -489,8 +489,8 @@ actor APIService {
     /// Create a new position (watching status)
     func createPosition(
         symbol: String,
-        stopLoss: Double,
         tradeType: String = "swing",
+        stopLoss: Double? = nil,
         target1: Double? = nil,
         target2: Double? = nil,
         target3: Double? = nil,
@@ -501,8 +501,8 @@ actor APIService {
 
         let body = CreatePositionRequest(
             symbol: symbol.uppercased(),
-            stopLoss: stopLoss,
             tradeType: tradeType,
+            stopLoss: stopLoss,
             target1: target1,
             target2: target2,
             target3: target3,
