@@ -258,7 +258,9 @@ input:focus{{outline:none;border-color:#0ea5e9}}
 .error{{color:#ef4444;font-size:14px;margin-top:12px}}
 .success-msg{{color:#10b981;font-size:14px;margin-top:12px}}
 .brand{{font-size:12px;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;padding-top:24px;margin-top:24px;border-top:1px solid rgba(148,163,184,0.1)}}
-#reset-form,#success-view,#confirm-view{{display:none}}
+.icon.error{{background:linear-gradient(135deg,rgba(239,68,68,0.15),rgba(239,68,68,0.05));border-color:#ef4444}}
+.error-title{{color:#ef4444}}
+#reset-form,#success-view,#confirm-view,#error-view{{display:none}}
 </style></head>
 <body>
 <div class="card">
@@ -293,6 +295,13 @@ input:focus{{outline:none;border-color:#0ea5e9}}
     <p class="subtitle">Your account is verified. You can now open the StockMate app and sign in.</p>
   </div>
 
+  <!-- Error View -->
+  <div id="error-view">
+    <div class="icon error">⚠</div>
+    <h1 class="error-title">Link Expired</h1>
+    <p class="subtitle" id="error-description">This link has expired or is invalid. Please request a new one from the app.</p>
+  </div>
+
   <div class="brand">StockMate</div>
 </div>
 
@@ -312,7 +321,12 @@ function getHashParams() {{
 
 // Initialize page based on URL params
 const params = getHashParams();
-if (params.type === 'recovery' && params.access_token) {{
+if (params.error) {{
+  // Handle error cases
+  document.getElementById('error-view').style.display = 'block';
+  const desc = params.error_description ? params.error_description.replace(/\+/g, ' ') : 'This link has expired or is invalid.';
+  document.getElementById('error-description').textContent = desc + ' Please request a new one from the app.';
+}} else if (params.type === 'recovery' && params.access_token) {{
   document.getElementById('reset-form').style.display = 'block';
 }} else if (params.access_token) {{
   document.getElementById('confirm-view').style.display = 'block';
