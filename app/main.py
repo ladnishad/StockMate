@@ -903,7 +903,10 @@ async def get_user_watchlist(user: User = Depends(get_current_user)):
     user_id = user.id
     try:
         store = get_watchlist_store()
+        # Handle both sync (JSON) and async (PostgreSQL) stores
         items = store.get_watchlist(user_id)
+        if hasattr(items, '__await__'):
+            items = await items
 
         # Enrich with live price data
         if items:
@@ -958,6 +961,8 @@ async def add_to_watchlist(
     try:
         store = get_watchlist_store()
         item = store.add_symbol(user_id, symbol.upper(), notes=notes)
+        if hasattr(item, '__await__'):
+            item = await item
 
         # Fetch current price
         try:
