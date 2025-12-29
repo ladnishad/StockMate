@@ -24,6 +24,7 @@ import logging
 from app.tools.market_data import fetch_price_bars, fetch_snapshots
 from app.tools.indicators import calculate_ema, calculate_rsi, analyze_volume
 from app.tools.analysis import run_analysis
+from app.services.scheduler import is_market_open, get_next_market_open, get_market_close_time
 
 logger = logging.getLogger(__name__)
 
@@ -574,6 +575,16 @@ def get_quick_market_status() -> Dict:
 
     logger.info(f"Quick market status: {market_direction} (avg: {avg_change:+.2f}%)")
 
+    # Build market status
+    market_is_open = is_market_open()
+    if market_is_open:
+        close_time = get_market_close_time()
+        next_event = close_time.isoformat() if close_time else None
+        next_event_type = "close"
+    else:
+        next_event = get_next_market_open().isoformat()
+        next_event_type = "open"
+
     return {
         "indices": indices_data,
         "market_direction": market_direction,
@@ -581,6 +592,11 @@ def get_quick_market_status() -> Dict:
         "down_count": down_count,
         "average_change_pct": round(avg_change, 2),
         "timestamp": datetime.utcnow(),
+        "market_status": {
+            "is_open": market_is_open,
+            "next_event": next_event,
+            "next_event_type": next_event_type,
+        },
     }
 
 

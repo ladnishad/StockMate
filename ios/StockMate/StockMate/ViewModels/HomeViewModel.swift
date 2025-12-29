@@ -8,6 +8,11 @@ class HomeViewModel: ObservableObject {
 
     @Published var indices: [MarketIndex] = []
 
+    // Market status
+    @Published var isMarketOpen: Bool = true
+    @Published var marketNextEvent: String = ""
+    @Published var marketNextEventType: String = "close"
+
     // User-managed watchlist (not auto-populated)
     @Published var watchlistItems: [WatchlistItem] = []
     @Published var marketDirection: MarketDirection = .mixed
@@ -94,10 +99,17 @@ class HomeViewModel: ObservableObject {
         indicesError = nil
 
         do {
-            let fetchedIndices = try await APIService.shared.fetchMarketQuick()
+            let response = try await APIService.shared.fetchMarketQuickFull()
             withAnimation(.easeInOut(duration: 0.3)) {
-                self.indices = fetchedIndices
+                self.indices = response.marketIndices
                 self.updateMarketDirection()
+
+                // Update market status
+                if let status = response.marketStatus {
+                    self.isMarketOpen = status.isOpen
+                    self.marketNextEvent = status.nextEvent ?? ""
+                    self.marketNextEventType = status.nextEventType
+                }
             }
         } catch {
             indicesError = error.localizedDescription

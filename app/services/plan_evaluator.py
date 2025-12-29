@@ -30,7 +30,7 @@ class EvaluationResult:
     status: str  # valid, adjust, invalidated
     evaluation: str
     current_price: float
-    triggered_by: str  # periodic, key_level, manual
+    triggered_by: str  # periodic, key_level, manual, market_close
 
 
 class PlanEvaluator:
@@ -53,6 +53,9 @@ class PlanEvaluator:
 
         # Evaluation results
         self._recent_results: Dict[str, EvaluationResult] = {}
+
+        # Track market state for close detection
+        self._was_market_open: bool = False
 
     async def start(self, user_id: str = "default"):
         """Start the background evaluation service."""
@@ -79,10 +82,23 @@ class PlanEvaluator:
         """Main evaluation loop."""
         while self._running:
             try:
-                # Only evaluate during market hours
-                if not is_market_open():
+                market_open = is_market_open()
+
+                # Detect market close transition: was open, now closed
+                if self._was_market_open and not market_open:
+                    logger.info("Market just closed - running final evaluation for all plans")
+                    active_plans = await self._plan_store.get_active_plans(user_id)
+                    for plan in active_plans:
+                        await self._evaluate_plan(plan, user_id, "market_close")
+                    self._was_market_open = False
+
+                # If market is closed, wait
+                if not market_open:
                     await asyncio.sleep(60)  # Check every minute if market opened
                     continue
+
+                # Market is open - update state
+                self._was_market_open = True
 
                 # Get all active plans
                 active_plans = await self._plan_store.get_active_plans(user_id)

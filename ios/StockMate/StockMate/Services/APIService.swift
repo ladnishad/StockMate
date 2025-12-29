@@ -74,9 +74,14 @@ actor APIService {
 
     /// Fetch quick market overview (indices)
     func fetchMarketQuick() async throws -> [MarketIndex] {
-        let url = URL(string: "\(baseURL)/market/quick")!
-        let response: MarketQuickResponse = try await fetch(url: url)
+        let response = try await fetchMarketQuickFull()
         return response.marketIndices
+    }
+
+    /// Fetch quick market data with full response including market status
+    func fetchMarketQuickFull() async throws -> MarketQuickResponse {
+        let url = URL(string: "\(baseURL)/market/quick")!
+        return try await fetch(url: url)
     }
 
     /// Fetch full market overview with signals

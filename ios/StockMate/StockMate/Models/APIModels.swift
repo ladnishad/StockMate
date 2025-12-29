@@ -1,5 +1,19 @@
 import Foundation
 
+// MARK: - Market Status
+
+struct MarketStatus: Codable {
+    let isOpen: Bool
+    let nextEvent: String?
+    let nextEventType: String  // "open" or "close"
+
+    enum CodingKeys: String, CodingKey {
+        case isOpen = "is_open"
+        case nextEvent = "next_event"
+        case nextEventType = "next_event_type"
+    }
+}
+
 // MARK: - Market Quick Response
 
 struct MarketQuickResponse: Codable {
@@ -9,6 +23,7 @@ struct MarketQuickResponse: Codable {
     let downCount: Int
     let averageChangePct: Double
     let timestamp: String
+    let marketStatus: MarketStatus?
 
     enum CodingKeys: String, CodingKey {
         case indices
@@ -17,6 +32,7 @@ struct MarketQuickResponse: Codable {
         case downCount = "down_count"
         case averageChangePct = "average_change_pct"
         case timestamp
+        case marketStatus = "market_status"
     }
 
     var marketIndices: [MarketIndex] {

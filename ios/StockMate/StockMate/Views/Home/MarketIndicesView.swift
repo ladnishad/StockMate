@@ -5,17 +5,20 @@ struct MarketIndicesView: View {
     let indices: [MarketIndex]
     let isLoading: Bool
     let marketDirection: MarketDirection
+    let isMarketOpen: Bool
 
     @State private var hasAppeared = false
 
     init(
         indices: [MarketIndex],
         isLoading: Bool = false,
-        marketDirection: MarketDirection = .mixed
+        marketDirection: MarketDirection = .mixed,
+        isMarketOpen: Bool = true
     ) {
         self.indices = indices
         self.isLoading = isLoading
         self.marketDirection = marketDirection
+        self.isMarketOpen = isMarketOpen
     }
 
     var body: some View {
@@ -42,22 +45,22 @@ struct MarketIndicesView: View {
 
                 Spacer()
 
-                // Live indicator
+                // Market status indicator
                 HStack(spacing: 5) {
                     Circle()
-                        .fill(.green)
+                        .fill(isMarketOpen ? .green : .red)
                         .frame(width: 6, height: 6)
-                        .shadow(color: .green.opacity(0.5), radius: 3)
+                        .shadow(color: (isMarketOpen ? Color.green : Color.red).opacity(0.5), radius: 3)
 
-                    Text("LIVE")
+                    Text(isMarketOpen ? "OPEN" : "CLOSED")
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.green)
+                        .foregroundStyle(isMarketOpen ? .green : .red)
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(
                     Capsule()
-                        .fill(Color.green.opacity(0.1))
+                        .fill((isMarketOpen ? Color.green : Color.red).opacity(0.1))
                 )
             }
             .padding(.horizontal, 20)
@@ -104,12 +107,26 @@ struct MarketIndicesView: View {
 
 // MARK: - Preview
 
-#Preview("Market Indices") {
+#Preview("Market Open") {
     VStack {
         MarketIndicesView(
             indices: MarketIndex.samples,
             isLoading: false,
-            marketDirection: .bullish
+            marketDirection: .bullish,
+            isMarketOpen: true
+        )
+    }
+    .padding(.vertical)
+    .background(Color(.systemGroupedBackground))
+}
+
+#Preview("Market Closed") {
+    VStack {
+        MarketIndicesView(
+            indices: MarketIndex.samples,
+            isLoading: false,
+            marketDirection: .mixed,
+            isMarketOpen: false
         )
     }
     .padding(.vertical)
@@ -121,7 +138,8 @@ struct MarketIndicesView: View {
         MarketIndicesView(
             indices: [],
             isLoading: true,
-            marketDirection: .mixed
+            marketDirection: .mixed,
+            isMarketOpen: true
         )
     }
     .padding(.vertical)

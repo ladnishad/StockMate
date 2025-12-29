@@ -23,7 +23,8 @@ struct HomeView: View {
                         MarketIndicesView(
                             indices: viewModel.indices,
                             isLoading: viewModel.isLoadingIndices,
-                            marketDirection: viewModel.marketDirection
+                            marketDirection: viewModel.marketDirection,
+                            isMarketOpen: viewModel.isMarketOpen
                         )
 
                         // User Watchlist Section
@@ -171,4 +172,5 @@ struct RefreshButton: View {
 
 #Preview("Home View") {
     HomeView()
+        .environmentObject(AuthenticationManager.shared)
 }
