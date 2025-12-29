@@ -60,7 +60,12 @@ async def remove_symbol_with_cleanup(user_id: str, symbol: str) -> CleanupResult
 
     # 1. Remove from watchlist (primary operation)
     store = get_watchlist_store()
-    results["watchlist"] = store.remove_symbol(user_id, symbol)
+    # Handle both sync (JSON) and async (Postgres) stores
+    remove_result = store.remove_symbol(user_id, symbol)
+    if hasattr(remove_result, "__await__"):
+        results["watchlist"] = await remove_result
+    else:
+        results["watchlist"] = remove_result
 
     # 2. Delete trading plan (if exists)
     try:
