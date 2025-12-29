@@ -8,10 +8,13 @@ Provides dependency injection for route protection:
 import logging
 from typing import Optional
 from datetime import datetime, timezone
+import time
+import httpx
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError, ExpiredSignatureError
+from jose.backends import ECKey
 
 from app.config import get_settings
 from app.auth.models import User, TokenPayload
@@ -21,9 +24,73 @@ logger = logging.getLogger(__name__)
 # HTTP Bearer token scheme for Swagger UI
 security = HTTPBearer(auto_error=False)
 
+# JWKS cache
+_jwks_cache: dict = {}
+_jwks_cache_time: float = 0
+JWKS_CACHE_TTL = 3600  # Cache JWKS for 1 hour
+
+
+def get_jwks(supabase_url: str) -> dict:
+    """Fetch JWKS from Supabase for ES256 token verification.
+
+    Args:
+        supabase_url: Supabase project URL
+
+    Returns:
+        JWKS dict with keys
+    """
+    global _jwks_cache, _jwks_cache_time
+
+    # Return cached JWKS if still valid
+    if _jwks_cache and (time.time() - _jwks_cache_time) < JWKS_CACHE_TTL:
+        return _jwks_cache
+
+    jwks_url = f"{supabase_url}/auth/v1/.well-known/jwks.json"
+
+    try:
+        response = httpx.get(jwks_url, timeout=10)
+        response.raise_for_status()
+        _jwks_cache = response.json()
+        _jwks_cache_time = time.time()
+        logger.debug(f"Fetched JWKS from {jwks_url}")
+        return _jwks_cache
+    except Exception as e:
+        logger.error(f"Failed to fetch JWKS: {e}")
+        # Return cached version if available, even if expired
+        if _jwks_cache:
+            return _jwks_cache
+        raise
+
+
+def get_signing_key(token: str, jwks: dict) -> dict:
+    """Get the signing key from JWKS that matches the token's kid.
+
+    Args:
+        token: JWT token
+        jwks: JWKS dict
+
+    Returns:
+        Key dict from JWKS
+    """
+    # Get the key ID from token header
+    unverified_header = jwt.get_unverified_header(token)
+    kid = unverified_header.get("kid")
+
+    if not kid:
+        raise ValueError("Token header missing 'kid'")
+
+    # Find matching key in JWKS
+    for key in jwks.get("keys", []):
+        if key.get("kid") == kid:
+            return key
+
+    raise ValueError(f"No matching key found for kid: {kid}")
+
 
 def decode_jwt(token: str) -> TokenPayload:
     """Decode and validate a Supabase JWT token.
+
+    Supports both HS256 (legacy) and ES256 (current) algorithms.
 
     Args:
         token: JWT access token from Authorization header
@@ -36,21 +103,45 @@ def decode_jwt(token: str) -> TokenPayload:
     """
     settings = get_settings()
 
-    if not settings.supabase_jwt_secret:
-        logger.error("SUPABASE_JWT_SECRET not configured")
+    if not settings.supabase_url:
+        logger.error("SUPABASE_URL not configured")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Authentication not configured",
         )
 
     try:
-        # Supabase uses HS256 algorithm
-        payload = jwt.decode(
-            token,
-            settings.supabase_jwt_secret,
-            algorithms=["HS256"],
-            audience="authenticated",  # Supabase sets this for authenticated users
-        )
+        # Check which algorithm the token uses
+        unverified_header = jwt.get_unverified_header(token)
+        algorithm = unverified_header.get("alg", "HS256")
+
+        if algorithm == "ES256":
+            # ES256: Use JWKS public key
+            jwks = get_jwks(settings.supabase_url)
+            signing_key = get_signing_key(token, jwks)
+
+            payload = jwt.decode(
+                token,
+                signing_key,
+                algorithms=["ES256"],
+                audience="authenticated",
+            )
+        else:
+            # HS256: Use JWT secret (legacy)
+            if not settings.supabase_jwt_secret:
+                logger.error("SUPABASE_JWT_SECRET not configured for HS256")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Authentication not configured",
+                )
+
+            payload = jwt.decode(
+                token,
+                settings.supabase_jwt_secret,
+                algorithms=["HS256"],
+                audience="authenticated",
+            )
+
         return TokenPayload(**payload)
 
     except ExpiredSignatureError:
@@ -62,6 +153,13 @@ def decode_jwt(token: str) -> TokenPayload:
         )
     except JWTError as e:
         logger.debug(f"JWT validation failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except Exception as e:
+        logger.error(f"Unexpected auth error: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token",
