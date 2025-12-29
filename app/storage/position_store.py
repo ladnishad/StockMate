@@ -61,7 +61,7 @@ class Position(BaseModel):
     original_size: int = 0
 
     # Risk management
-    stop_loss: float
+    stop_loss: Optional[float] = None
     target_1: Optional[float] = None
     target_2: Optional[float] = None
     target_3: Optional[float] = None
@@ -91,8 +91,8 @@ class PositionStore:
         self,
         user_id: str,
         symbol: str,
-        stop_loss: float,
         trade_type: str,
+        stop_loss: Optional[float] = None,
         target_1: Optional[float] = None,
         target_2: Optional[float] = None,
         target_3: Optional[float] = None,
@@ -103,8 +103,8 @@ class PositionStore:
         Args:
             user_id: User identifier
             symbol: Stock ticker symbol
-            stop_loss: Stop loss price
             trade_type: Type of trade (day, swing, long)
+            stop_loss: Optional stop loss price
             target_1: First profit target
             target_2: Second profit target
             target_3: Third profit target

@@ -105,7 +105,7 @@ struct Position: Codable, Identifiable, Equatable {
     let originalSize: Int
 
     // Risk management
-    let stopLoss: Double
+    let stopLoss: Double?
     let target1: Double?
     let target2: Double?
     let target3: Double?
@@ -215,12 +215,13 @@ struct Position: Codable, Identifiable, Equatable {
     }
 
     var stopLossFormatted: String {
-        String(format: "$%.2f", stopLoss)
+        guard let stop = stopLoss else { return "—" }
+        return String(format: "$%.2f", stop)
     }
 
     var stopLossDistance: Double? {
-        guard let entry = avgEntryPrice, entry > 0 else { return nil }
-        return ((stopLoss - entry) / entry) * 100
+        guard let entry = avgEntryPrice, entry > 0, let stop = stopLoss else { return nil }
+        return ((stop - entry) / entry) * 100
     }
 
     var stopLossDistanceFormatted: String {
@@ -256,8 +257,8 @@ struct Position: Codable, Identifiable, Equatable {
 
 struct CreatePositionRequest: Codable {
     let symbol: String
-    let stopLoss: Double
     let tradeType: String
+    let stopLoss: Double?
     let target1: Double?
     let target2: Double?
     let target3: Double?
@@ -265,8 +266,8 @@ struct CreatePositionRequest: Codable {
 
     enum CodingKeys: String, CodingKey {
         case symbol
-        case stopLoss = "stop_loss"
         case tradeType = "trade_type"
+        case stopLoss = "stop_loss"
         case target1 = "target_1"
         case target2 = "target_2"
         case target3 = "target_3"

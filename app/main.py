@@ -2222,8 +2222,8 @@ async def streaming_status():
 class CreatePositionRequest(BaseModel):
     """Request body for creating a position."""
     symbol: str
-    stop_loss: float
     trade_type: str = "swing"
+    stop_loss: Optional[float] = None
     target_1: Optional[float] = None
     target_2: Optional[float] = None
     target_3: Optional[float] = None
@@ -2271,8 +2271,8 @@ async def create_position(request: CreatePositionRequest, user: User = Depends(g
         position = await store.create_position(
             user_id=user_id,
             symbol=request.symbol.upper(),
-            stop_loss=request.stop_loss,
             trade_type=request.trade_type,
+            stop_loss=request.stop_loss,
             target_1=request.target_1,
             target_2=request.target_2,
             target_3=request.target_3,

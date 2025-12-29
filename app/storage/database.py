@@ -81,7 +81,7 @@ class Database:
                     avg_exit_price REAL,
                     current_size INTEGER DEFAULT 0,
                     original_size INTEGER DEFAULT 0,
-                    stop_loss REAL NOT NULL,
+                    stop_loss REAL,
                     target_1 REAL,
                     target_2 REAL,
                     target_3 REAL,

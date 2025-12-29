@@ -77,7 +77,7 @@ async def init_postgres_tables():
                 avg_exit_price DOUBLE PRECISION,
                 current_size INTEGER DEFAULT 0,
                 original_size INTEGER DEFAULT 0,
-                stop_loss DOUBLE PRECISION NOT NULL,
+                stop_loss DOUBLE PRECISION,
                 target_1 DOUBLE PRECISION,
                 target_2 DOUBLE PRECISION,
                 target_3 DOUBLE PRECISION,
