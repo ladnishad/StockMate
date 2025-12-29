@@ -1,6 +1,7 @@
 """Trading Plan storage for the planning agent.
 
 Stores AI-generated trading plans that evolve as the stock progresses.
+Supports both SQLite (development) and PostgreSQL (production).
 """
 
 import json
@@ -11,6 +12,7 @@ from dataclasses import dataclass, field, asdict
 
 import aiosqlite
 
+from app.config import get_settings
 from app.storage.database import get_db_path
 
 logger = logging.getLogger(__name__)
@@ -280,13 +282,170 @@ class PlanStore:
             return cursor.rowcount > 0
 
 
-# Singleton instance
-_plan_store: Optional[PlanStore] = None
+class DatabasePlanStore:
+    """PostgreSQL-backed trading plan storage for production.
+
+    Uses JSONB for flexible plan storage.
+    """
+
+    def __init__(self):
+        self._initialized = False
+
+    async def _ensure_table(self):
+        """Ensure the trading_plans table exists (handled by postgres.py init)."""
+        self._initialized = True
+
+    async def save_plan(self, plan: TradingPlan) -> TradingPlan:
+        """Save or update a trading plan in Postgres."""
+        from app.storage.postgres import get_connection
+
+        now = datetime.utcnow().isoformat()
+        if not plan.created_at:
+            plan.created_at = now
+        plan.updated_at = now
+
+        # Convert to dict for JSONB storage
+        plan_data = asdict(plan)
+
+        async with get_connection() as conn:
+            # Check if exists
+            existing = await conn.fetchval(
+                "SELECT id FROM trading_plans WHERE user_id = $1 AND symbol = $2",
+                plan.user_id, plan.symbol.upper()
+            )
+
+            if existing:
+                # Update
+                await conn.execute(
+                    """UPDATE trading_plans
+                       SET plan_data = $1, status = $2, updated_at = $3
+                       WHERE user_id = $4 AND symbol = $5""",
+                    json.dumps(plan_data), plan.status, now,
+                    plan.user_id, plan.symbol.upper()
+                )
+            else:
+                # Insert
+                await conn.execute(
+                    """INSERT INTO trading_plans (id, user_id, symbol, plan_data, status, created_at, updated_at)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                    plan.id, plan.user_id, plan.symbol.upper(),
+                    json.dumps(plan_data), plan.status, now, now
+                )
+
+        logger.info(f"Saved trading plan for {plan.symbol} (user: {plan.user_id})")
+        return plan
+
+    async def get_plan(self, user_id: str, symbol: str) -> Optional[TradingPlan]:
+        """Get trading plan for a user and symbol from Postgres."""
+        from app.storage.postgres import get_connection
+
+        async with get_connection() as conn:
+            row = await conn.fetchrow(
+                "SELECT plan_data FROM trading_plans WHERE user_id = $1 AND symbol = $2",
+                user_id, symbol.upper()
+            )
+            if row and row["plan_data"]:
+                data = json.loads(row["plan_data"]) if isinstance(row["plan_data"], str) else row["plan_data"]
+                return TradingPlan(**data)
+        return None
+
+    async def get_active_plans(self, user_id: str) -> List[TradingPlan]:
+        """Get all active trading plans for a user from Postgres."""
+        from app.storage.postgres import get_connection
+
+        plans = []
+        async with get_connection() as conn:
+            rows = await conn.fetch(
+                """SELECT plan_data FROM trading_plans
+                   WHERE user_id = $1 AND status = 'active'
+                   ORDER BY updated_at DESC""",
+                user_id
+            )
+            for row in rows:
+                if row["plan_data"]:
+                    data = json.loads(row["plan_data"]) if isinstance(row["plan_data"], str) else row["plan_data"]
+                    plans.append(TradingPlan(**data))
+        return plans
+
+    async def update_evaluation(
+        self,
+        user_id: str,
+        symbol: str,
+        notes: str,
+        new_status: Optional[str] = None,
+        adjustments: Optional[Dict[str, Any]] = None
+    ) -> Optional[TradingPlan]:
+        """Update the evaluation notes and optionally adjust plan values."""
+        from app.storage.postgres import get_connection
+
+        now = datetime.utcnow().isoformat()
+        symbol = symbol.upper()
+
+        # Get existing plan
+        plan = await self.get_plan(user_id, symbol)
+        if not plan:
+            return None
+
+        # Update fields
+        plan.last_evaluation = now
+        plan.evaluation_notes = notes
+        plan.updated_at = now
+
+        if new_status:
+            plan.status = new_status
+
+        # Apply adjustments
+        if adjustments:
+            allowed_fields = {
+                "stop_loss", "target_1", "target_2", "target_3",
+                "entry_zone_low", "entry_zone_high", "risk_reward",
+                "stop_reasoning", "target_reasoning", "invalidation_criteria",
+                "key_supports", "key_resistances"
+            }
+            for field_name, value in adjustments.items():
+                if field_name in allowed_fields and value is not None:
+                    setattr(plan, field_name, value)
+                    logger.info(f"Adjusting {field_name} to {value} for {symbol}")
+
+        # Save updated plan
+        return await self.save_plan(plan)
+
+    async def delete_plan(self, user_id: str, symbol: str) -> bool:
+        """Delete a trading plan from Postgres."""
+        from app.storage.postgres import get_connection
+
+        async with get_connection() as conn:
+            result = await conn.execute(
+                "DELETE FROM trading_plans WHERE user_id = $1 AND symbol = $2",
+                user_id, symbol.upper()
+            )
+            deleted = "DELETE 1" in result
+
+        if deleted:
+            logger.info(f"Deleted trading plan for {symbol} (user: {user_id})")
+        return deleted
 
 
-def get_plan_store() -> PlanStore:
-    """Get singleton PlanStore instance."""
-    global _plan_store
-    if _plan_store is None:
-        _plan_store = PlanStore()
-    return _plan_store
+# Singleton instances
+_sqlite_plan_store: Optional[PlanStore] = None
+_postgres_plan_store: Optional[DatabasePlanStore] = None
+
+
+def get_plan_store():
+    """Get the appropriate plan store based on configuration.
+
+    Returns SQLite-based PlanStore for development,
+    PostgreSQL-based DatabasePlanStore for production.
+    """
+    settings = get_settings()
+
+    if settings.use_postgres:
+        global _postgres_plan_store
+        if _postgres_plan_store is None:
+            _postgres_plan_store = DatabasePlanStore()
+        return _postgres_plan_store
+    else:
+        global _sqlite_plan_store
+        if _sqlite_plan_store is None:
+            _sqlite_plan_store = PlanStore()
+        return _sqlite_plan_store

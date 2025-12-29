@@ -230,26 +230,42 @@ class PostgresConnection:
     def __init__(self, conn: asyncpg.Connection):
         self._conn = conn
 
+    def _normalize_args(self, args: tuple) -> tuple:
+        """Normalize args to handle both SQLite-style tuple and individual args.
+
+        SQLite: execute(query, (arg1, arg2))  ->  args = ((arg1, arg2),)
+        asyncpg: execute(query, arg1, arg2)   ->  args = (arg1, arg2)
+
+        This handles the SQLite-style tuple case.
+        """
+        if len(args) == 1 and isinstance(args[0], (tuple, list)):
+            return tuple(args[0])
+        return args
+
     async def execute(self, query: str, *args) -> str:
         """Execute a query."""
         # Convert SQLite-style ? placeholders to PostgreSQL $1, $2, etc.
         pg_query = self._convert_placeholders(query)
-        return await self._conn.execute(pg_query, *args)
+        normalized_args = self._normalize_args(args)
+        return await self._conn.execute(pg_query, *normalized_args)
 
     async def fetch(self, query: str, *args) -> list:
         """Fetch multiple rows."""
         pg_query = self._convert_placeholders(query)
-        return await self._conn.fetch(pg_query, *args)
+        normalized_args = self._normalize_args(args)
+        return await self._conn.fetch(pg_query, *normalized_args)
 
     async def fetchrow(self, query: str, *args) -> Optional[Any]:
         """Fetch a single row."""
         pg_query = self._convert_placeholders(query)
-        return await self._conn.fetchrow(pg_query, *args)
+        normalized_args = self._normalize_args(args)
+        return await self._conn.fetchrow(pg_query, *normalized_args)
 
     async def fetchval(self, query: str, *args) -> Any:
         """Fetch a single value."""
         pg_query = self._convert_placeholders(query)
-        return await self._conn.fetchval(pg_query, *args)
+        normalized_args = self._normalize_args(args)
+        return await self._conn.fetchval(pg_query, *normalized_args)
 
     def _convert_placeholders(self, query: str) -> str:
         """Convert SQLite ? placeholders to PostgreSQL $1, $2, etc."""
