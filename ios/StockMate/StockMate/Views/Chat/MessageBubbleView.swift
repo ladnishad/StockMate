@@ -7,6 +7,15 @@ struct MessageBubbleView: View {
 
     private var isUser: Bool { message.isUser }
 
+    /// Parse message content as markdown, fallback to plain text
+    private var markdownContent: AttributedString {
+        do {
+            return try AttributedString(markdown: message.content)
+        } catch {
+            return AttributedString(message.content)
+        }
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             if isUser { Spacer(minLength: 48) }
@@ -18,8 +27,8 @@ struct MessageBubbleView: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.9)))
                 }
 
-                // Message bubble
-                Text(message.content)
+                // Message bubble with markdown support
+                Text(markdownContent)
                     .font(.system(size: 16, weight: .regular, design: .default))
                     .foregroundColor(isUser ? .white : Color(white: 0.92))
                     .lineSpacing(2)
