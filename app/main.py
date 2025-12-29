@@ -234,25 +234,140 @@ async def health_check():
 @app.get("/auth/callback", response_class=HTMLResponse)
 async def auth_callback():
     """Handle Supabase auth redirects (email confirmation, password reset)."""
-    return """<!DOCTYPE html>
+    settings = get_settings()
+    return f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Success - StockMate</title>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600&display=swap" rel="stylesheet">
+<title>StockMate - Auth</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Outfit',sans-serif;background:#06080d;color:#f1f5f9;min-height:100vh;display:flex;align-items:center;justify-content:center}
-.card{max-width:400px;margin:20px;padding:48px 40px;background:rgba(13,17,23,0.9);border:1px solid rgba(148,163,184,0.1);border-radius:20px;text-align:center}
-.icon{width:80px;height:80px;margin:0 auto 24px;background:linear-gradient(135deg,rgba(16,185,129,0.15),rgba(16,185,129,0.05));border:2px solid #10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:36px}
-h1{font-size:24px;font-weight:600;margin-bottom:8px;color:#10b981}
-p{color:#94a3b8;line-height:1.6;margin-bottom:24px}
-.brand{font-size:12px;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;padding-top:24px;border-top:1px solid rgba(148,163,184,0.1)}
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:'Outfit',sans-serif;background:#06080d;color:#f1f5f9;min-height:100vh;display:flex;align-items:center;justify-content:center}}
+.card{{max-width:400px;width:100%;margin:20px;padding:48px 40px;background:rgba(13,17,23,0.9);border:1px solid rgba(148,163,184,0.1);border-radius:20px;text-align:center}}
+.icon{{width:72px;height:72px;margin:0 auto 24px;background:linear-gradient(135deg,rgba(14,165,233,0.15),rgba(14,165,233,0.05));border:2px solid #0ea5e9;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:32px}}
+.icon.success{{background:linear-gradient(135deg,rgba(16,185,129,0.15),rgba(16,185,129,0.05));border-color:#10b981}}
+h1{{font-size:24px;font-weight:600;margin-bottom:8px}}
+h1.success{{color:#10b981}}
+.subtitle{{color:#94a3b8;margin-bottom:28px}}
+.form-group{{text-align:left;margin-bottom:20px}}
+label{{display:block;font-size:14px;color:#94a3b8;margin-bottom:8px}}
+input{{width:100%;padding:14px 16px;background:#0d1117;border:1px solid rgba(148,163,184,0.2);border-radius:10px;color:#f1f5f9;font-size:15px;font-family:inherit}}
+input:focus{{outline:none;border-color:#0ea5e9}}
+.btn{{width:100%;padding:14px;background:linear-gradient(135deg,#0ea5e9,#0284c7);border:none;border-radius:10px;color:#fff;font-size:15px;font-weight:600;cursor:pointer;margin-top:8px}}
+.btn:hover{{opacity:0.9}}
+.btn:disabled{{opacity:0.5;cursor:not-allowed}}
+.error{{color:#ef4444;font-size:14px;margin-top:12px}}
+.success-msg{{color:#10b981;font-size:14px;margin-top:12px}}
+.brand{{font-size:12px;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;padding-top:24px;margin-top:24px;border-top:1px solid rgba(148,163,184,0.1)}}
+#reset-form,#success-view,#confirm-view{{display:none}}
 </style></head>
-<body><div class="card">
-<div class="icon">✓</div>
-<h1>Success!</h1>
-<p>Your action was completed successfully. You can close this page and open the <strong>StockMate</strong> app to continue.</p>
-<div class="brand">StockMate</div>
-</div></body></html>"""
+<body>
+<div class="card">
+  <!-- Password Reset Form -->
+  <div id="reset-form">
+    <div class="icon">🔑</div>
+    <h1>Reset Password</h1>
+    <p class="subtitle">Enter your new password</p>
+    <div class="form-group">
+      <label>New Password</label>
+      <input type="password" id="password" placeholder="Enter new password" minlength="6">
+    </div>
+    <div class="form-group">
+      <label>Confirm Password</label>
+      <input type="password" id="confirm-password" placeholder="Confirm new password">
+    </div>
+    <button class="btn" id="submit-btn" onclick="resetPassword()">Update Password</button>
+    <div id="error-msg" class="error"></div>
+  </div>
+
+  <!-- Success View -->
+  <div id="success-view">
+    <div class="icon success">✓</div>
+    <h1 class="success">Password Updated!</h1>
+    <p class="subtitle">Your password has been reset successfully. You can now open the StockMate app and sign in with your new password.</p>
+  </div>
+
+  <!-- Email Confirmed View -->
+  <div id="confirm-view">
+    <div class="icon success">✓</div>
+    <h1 class="success">Email Confirmed!</h1>
+    <p class="subtitle">Your account is verified. You can now open the StockMate app and sign in.</p>
+  </div>
+
+  <div class="brand">StockMate</div>
+</div>
+
+<script>
+const SUPABASE_URL = '{settings.supabase_url}';
+
+// Parse hash params
+function getHashParams() {{
+  const hash = window.location.hash.substring(1);
+  const params = {{}};
+  hash.split('&').forEach(p => {{
+    const [k, v] = p.split('=');
+    if (k) params[k] = decodeURIComponent(v || '');
+  }});
+  return params;
+}}
+
+// Initialize page based on URL params
+const params = getHashParams();
+if (params.type === 'recovery' && params.access_token) {{
+  document.getElementById('reset-form').style.display = 'block';
+}} else if (params.access_token) {{
+  document.getElementById('confirm-view').style.display = 'block';
+}} else {{
+  document.getElementById('confirm-view').style.display = 'block';
+}}
+
+async function resetPassword() {{
+  const password = document.getElementById('password').value;
+  const confirmPwd = document.getElementById('confirm-password').value;
+  const errorEl = document.getElementById('error-msg');
+  const btn = document.getElementById('submit-btn');
+
+  errorEl.textContent = '';
+
+  if (password.length < 6) {{
+    errorEl.textContent = 'Password must be at least 6 characters';
+    return;
+  }}
+  if (password !== confirmPwd) {{
+    errorEl.textContent = 'Passwords do not match';
+    return;
+  }}
+
+  btn.disabled = true;
+  btn.textContent = 'Updating...';
+
+  try {{
+    const res = await fetch(SUPABASE_URL + '/auth/v1/user', {{
+      method: 'PUT',
+      headers: {{
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + params.access_token,
+        'apikey': '{settings.supabase_anon_key}'
+      }},
+      body: JSON.stringify({{ password }})
+    }});
+
+    if (res.ok) {{
+      document.getElementById('reset-form').style.display = 'none';
+      document.getElementById('success-view').style.display = 'block';
+    }} else {{
+      const data = await res.json();
+      errorEl.textContent = data.message || data.error_description || 'Failed to update password';
+      btn.disabled = false;
+      btn.textContent = 'Update Password';
+    }}
+  }} catch (e) {{
+    errorEl.textContent = 'Network error. Please try again.';
+    btn.disabled = false;
+    btn.textContent = 'Update Password';
+  }}
+}}
+</script>
+</body></html>"""
 
 
 @app.get(
