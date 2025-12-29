@@ -16,7 +16,7 @@ from alpaca.data.requests import (
     StockSnapshotRequest,
     NewsRequest,
 )
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.common.exceptions import APIError
 
@@ -97,9 +97,9 @@ def fetch_price_bars(
 
     # Adjust timeframe for minutes
     if timeframe == "15m":
-        tf = TimeFrame(15, TimeFrame.Minute)
+        tf = TimeFrame(15, TimeFrameUnit.Minute)
     elif timeframe == "5m":
-        tf = TimeFrame(5, TimeFrame.Minute)
+        tf = TimeFrame(5, TimeFrameUnit.Minute)
     elif timeframe == "1m":
         tf = TimeFrame.Minute
     else:
