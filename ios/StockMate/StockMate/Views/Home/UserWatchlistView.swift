@@ -70,13 +70,15 @@ struct UserWatchlistView: View {
                 UserWatchlistEmptyState()
                     .padding(.horizontal, 20)
             } else {
-                // Watchlist items
-                VStack(spacing: 10) {
+                // Watchlist items using List for native swipe actions
+                List {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         NavigationLink(value: item.symbol) {
                             UserWatchlistRow(item: item)
                         }
-                        .buttonStyle(.plain)
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 5, leading: 20, bottom: 5, trailing: 20))
+                        .listRowSeparator(.hidden)
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
                                 onDelete?(item.symbol)
@@ -93,7 +95,9 @@ struct UserWatchlistView: View {
                         )
                     }
                 }
-                .padding(.horizontal, 20)
+                .listStyle(.plain)
+                .scrollDisabled(true)
+                .frame(minHeight: CGFloat(items.count) * 120)
             }
         }
         .onAppear {
