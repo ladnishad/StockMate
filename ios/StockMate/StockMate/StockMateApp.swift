@@ -9,13 +9,26 @@ import SwiftUI
 
 @main
 struct StockMateApp: App {
+    @StateObject private var authManager = AuthenticationManager.shared
+
     init() {
         configureAppearance()
     }
 
     var body: some Scene {
         WindowGroup {
-            HomeView()
+            Group {
+                if authManager.isAuthenticated {
+                    HomeView()
+                        .environmentObject(authManager)
+                } else {
+                    LoginView()
+                        .environmentObject(authManager)
+                }
+            }
+            .task {
+                await authManager.checkSession()
+            }
         }
     }
 

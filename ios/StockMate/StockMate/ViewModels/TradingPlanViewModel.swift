@@ -41,7 +41,6 @@ final class TradingPlanViewModel: ObservableObject {
     // MARK: - Properties
 
     let symbol: String
-    private let userId: String
     private var pollTimer: Timer?
     private var updateTask: Task<Void, Never>?
     private var streamingTask: Task<Void, Never>?
@@ -92,9 +91,8 @@ final class TradingPlanViewModel: ObservableObject {
 
     // MARK: - Initialization
 
-    init(symbol: String, userId: String = "default") {
+    init(symbol: String) {
         self.symbol = symbol.uppercased()
-        self.userId = userId
 
         // Listen for evaluation triggers (from position entry/exit)
         evaluationObserver = NotificationCenter.default.addObserver(
@@ -134,7 +132,7 @@ final class TradingPlanViewModel: ObservableObject {
         error = nil
 
         do {
-            plan = try await APIService.shared.getTradingPlan(symbol: symbol, userId: userId)
+            plan = try await APIService.shared.getTradingPlan(symbol: symbol)
             lastUpdated = Date()
         } catch {
             // Plan might not exist yet - that's okay
@@ -168,8 +166,7 @@ final class TradingPlanViewModel: ObservableObject {
             // API call runs immediately, in parallel with animation
             let newPlan = try await APIService.shared.generateTradingPlan(
                 symbol: symbol,
-                forceNew: true,
-                userId: userId
+                forceNew: true
             )
 
             // Cancel animation if still running and update with the plan
@@ -208,7 +205,7 @@ final class TradingPlanViewModel: ObservableObject {
 
         do {
             // Evaluate and capture the response with previous values
-            let evalResponse = try await APIService.shared.evaluateTradingPlan(symbol: symbol, userId: userId)
+            let evalResponse = try await APIService.shared.evaluateTradingPlan(symbol: symbol)
 
             // Store the evaluation response (includes previous_values and adjustments_made)
             withAnimation {
@@ -216,7 +213,7 @@ final class TradingPlanViewModel: ObservableObject {
             }
 
             // Refresh the plan to get updated notes and values
-            plan = try await APIService.shared.getTradingPlan(symbol: symbol, userId: userId)
+            plan = try await APIService.shared.getTradingPlan(symbol: symbol)
             lastUpdated = Date()
             updatePhase = .complete
 
@@ -282,8 +279,7 @@ final class TradingPlanViewModel: ObservableObject {
         do {
             let stream = APIService.shared.generateTradingPlanStream(
                 symbol: symbol,
-                forceNew: true,
-                userId: userId
+                forceNew: true
             )
 
             for try await event in stream {
@@ -409,7 +405,7 @@ final class TradingPlanViewModel: ObservableObject {
 
     private func refreshPlanSilently() async {
         do {
-            let newPlan = try await APIService.shared.getTradingPlan(symbol: symbol, userId: userId)
+            let newPlan = try await APIService.shared.getTradingPlan(symbol: symbol)
 
             // Check if plan changed
             if let newPlan = newPlan, planChanged(newPlan) {

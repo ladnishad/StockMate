@@ -46,14 +46,28 @@ private func makeISO8601DateDecodingStrategy() -> JSONDecoder.DateDecodingStrate
 actor APIService {
     static let shared = APIService()
 
-    private let baseURL = "http://localhost:8000"
+    private let baseURL = "https://stockmate-fggr.onrender.com"
     private let session: URLSession
+    private let keychain = KeychainHelper.shared
+
+    /// Get the current authenticated user's ID, or fallback to "default" if not authenticated
+    private var currentUserId: String {
+        keychain.userId ?? "default"
+    }
 
     private init() {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 60
         self.session = URLSession(configuration: config)
+    }
+
+    // MARK: - Auth Header Helper
+
+    private func addAuthHeader(to request: inout URLRequest) {
+        if let token = keychain.accessToken {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
     }
 
     // MARK: - Market Data
@@ -138,6 +152,7 @@ actor APIService {
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = timeout
+        addAuthHeader(to: &request)
 
         let (data, response) = try await session.data(for: request)
 
@@ -176,7 +191,10 @@ actor APIService {
     /// Fetch real-time quote for a symbol
     func fetchQuote(symbol: String) async throws -> [String: Any] {
         let url = URL(string: "\(baseURL)/quote/\(symbol.uppercased())")!
-        let (data, _) = try await session.data(from: url)
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        addAuthHeader(to: &request)
+        let (data, _) = try await session.data(for: request)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         return json ?? [:]
     }
@@ -184,26 +202,26 @@ actor APIService {
     // MARK: - User Watchlist
 
     /// Fetch user's watchlist with live prices
-    func fetchUserWatchlist(userId: String = "default") async throws -> [WatchlistItem] {
+    func fetchUserWatchlist() async throws -> [WatchlistItem] {
         var components = URLComponents(string: "\(baseURL)/watchlist")!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        components.queryItems = [URLQueryItem(name: "user_id", value: currentUserId)]
         let response: WatchlistResponse = try await fetch(url: components.url!)
         return response.items
     }
 
     /// Add a symbol to user's watchlist
-    func addToWatchlist(symbol: String, userId: String = "default") async throws -> WatchlistItem {
+    func addToWatchlist(symbol: String) async throws -> WatchlistItem {
         var components = URLComponents(string: "\(baseURL)/watchlist/\(symbol.uppercased())")!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        components.queryItems = [URLQueryItem(name: "user_id", value: currentUserId)]
 
         struct EmptyBody: Encodable {}
         return try await post(url: components.url!, body: EmptyBody())
     }
 
     /// Remove a symbol from user's watchlist
-    func removeFromWatchlist(symbol: String, userId: String = "default") async throws {
+    func removeFromWatchlist(symbol: String) async throws {
         var components = URLComponents(string: "\(baseURL)/watchlist/\(symbol.uppercased())")!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        components.queryItems = [URLQueryItem(name: "user_id", value: currentUserId)]
         try await delete(url: components.url!)
     }
 
@@ -237,7 +255,7 @@ actor APIService {
     // MARK: - Chat
 
     /// Send a chat message about a specific stock
-    func sendChatMessage(symbol: String, message: String, userId: String = "default") async throws -> ChatResponse {
+    func sendChatMessage(symbol: String, message: String) async throws -> ChatResponse {
         let url = URL(string: "\(baseURL)/chat/\(symbol.uppercased())")!
 
         struct ChatRequest: Encodable {
@@ -245,15 +263,15 @@ actor APIService {
             let user_id: String
         }
 
-        let request = ChatRequest(message: message, user_id: userId)
+        let request = ChatRequest(message: message, user_id: currentUserId)
         return try await post(url: url, body: request)
     }
 
     /// Send a portfolio chat message (home page chat)
     /// Connects to the Portfolio Agent which can analyze all watchlist stocks
-    func sendPortfolioChatMessage(message: String, userId: String = "default") async throws -> PortfolioChatResponse {
+    func sendPortfolioChatMessage(message: String) async throws -> PortfolioChatResponse {
         var components = URLComponents(string: "\(baseURL)/chat")!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        components.queryItems = [URLQueryItem(name: "user_id", value: currentUserId)]
 
         struct ChatRequest: Encodable {
             let message: String
@@ -268,12 +286,11 @@ actor APIService {
     /// Get chat history from server
     /// - Parameters:
     ///   - symbol: Stock symbol for stock-specific chat, or nil for portfolio chat
-    ///   - userId: User identifier
     ///   - limit: Maximum number of messages to return
     /// - Returns: Chat history response
-    func getChatHistory(symbol: String? = nil, userId: String = "default", limit: Int = 50) async throws -> ChatHistoryResponse {
+    func getChatHistory(symbol: String? = nil, limit: Int = 50) async throws -> ChatHistoryResponse {
         var components = URLComponents(string: "\(baseURL)/chat/history")!
-        var queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        var queryItems = [URLQueryItem(name: "user_id", value: currentUserId)]
         queryItems.append(URLQueryItem(name: "limit", value: "\(limit)"))
         if let symbol = symbol {
             queryItems.append(URLQueryItem(name: "symbol", value: symbol.uppercased()))
@@ -286,10 +303,9 @@ actor APIService {
     /// Clear chat history on server
     /// - Parameters:
     ///   - symbol: Stock symbol for stock-specific chat, or nil for portfolio chat
-    ///   - userId: User identifier
-    func clearChatHistory(symbol: String? = nil, userId: String = "default") async throws {
+    func clearChatHistory(symbol: String? = nil) async throws {
         var components = URLComponents(string: "\(baseURL)/chat/history")!
-        var queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        var queryItems = [URLQueryItem(name: "user_id", value: currentUserId)]
         if let symbol = symbol {
             queryItems.append(URLQueryItem(name: "symbol", value: symbol.uppercased()))
         }
@@ -301,10 +317,10 @@ actor APIService {
     // MARK: - Trading Plan
 
     /// Get trading plan for a symbol
-    func getTradingPlan(symbol: String, userId: String = "default") async throws -> TradingPlanResponse? {
+    func getTradingPlan(symbol: String) async throws -> TradingPlanResponse? {
         var components = URLComponents(string: "\(baseURL)/chat/\(symbol.uppercased())/plan")!
         components.queryItems = [
-            URLQueryItem(name: "user_id", value: userId),
+            URLQueryItem(name: "user_id", value: currentUserId),
             URLQueryItem(name: "force_new", value: "false")
         ]
 
@@ -316,10 +332,10 @@ actor APIService {
     }
 
     /// Generate a new trading plan
-    func generateTradingPlan(symbol: String, forceNew: Bool = false, userId: String = "default") async throws -> TradingPlanResponse {
+    func generateTradingPlan(symbol: String, forceNew: Bool = false) async throws -> TradingPlanResponse {
         var components = URLComponents(string: "\(baseURL)/chat/\(symbol.uppercased())/plan")!
         components.queryItems = [
-            URLQueryItem(name: "user_id", value: userId),
+            URLQueryItem(name: "user_id", value: currentUserId),
             URLQueryItem(name: "force_new", value: String(forceNew))
         ]
 
@@ -342,12 +358,13 @@ actor APIService {
     /// Returns an AsyncThrowingStream of events as the AI generates the plan
     nonisolated func generateTradingPlanStream(
         symbol: String,
-        forceNew: Bool = true,
-        userId: String = "default"
+        forceNew: Bool = true
     ) -> AsyncThrowingStream<PlanStreamEvent, Error> {
-        AsyncThrowingStream { continuation in
+        let keychain = KeychainHelper.shared
+        let userId = keychain.userId ?? "default"
+        return AsyncThrowingStream { continuation in
             Task {
-                var components = URLComponents(string: "http://localhost:8000/chat/\(symbol.uppercased())/plan/stream")!
+                var components = URLComponents(string: "https://stockmate-fggr.onrender.com/chat/\(symbol.uppercased())/plan/stream")!
                 components.queryItems = [
                     URLQueryItem(name: "user_id", value: userId),
                     URLQueryItem(name: "force_new", value: String(forceNew))
@@ -357,6 +374,9 @@ actor APIService {
                 request.httpMethod = "POST"
                 request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                if let token = keychain.accessToken {
+                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                }
                 request.httpBody = "{}".data(using: .utf8)
 
                 // Increase timeout for streaming
@@ -416,9 +436,9 @@ actor APIService {
     }
 
     /// Evaluate a trading plan
-    func evaluateTradingPlan(symbol: String, userId: String = "default") async throws -> EvaluationResponse {
+    func evaluateTradingPlan(symbol: String) async throws -> EvaluationResponse {
         var components = URLComponents(string: "\(baseURL)/chat/\(symbol.uppercased())/evaluate")!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        components.queryItems = [URLQueryItem(name: "user_id", value: currentUserId)]
 
         struct EmptyBody: Encodable {}
 
@@ -426,6 +446,7 @@ actor APIService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
         request.httpBody = try JSONEncoder().encode(EmptyBody())
 
         let (data, response) = try await session.data(for: request)
@@ -442,9 +463,9 @@ actor APIService {
     // MARK: - Position Tracking
 
     /// Get position for a symbol
-    func getPosition(symbol: String, userId: String = "default") async throws -> Position? {
+    func getPosition(symbol: String) async throws -> Position? {
         var components = URLComponents(string: "\(baseURL)/positions/\(symbol.uppercased())")!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        components.queryItems = [URLQueryItem(name: "user_id", value: currentUserId)]
 
         do {
             return try await fetch(url: components.url!)
@@ -454,9 +475,9 @@ actor APIService {
     }
 
     /// Get position with live P&L calculated
-    func getPositionWithPnl(symbol: String, userId: String = "default") async throws -> Position? {
+    func getPositionWithPnl(symbol: String) async throws -> Position? {
         var components = URLComponents(string: "\(baseURL)/positions/\(symbol.uppercased())/pnl")!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        components.queryItems = [URLQueryItem(name: "user_id", value: currentUserId)]
 
         do {
             return try await fetch(url: components.url!)
@@ -473,11 +494,10 @@ actor APIService {
         target1: Double? = nil,
         target2: Double? = nil,
         target3: Double? = nil,
-        notes: String? = nil,
-        userId: String = "default"
+        notes: String? = nil
     ) async throws -> Position {
         var components = URLComponents(string: "\(baseURL)/positions")!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        components.queryItems = [URLQueryItem(name: "user_id", value: currentUserId)]
 
         let body = CreatePositionRequest(
             symbol: symbol.uppercased(),
@@ -497,11 +517,10 @@ actor APIService {
         symbol: String,
         price: Double,
         shares: Int,
-        date: String? = nil,
-        userId: String = "default"
+        date: String? = nil
     ) async throws -> Position {
         var components = URLComponents(string: "\(baseURL)/positions/\(symbol.uppercased())/entries")!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        components.queryItems = [URLQueryItem(name: "user_id", value: currentUserId)]
 
         let body = AddEntryRequest(price: price, shares: shares, date: date)
         return try await post(url: components.url!, body: body)
@@ -513,27 +532,27 @@ actor APIService {
         price: Double,
         shares: Int,
         reason: String = "manual",
-        date: String? = nil,
-        userId: String = "default"
+        date: String? = nil
     ) async throws -> Position {
         var components = URLComponents(string: "\(baseURL)/positions/\(symbol.uppercased())/exits")!
-        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        components.queryItems = [URLQueryItem(name: "user_id", value: currentUserId)]
 
         let body = AddExitRequest(price: price, shares: shares, reason: reason, date: date)
         return try await post(url: components.url!, body: body)
     }
 
     /// Delete a position
-    func deletePosition(symbol: String, reason: String = "manual", userId: String = "default") async throws {
+    func deletePosition(symbol: String, reason: String = "manual") async throws {
         var components = URLComponents(string: "\(baseURL)/positions/\(symbol.uppercased())")!
         components.queryItems = [
-            URLQueryItem(name: "user_id", value: userId),
+            URLQueryItem(name: "user_id", value: currentUserId),
             URLQueryItem(name: "reason", value: reason)
         ]
 
         var request = URLRequest(url: components.url!)
         request.httpMethod = "DELETE"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
 
         let (_, response) = try await session.data(for: request)
 
@@ -549,6 +568,7 @@ actor APIService {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
 
         let (data, response) = try await session.data(for: request)
 
@@ -579,6 +599,7 @@ actor APIService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
 
         let encoder = JSONEncoder()
         request.httpBody = try encoder.encode(body)
@@ -605,6 +626,7 @@ actor APIService {
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
 
         let (data, response) = try await session.data(for: request)
 

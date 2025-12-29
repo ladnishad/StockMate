@@ -15,7 +15,6 @@ final class ChatViewModel: ObservableObject {
     // MARK: - Properties
 
     let symbol: String?
-    private let userId: String
     private let chatKey: String
     private var sendTask: Task<Void, Never>?
 
@@ -40,9 +39,8 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - Initialization
 
-    init(symbol: String? = nil, userId: String = "default") {
+    init(symbol: String? = nil) {
         self.symbol = symbol
-        self.userId = userId
         self.chatKey = ChatService.chatKey(for: symbol)
 
         // Load persisted messages or show welcome
@@ -161,8 +159,7 @@ final class ChatViewModel: ObservableObject {
                 // Stock-specific chat - use existing ChatResponse
                 let response = try await APIService.shared.sendChatMessage(
                     symbol: symbol,
-                    message: text,
-                    userId: userId
+                    message: text
                 )
                 responseText = response.response
 
@@ -179,8 +176,7 @@ final class ChatViewModel: ObservableObject {
             } else {
                 // Portfolio chat - use new PortfolioChatResponse
                 let response = try await APIService.shared.sendPortfolioChatMessage(
-                    message: text,
-                    userId: userId
+                    message: text
                 )
                 responseText = response.response
 

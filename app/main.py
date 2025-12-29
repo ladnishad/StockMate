@@ -6,7 +6,7 @@ from typing import List, Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, status, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -229,6 +229,30 @@ async def health_check():
         "status": "healthy",
         "alpaca_configured": bool(settings.alpaca_api_key and settings.alpaca_secret_key),
     }
+
+
+@app.get("/auth/callback", response_class=HTMLResponse)
+async def auth_callback():
+    """Handle Supabase auth redirects (email confirmation, password reset)."""
+    return """<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Success - StockMate</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Outfit',sans-serif;background:#06080d;color:#f1f5f9;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.card{max-width:400px;margin:20px;padding:48px 40px;background:rgba(13,17,23,0.9);border:1px solid rgba(148,163,184,0.1);border-radius:20px;text-align:center}
+.icon{width:80px;height:80px;margin:0 auto 24px;background:linear-gradient(135deg,rgba(16,185,129,0.15),rgba(16,185,129,0.05));border:2px solid #10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:36px}
+h1{font-size:24px;font-weight:600;margin-bottom:8px;color:#10b981}
+p{color:#94a3b8;line-height:1.6;margin-bottom:24px}
+.brand{font-size:12px;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;padding-top:24px;border-top:1px solid rgba(148,163,184,0.1)}
+</style></head>
+<body><div class="card">
+<div class="icon">✓</div>
+<h1>Success!</h1>
+<p>Your action was completed successfully. You can close this page and open the <strong>StockMate</strong> app to continue.</p>
+<div class="brand">StockMate</div>
+</div></body></html>"""
 
 
 @app.get(

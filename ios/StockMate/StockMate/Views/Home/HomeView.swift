@@ -2,9 +2,11 @@ import SwiftUI
 
 /// Main home screen combining market overview, profile selection, and user watchlist
 struct HomeView: View {
+    @EnvironmentObject var authManager: AuthenticationManager
     @StateObject private var viewModel = HomeViewModel()
     @State private var showingAddTicker = false
     @State private var showingChat = false
+    @State private var showingLogoutConfirmation = false
 
     var body: some View {
         NavigationStack {
@@ -59,6 +61,24 @@ struct HomeView: View {
             .navigationTitle("StockMate")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        if let user = authManager.currentUser {
+                            Text(user.email)
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            showingLogoutConfirmation = true
+                        } label: {
+                            Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
+                    } label: {
+                        Image(systemName: "person.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundStyle(.blue)
+                    }
+                }
+
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 16) {
                         // AI Chat button
@@ -78,6 +98,16 @@ struct HomeView: View {
                         }
                     }
                 }
+            }
+            .confirmationDialog("Sign Out", isPresented: $showingLogoutConfirmation) {
+                Button("Sign Out", role: .destructive) {
+                    Task {
+                        await authManager.logout()
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Are you sure you want to sign out?")
             }
             .refreshable {
                 await viewModel.refresh()
