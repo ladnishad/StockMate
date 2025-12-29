@@ -224,6 +224,39 @@ class PostgresDatabase:
         await init_postgres_tables()
 
 
+class PostgresCursor:
+    """Cursor-like wrapper to mimic SQLite cursor behavior for asyncpg."""
+
+    def __init__(self, result: Any, status: str):
+        self._result = result  # Can be a list of rows or None
+        self._status = status
+        self._index = 0
+
+    @property
+    def rowcount(self) -> int:
+        """Get number of affected rows from status string."""
+        # asyncpg returns strings like "DELETE 1", "UPDATE 2", "INSERT 0 1"
+        if self._status:
+            parts = self._status.split()
+            if len(parts) >= 2 and parts[-1].isdigit():
+                return int(parts[-1])
+        return 0
+
+    async def fetchone(self) -> Optional[Any]:
+        """Fetch one row."""
+        if isinstance(self._result, list) and self._index < len(self._result):
+            row = self._result[self._index]
+            self._index += 1
+            return row
+        return self._result if self._index == 0 else None
+
+    async def fetchall(self) -> list:
+        """Fetch all rows."""
+        if isinstance(self._result, list):
+            return self._result
+        return [self._result] if self._result else []
+
+
 class PostgresConnection:
     """Wrapper for asyncpg connection to provide consistent interface."""
 
@@ -242,12 +275,25 @@ class PostgresConnection:
             return tuple(args[0])
         return args
 
-    async def execute(self, query: str, *args) -> str:
-        """Execute a query."""
-        # Convert SQLite-style ? placeholders to PostgreSQL $1, $2, etc.
+    async def execute(self, query: str, *args) -> PostgresCursor:
+        """Execute a query and return a cursor-like object."""
         pg_query = self._convert_placeholders(query)
         normalized_args = self._normalize_args(args)
-        return await self._conn.execute(pg_query, *normalized_args)
+
+        # Determine if this is a SELECT query
+        query_upper = query.strip().upper()
+        if query_upper.startswith("SELECT"):
+            # For SELECT, fetch all rows and wrap in cursor
+            rows = await self._conn.fetch(pg_query, *normalized_args)
+            return PostgresCursor(rows, f"SELECT {len(rows)}")
+        else:
+            # For INSERT/UPDATE/DELETE, execute and wrap status
+            status = await self._conn.execute(pg_query, *normalized_args)
+            return PostgresCursor(None, status)
+
+    async def commit(self):
+        """No-op for asyncpg (auto-commit by default)."""
+        pass
 
     async def fetch(self, query: str, *args) -> list:
         """Fetch multiple rows."""
