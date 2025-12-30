@@ -24,6 +24,10 @@ final class TradingPlanViewModel: ObservableObject {
     @Published private(set) var streamingText: String = ""
     @Published private(set) var isStreaming: Bool = false
 
+    // Agent-style streaming steps (Claude Code style)
+    @Published var analysisSteps: [AnalysisStep] = []
+    @Published var isAnalysisComplete: Bool = false
+
     // For live update animation
     @Published private(set) var updatePhase: UpdatePhase = .idle
 
@@ -262,12 +266,13 @@ final class TradingPlanViewModel: ObservableObject {
         educationalError = nil
     }
 
-    /// Generate plan with real-time streaming from the AI
+    /// Generate plan with real-time streaming from the AI (Claude Code agent style)
     func generateNewPlanWithStreaming() async {
         guard !isUpdating else { return }
 
         // Cancel any existing streaming task
         streamingTask?.cancel()
+        streamingTask = nil
 
         isUpdating = true
         isStreaming = true
@@ -276,81 +281,146 @@ final class TradingPlanViewModel: ObservableObject {
         updatePhase = .gatheringData
         lastEvaluation = nil  // Clear previous adjustments when generating new plan
 
-        do {
-            let stream = APIService.shared.generateTradingPlanStream(
-                symbol: symbol,
-                forceNew: true
-            )
+        // Initialize analysis steps for agent-style display
+        initializeAnalysisSteps()
+        isAnalysisComplete = false
 
-            for try await event in stream {
-                // Check for cancellation
-                try Task.checkCancellation()
+        // Store task reference so it can be cancelled
+        streamingTask = Task {
+            do {
+                let stream = APIService.shared.generateTradingPlanStream(
+                    symbol: symbol,
+                    forceNew: true
+                )
 
-                switch event.type {
-                case "phase":
-                    await handlePhaseEvent(event.phase)
+                for try await event in stream {
+                    // Check for cancellation
+                    try Task.checkCancellation()
 
-                case "text":
-                    if let content = event.content {
-                        withAnimation(.linear(duration: 0.05)) {
-                            streamingText += content
+                    switch event.type {
+                    case "step":
+                        // Handle new detailed step events
+                        await handleStepEvent(event)
+
+                    case "phase":
+                        await handlePhaseEvent(event.phase)
+
+                    case "text":
+                        if let content = event.content {
+                            withAnimation(.linear(duration: 0.05)) {
+                                streamingText += content
+                            }
                         }
-                    }
 
-                case "plan_complete":
-                    if let newPlan = event.plan {
-                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                            self.plan = newPlan
-                            self.lastUpdated = Date()
-                            self.updatePhase = .complete
+                    case "plan_complete", "plan":
+                        if let newPlan = event.plan {
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                                self.plan = newPlan
+                                self.lastUpdated = Date()
+                                self.updatePhase = .complete
+                                self.isAnalysisComplete = true
+                            }
                         }
-                    }
 
-                case "existing_plan":
-                    if let existingPlan = event.plan {
-                        withAnimation {
-                            self.plan = existingPlan
-                            self.lastUpdated = Date()
-                            self.updatePhase = .complete
+                    case "existing_plan":
+                        if let existingPlan = event.plan {
+                            withAnimation {
+                                self.plan = existingPlan
+                                self.lastUpdated = Date()
+                                self.updatePhase = .complete
+                                self.isAnalysisComplete = true
+                            }
                         }
+
+                    case "error":
+                        throw NSError(
+                            domain: "PlanGeneration",
+                            code: -1,
+                            userInfo: [NSLocalizedDescriptionKey: event.message ?? "Unknown error"]
+                        )
+
+                    default:
+                        break
                     }
+                }
 
-                case "error":
-                    throw NSError(
-                        domain: "PlanGeneration",
-                        code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: event.message ?? "Unknown error"]
-                    )
+                // Cleanup after stream completes
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+                withAnimation {
+                    updatePhase = .idle
+                    isStreaming = false
+                    isUpdating = false
+                    streamingText = ""
+                }
 
-                default:
-                    break
+            } catch is CancellationError {
+                // Task was cancelled - clean up silently
+                withAnimation {
+                    updatePhase = .idle
+                    isStreaming = false
+                    isUpdating = false
+                    streamingText = ""
+                    analysisSteps = []
+                }
+            } catch {
+                withAnimation {
+                    self.error = error.localizedDescription
+                    updatePhase = .idle
+                    isStreaming = false
+                    isUpdating = false
+                    streamingText = ""
+                    analysisSteps = []  // Clear stale steps on error
+                }
+            }
+        }
+
+        // Wait for task to complete
+        await streamingTask?.value
+    }
+
+    /// Initialize analysis steps for agent-style streaming display
+    private func initializeAnalysisSteps() {
+        analysisSteps = [
+            AnalysisStep(type: .gatheringData, status: .pending, findings: []),
+            AnalysisStep(type: .technicalIndicators, status: .pending, findings: []),
+            AnalysisStep(type: .supportResistance, status: .pending, findings: []),
+            AnalysisStep(type: .chartPatterns, status: .pending, findings: []),
+            AnalysisStep(type: .generatingChart, status: .pending, findings: []),
+            AnalysisStep(type: .visionAnalysis, status: .pending, findings: []),
+            AnalysisStep(type: .generatingPlan, status: .pending, findings: []),
+            AnalysisStep(type: .complete, status: .pending, findings: []),
+        ]
+    }
+
+    /// Handle detailed step events from the streaming API
+    private func handleStepEvent(_ event: APIService.PlanStreamEvent) async {
+        guard let stepTypeStr = event.stepType,
+              let stepType = AnalysisStepType(rawValue: stepTypeStr),
+              let statusStr = event.status else { return }
+
+        let status: AnalysisStep.StepStatus = statusStr == "completed" ? .completed : .active
+        let newFindings = event.findings ?? []
+
+        withAnimation(.easeOut(duration: 0.3)) {
+            // Find and update the matching step
+            if let index = analysisSteps.firstIndex(where: { $0.type == stepType }) {
+                analysisSteps[index].status = status
+
+                // Append new findings instead of replacing (avoid data loss on duplicate events)
+                for finding in newFindings {
+                    if !analysisSteps[index].findings.contains(finding) {
+                        analysisSteps[index].findings.append(finding)
+                    }
+                }
+
+                if status == .completed {
+                    analysisSteps[index].timestamp = Date()
                 }
             }
 
-            // Cleanup after stream completes
-            try await Task.sleep(nanoseconds: 1_000_000_000)
-            withAnimation {
-                updatePhase = .idle
-                isStreaming = false
-                isUpdating = false
-                streamingText = ""
-            }
-
-        } catch is CancellationError {
-            // Task was cancelled - clean up silently
-            withAnimation {
-                updatePhase = .idle
-                isStreaming = false
-                isUpdating = false
-                streamingText = ""
-            }
-        } catch {
-            withAnimation {
-                self.error = error.localizedDescription
-                updatePhase = .idle
-                isStreaming = false
-                isUpdating = false
-                streamingText = ""
+            // Handle special "complete" step
+            if stepType == .complete && status == .completed {
+                isAnalysisComplete = true
             }
         }
     }

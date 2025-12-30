@@ -255,9 +255,20 @@ For every analysis, you MUST provide:
    - Upcoming events (earnings, Fed, etc.)
    - Technical weaknesses in the setup
 
-## Response Guidelines
+## Response Guidelines - Level Placement by Bias
+
+### For BULLISH (Long) Plans:
 - Entry should be at support or on pullback, NEVER chasing extended moves
-- Stop loss MUST be below a meaningful level (swing low, support, EMA)
+- Stop loss MUST be BELOW entry (below support, swing low, or EMA)
+- Targets should be ABOVE entry (at resistance levels or Fib extensions)
+
+### For BEARISH (Short) Plans:
+- Entry should be at resistance or on a bounce into overhead supply
+- Stop loss MUST be ABOVE entry (above resistance, swing high, or EMA)
+- Targets should be BELOW entry (at support levels where you cover)
+- Risk/reward calculation: reward = |entry - target|, risk = |stop - entry|
+
+### For Both:
 - Risk/reward should be at least 2:1 for swing trades, 1.5:1 for day trades
 - Position size should account for volatility (higher ATR = smaller size)
 - If the setup is poor, recommend NO TRADE and explain why
@@ -289,7 +300,21 @@ SMART_PLAN_GENERATION_PROMPT = """Analyze {symbol} and create a comprehensive tr
 
 ---
 
-Based on this data, create a complete analysis. You MUST respond with valid JSON in this exact format:
+Based on this data, create a complete analysis.
+
+## CRITICAL: Price Level Semantics by Bias
+
+For BULLISH (long) trades:
+- entry_zone_low < entry_zone_high (buy zone)
+- stop_loss < entry_zone_low (stop BELOW entry)
+- all targets > entry_zone_high (profit targets ABOVE entry)
+
+For BEARISH (short) trades:
+- entry_zone_low < entry_zone_high (short zone - you short at higher prices)
+- stop_loss > entry_zone_high (stop ABOVE entry - stopped if price rises)
+- all targets < entry_zone_low (profit targets BELOW entry)
+
+You MUST respond with valid JSON in this exact format:
 
 ```json
 {{
@@ -434,4 +459,110 @@ Guidelines for adjustments:
 - Adjust targets if new resistance/support levels emerged
 - Only adjust if there's a clear technical reason
 - If thesis is broken, set status to INVALIDATED
+"""
+
+
+# ============================================================================
+# Visual Chart Analysis Prompt (Claude Vision)
+# ============================================================================
+
+VISUAL_ANALYSIS_PROMPT = """You are analyzing a candlestick chart for visual pattern recognition.
+
+## Chart Elements
+- **Candlesticks**: Green = bullish (close > open), Red = bearish (close < open)
+- **Blue line**: 9-period EMA (fast-moving average, tracks short-term momentum)
+- **Orange line**: 21-period EMA (medium-term trend)
+- **Red line**: 50-period EMA (slower, represents longer-term trend)
+- **Volume bars**: Bottom panel showing trading activity
+- **RSI indicator**: Lower panel (purple line) showing momentum (30=oversold, 70=overbought)
+
+## What to Look For
+
+### 1. Chart Patterns (HIGH VALUE)
+- Head & Shoulders / Inverse H&S (reversal patterns)
+- Double Top / Double Bottom
+- Ascending / Descending Triangles
+- Bull Flag / Bear Flag (continuation patterns)
+- Wedges (rising/falling)
+- Cup and Handle
+
+### 2. Candlestick Patterns at Key Levels
+- Engulfing patterns (bullish/bearish)
+- Doji at support/resistance (indecision)
+- Hammer / Shooting Star (reversal signals)
+- Three white soldiers / Three black crows
+
+### 3. Trend Quality Assessment
+- Is the trend CLEAN (orderly pullbacks, respect of EMAs)?
+- Or CHOPPY (whipsaws, failed breakouts, random spikes)?
+- Are higher highs/higher lows OR lower highs/lower lows forming?
+
+### 4. EMA Dynamics
+- Price above all EMAs = strong bullish structure
+- Price below all EMAs = strong bearish structure
+- EMAs fanning out = trend accelerating
+- EMAs compressing = consolidation, potential breakout
+
+### 5. Support/Resistance Visibility
+- Where do you SEE price bouncing repeatedly?
+- Where do you SEE price getting rejected?
+- Are there clear horizontal levels or zones?
+
+### 6. Volume Confirmation
+- Does volume increase on breakouts?
+- Is volume declining during pullbacks (healthy)?
+- Any volume spikes at key levels (institutional interest)?
+
+### 7. Warning Signs
+- Bearish divergence (price higher, RSI lower)
+- Bullish divergence (price lower, RSI higher)
+- Exhaustion candles (long wicks, high volume at top/bottom)
+- Failed breakout/breakdown patterns
+- Choppy, unclear price action
+
+## Your Response Format
+
+Respond with JSON:
+
+```json
+{{
+    "visual_patterns_identified": [
+        {{
+            "pattern": "pattern name",
+            "location": "where in chart (left, center, right, recent)",
+            "clarity": "clear" | "forming" | "uncertain",
+            "significance": "What this pattern means for the trade"
+        }}
+    ],
+    "trend_quality": {{
+        "assessment": "clean" | "moderate" | "choppy",
+        "description": "1-2 sentences on why"
+    }},
+    "ema_structure": {{
+        "bullish_aligned": true | false,
+        "observation": "What you see with the EMA lines"
+    }},
+    "visible_support_resistance": [
+        {{
+            "price_area": "approximate price level",
+            "type": "support" | "resistance",
+            "strength": "strong" | "moderate" | "weak",
+            "evidence": "Why you identified this level"
+        }}
+    ],
+    "volume_assessment": "What the volume tells you",
+    "warning_signs": ["List any concerning patterns or signals"],
+    "visual_confidence_modifier": -20 to +20,
+    "visual_summary": "2-3 sentence overall visual assessment"
+}}
+```
+
+## Visual Confidence Modifier Scale
+- **+20**: Perfect chart - clear patterns, clean trend, strong structure
+- **+10**: Good chart - patterns visible, mostly clean, minor noise
+- **0**: Average - mixed signals, nothing stands out positively or negatively
+- **-10**: Concerning - choppy action, unclear patterns, potential traps
+- **-20**: Poor chart - messy structure, multiple warning signs, avoid this setup
+
+Focus on what you can SEE that algorithmic analysis might miss. Your visual intuition is valuable for identifying pattern quality, trend clarity, and subtle warning signs.
 """

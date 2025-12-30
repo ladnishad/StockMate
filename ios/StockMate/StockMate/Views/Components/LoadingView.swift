@@ -209,7 +209,7 @@ struct ErrorStateView: View {
     EmptyStateView(
         icon: "chart.line.uptrend.xyaxis",
         title: "No Stocks Found",
-        message: "No stocks match your current profile criteria. Try adjusting your settings.",
+        message: "No stocks currently meet the expert criteria. Markets may be closed.",
         actionTitle: "Refresh",
         action: {}
     )

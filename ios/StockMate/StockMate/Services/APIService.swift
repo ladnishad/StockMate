@@ -70,6 +70,57 @@ actor APIService {
         }
     }
 
+    /// Flag to prevent multiple simultaneous refresh attempts
+    private static var isRefreshing = false
+    private static var refreshTask: Task<Void, Error>?
+
+    /// Attempt to refresh token and retry the request on 401 error
+    private func handleUnauthorizedAndRetry<T: Decodable>(
+        request: URLRequest,
+        decoder: JSONDecoder
+    ) async throws -> T {
+        // Avoid multiple simultaneous refresh attempts
+        if Self.isRefreshing, let task = Self.refreshTask {
+            // Wait for ongoing refresh to complete
+            try await task.value
+        } else {
+            Self.isRefreshing = true
+            Self.refreshTask = Task {
+                try await AuthenticationManager.shared.refreshAccessToken()
+            }
+
+            do {
+                try await Self.refreshTask?.value
+            } catch {
+                Self.isRefreshing = false
+                Self.refreshTask = nil
+                throw error
+            }
+
+            Self.isRefreshing = false
+            Self.refreshTask = nil
+        }
+
+        // Retry the request with new token
+        var retryRequest = request
+        addAuthHeader(to: &retryRequest)
+
+        let (data, response) = try await session.data(for: retryRequest)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIServiceError.invalidResponse
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            if let errorResponse = try? decoder.decode(APIError.self, from: data) {
+                throw APIServiceError.serverError(errorResponse.detail)
+            }
+            throw APIServiceError.httpError(httpResponse.statusCode)
+        }
+
+        return try decoder.decode(T.self, from: data)
+    }
+
     // MARK: - Market Data
 
     /// Fetch quick market overview (indices)
@@ -94,12 +145,12 @@ actor APIService {
 
     // MARK: - Watchlist / Market Scan
 
-    /// Fetch smart watchlist based on market scan and profile
-    func fetchWatchlist(profile: TraderProfile, minScore: Int? = nil, topSectors: Int = 3, stocksPerSector: Int = 5) async throws -> [Stock] {
+    /// Fetch smart watchlist based on market scan
+    /// The agent automatically determines optimal trade style for each stock
+    func fetchWatchlist(minScore: Int = 65, topSectors: Int = 3, stocksPerSector: Int = 5) async throws -> [Stock] {
         var components = URLComponents(string: "\(baseURL)/market/scan")!
-        let scoreThreshold = minScore ?? profile.confidenceThreshold
         components.queryItems = [
-            URLQueryItem(name: "min_stock_score", value: "\(scoreThreshold)"),
+            URLQueryItem(name: "min_stock_score", value: "\(minScore)"),
             URLQueryItem(name: "top_sectors", value: "\(topSectors)"),
             URLQueryItem(name: "stocks_per_sector", value: "\(stocksPerSector)")
         ]
@@ -109,10 +160,11 @@ actor APIService {
     }
 
     /// Fetch full market scan data
-    func fetchMarketScan(profile: TraderProfile) async throws -> MarketScanResponse {
+    /// The agent automatically determines optimal trade style for each stock
+    func fetchMarketScan(minScore: Int = 65) async throws -> MarketScanResponse {
         var components = URLComponents(string: "\(baseURL)/market/scan")!
         components.queryItems = [
-            URLQueryItem(name: "min_stock_score", value: "\(profile.confidenceThreshold)"),
+            URLQueryItem(name: "min_stock_score", value: "\(minScore)"),
             URLQueryItem(name: "top_sectors", value: "3"),
             URLQueryItem(name: "stocks_per_sector", value: "5")
         ]
@@ -122,22 +174,20 @@ actor APIService {
 
     // MARK: - Stock Analysis
 
-    /// Analyze a specific stock with given profile
-    func analyzeStock(symbol: String, accountSize: Double = 10000, profile: TraderProfile) async throws -> AnalysisResponse {
+    /// Analyze a specific stock - agent determines optimal trade style
+    func analyzeStock(symbol: String, accountSize: Double = 10000) async throws -> AnalysisResponse {
         let url = URL(string: "\(baseURL)/analyze")!
 
         struct AnalysisRequest: Encodable {
             let symbol: String
             let account_size: Double
             let use_ai: Bool
-            let trader_profile: String
         }
 
         let request = AnalysisRequest(
             symbol: symbol.uppercased(),
             account_size: accountSize,
-            use_ai: false,
-            trader_profile: profile.rawValue
+            use_ai: false
         )
 
         return try await post(url: url, body: request)
@@ -181,14 +231,6 @@ actor APIService {
             print("Raw JSON: \(String(data: data, encoding: .utf8) ?? "nil")")
             throw APIServiceError.decodingError(error)
         }
-    }
-
-    // MARK: - Profiles
-
-    /// Fetch available profiles
-    func fetchProfiles() async throws -> ProfilesResponse {
-        let url = URL(string: "\(baseURL)/profiles")!
-        return try await fetch(url: url)
     }
 
     // MARK: - Real-Time Data
@@ -357,6 +399,18 @@ actor APIService {
         let content: String?
         let plan: TradingPlanResponse?
         let message: String?
+
+        // Analysis step events (type == "step")
+        let stepType: String?
+        let status: String?
+        let findings: [String]?
+        let timestamp: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case type, phase, content, plan, message
+            case stepType = "step_type"
+            case status, findings, timestamp
+        }
     }
 
     /// Generate trading plan with real-time streaming
@@ -736,15 +790,21 @@ actor APIService {
             throw APIServiceError.invalidResponse
         }
 
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = makeISO8601DateDecodingStrategy()
+
+        // Handle 401 with automatic token refresh
+        if httpResponse.statusCode == 401 {
+            return try await handleUnauthorizedAndRetry(request: request, decoder: decoder)
+        }
+
         guard (200...299).contains(httpResponse.statusCode) else {
-            if let errorResponse = try? JSONDecoder().decode(APIError.self, from: data) {
+            if let errorResponse = try? decoder.decode(APIError.self, from: data) {
                 throw APIServiceError.serverError(errorResponse.detail)
             }
             throw APIServiceError.httpError(httpResponse.statusCode)
         }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = makeISO8601DateDecodingStrategy()
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
@@ -770,15 +830,21 @@ actor APIService {
             throw APIServiceError.invalidResponse
         }
 
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = makeISO8601DateDecodingStrategy()
+
+        // Handle 401 with automatic token refresh
+        if httpResponse.statusCode == 401 {
+            return try await handleUnauthorizedAndRetry(request: request, decoder: decoder)
+        }
+
         guard (200...299).contains(httpResponse.statusCode) else {
-            if let errorResponse = try? JSONDecoder().decode(APIError.self, from: data) {
+            if let errorResponse = try? decoder.decode(APIError.self, from: data) {
                 throw APIServiceError.serverError(errorResponse.detail)
             }
             throw APIServiceError.httpError(httpResponse.statusCode)
         }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = makeISO8601DateDecodingStrategy()
         return try decoder.decode(T.self, from: data)
     }
 

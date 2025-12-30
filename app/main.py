@@ -513,22 +513,21 @@ async def debug_alpaca():
 
 @app.get(
     "/profiles",
-    summary="List available trader profiles",
+    summary="List trader profile reference data (informational only)",
     description="""
-    Get all available trader profiles with their configurations.
+    **DEPRECATED**: The analysis system now uses an expert-based approach that
+    automatically determines the optimal trade style based on technical analysis.
+    User profile selection is no longer required or used.
 
-    Each profile customizes the analysis pipeline:
-    - **Day Trader**: Intraday focus, tight 1.5x ATR stops, VWAP/volume emphasis (70% confidence threshold)
-    - **Swing Trader**: Multi-day holds, Fibonacci levels, structure-based stops (65% threshold)
-    - **Position Trader**: Multi-week holds, trend-following, momentum focus (65% threshold)
-    - **Long-Term Investor**: Multi-month holds, fundamentals, wide 3x ATR stops (60% threshold)
+    This endpoint returns reference information about different trading styles:
+    - **Day Trader**: Intraday focus, tight stops, volume emphasis
+    - **Swing Trader**: Multi-day holds, Fibonacci levels, structure-based stops
+    - **Position Trader**: Multi-week holds, trend-following, momentum focus
+    - **Long-Term Investor**: Multi-month holds, fundamentals, wide stops
 
-    Returns detailed configuration including:
-    - Timeframe settings (primary, confirmation, entry)
-    - Risk parameters (stop method, ATR multiplier, max position size)
-    - Target methodology (R:R ratios, Fibonacci extensions, structure-based)
-    - Scoring weights for all 15 technical factors
+    The /analyze endpoint now automatically determines the best approach for each stock.
     """,
+    deprecated=True,
 )
 async def get_profiles():
     """List all available trader profiles with configurations."""
@@ -589,7 +588,7 @@ async def get_profiles():
     return {
         "profiles": profiles,
         "count": len(profiles),
-        "usage": "Pass the 'type' value as the 'trader_profile' parameter in /analyze requests",
+        "note": "DEPRECATED: The /analyze endpoint now uses expert-based analysis that automatically determines the optimal trade style. Profile selection is no longer used.",
     }
 
 
@@ -608,17 +607,14 @@ async def get_profiles():
     - Sentiment analysis
     - Fundamental context
 
-    **Trader Profiles** (optional):
-    - `day_trader`: Intraday focus, tight stops, VWAP/volume emphasis
-    - `swing_trader`: Multi-day holds, Fibonacci levels, structure-based stops
-    - `position_trader`: Multi-week holds, trend-following, momentum focus
-    - `long_term_investor`: Multi-month holds, fundamentals, wide stops
+    The agent automatically determines the optimal trade style (day/swing/position)
+    based on the stock's technical setup - no user preferences needed.
 
     Returns:
     - BUY or NO_BUY recommendation
     - Confidence score (0-100)
     - If BUY: Complete trade plan with entry, stop loss, targets, and position size
-    - Reasoning for the recommendation (customized based on profile)
+    - Reasoning for the recommendation
     """,
     responses={
         200: {
@@ -655,13 +651,12 @@ async def analyze_stock(request: AnalysisRequest):
     Analyze a stock and generate trading recommendation.
 
     Args:
-        request: AnalysisRequest containing symbol, account_size, use_ai flag, and optional trader_profile
+        request: AnalysisRequest containing symbol and account_size
 
     Returns:
-        AnalysisResponse with recommendation and optional trade plan
+        AnalysisResponse with recommendation and optimal trade plan
     """
-    profile_str = request.trader_profile if request.trader_profile else "default"
-    logger.info(f"Received analysis request for {request.symbol} (profile: {profile_str})")
+    logger.info(f"Received expert analysis request for {request.symbol}")
 
     try:
         # Validate Alpaca configuration
@@ -672,16 +667,15 @@ async def analyze_stock(request: AnalysisRequest):
                 detail="Alpaca API credentials not configured. Please set ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables."
             )
 
-        # Run analysis with optional trader profile
+        # Run expert analysis - trade type determined by market structure
         result = run_analysis(
             symbol=request.symbol,
             account_size=request.account_size,
             use_ai=request.use_ai,
-            trader_profile=request.trader_profile,
         )
 
         logger.info(
-            f"Analysis complete for {request.symbol}: "
+            f"Expert analysis complete for {request.symbol}: "
             f"{result.recommendation} (confidence: {result.confidence}%)"
         )
 
@@ -922,43 +916,29 @@ async def market_scan(
     "/watchlist/smart",
     summary="Smart watchlist for mobile app",
     description="""
-    Get a smart watchlist of top stocks matching a trader profile.
+    Get a smart watchlist of top stocks based on expert analysis.
 
     This endpoint is optimized for mobile app consumption, returning:
     - Flattened list of top stocks across all leading sectors
-    - Profile-specific filtering based on confidence thresholds
+    - Expert-determined trade styles (day/swing/position) for each stock
     - Sorted by score (highest first)
 
-    **Profile Thresholds:**
-    - day_trader: 70% confidence
-    - swing_trader: 65% confidence
-    - position_trader: 65% confidence
-    - long_term_investor: 60% confidence
+    The agent automatically determines the optimal trade style for each stock
+    based on technical analysis - no user preferences needed.
 
     Returns a simplified response perfect for rendering in a watchlist UI.
     """,
 )
 async def smart_watchlist(
-    profile: str = "swing_trader",
     max_results: int = 10,
+    min_confidence: int = 65,
 ):
-    """Get smart watchlist of top stocks for a trader profile."""
+    """Get smart watchlist of top stocks with expert-determined trade styles."""
     try:
-        # Validate profile
-        valid_profiles = ["day_trader", "swing_trader", "position_trader", "long_term_investor"]
-        if profile not in valid_profiles:
-            raise ValueError(f"Invalid profile. Must be one of: {', '.join(valid_profiles)}")
+        # Use expert threshold - balanced confidence level
+        min_score = max(50, min(80, min_confidence))  # Clamp between 50-80
 
-        # Get profile-specific threshold
-        profile_thresholds = {
-            "day_trader": 70,
-            "swing_trader": 65,
-            "position_trader": 65,
-            "long_term_investor": 60,
-        }
-        min_score = profile_thresholds[profile]
-
-        # Run market scan with profile-appropriate settings
+        # Run market scan with expert settings
         scan_result = run_market_scan(
             min_sector_change=-5.0,  # Include slightly negative sectors too
             min_stock_score=min_score,
@@ -1007,12 +987,11 @@ async def smart_watchlist(
         market_direction = scan_result.get("market", {}).get("market_signal", "mixed")
 
         logger.info(
-            f"Smart watchlist for {profile}: {len(watchlist)} stocks "
+            f"Smart watchlist: {len(watchlist)} stocks "
             f"(min_score={min_score}, market={market_direction})"
         )
 
         return {
-            "profile": profile,
             "min_score_threshold": min_score,
             "market_direction": market_direction,
             "stocks": watchlist,
@@ -3162,33 +3141,200 @@ async def create_plan_stream(
     force_new: bool = True,
     user_id: str = "default"
 ):
-    """Generate a trading plan with real-time streaming output."""
+    """Generate a trading plan with real-time streaming output.
+
+    Streams detailed analysis steps with findings in Claude Code agent style.
+    Each step includes: type, step_type, status, findings[], timestamp
+    """
     from app.agent.planning_agent import StockPlanningAgent
+    from app.tools.market_data import fetch_price_bars, fetch_latest_quote
+    from app.tools.indicators import calculate_ema_series, calculate_rsi_series
+    from app.tools.analysis import detect_chart_patterns
+    from app.tools.chart_generator import generate_chart_image
+    import time
 
     symbol = symbol.upper()
+
+    def emit_step(step_type: str, status: str, findings: list = None):
+        """Helper to emit a step update."""
+        return f"data: {json.dumps({'type': 'step', 'step_type': step_type, 'status': status, 'findings': findings or [], 'timestamp': time.time()})}\n\n"
 
     async def generate_stream():
         try:
             agent = StockPlanningAgent(symbol, user_id)
 
-            # Phase 1: Gathering data
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'gathering_data'})}\n\n"
+            # Step 1: Gathering market data
+            yield emit_step("gathering_data", "active")
+
+            try:
+                quote = fetch_latest_quote(symbol)
+                price = quote.get("mid_price", 0)
+                bid = quote.get("bid_price", 0)
+                ask = quote.get("ask_price", 0)
+                findings = [
+                    f"Price: ${price:.2f}",
+                    f"Bid: ${bid:.2f} | Ask: ${ask:.2f}",
+                ]
+            except Exception:
+                findings = ["Fetching market data..."]
+
+            yield emit_step("gathering_data", "completed", findings)
+
+            # Step 2: Technical indicators
+            yield emit_step("technical_indicators", "active")
+
             await agent.gather_comprehensive_data()
+            tech = agent._technical_data or {}
 
-            # Phase 2: Analyzing
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'analyzing'})}\n\n"
+            rsi_data = tech.get("rsi", {})
+            macd_data = tech.get("macd", {})
+            ema_data = tech.get("emas", {})
 
-            # Phase 3: Stream the plan generation
-            yield f"data: {json.dumps({'type': 'phase', 'phase': 'generating'})}\n\n"
+            tech_findings = []
+            if rsi_data:
+                rsi_val = rsi_data.get("value", 0)
+                rsi_signal = rsi_data.get("signal", "neutral")
+                tech_findings.append(f"RSI: {rsi_val:.1f} ({rsi_signal})")
+            if macd_data:
+                macd_signal = macd_data.get("signal", "neutral")
+                tech_findings.append(f"MACD: {macd_signal.replace('_', ' ').title()}")
+            if ema_data:
+                above_9 = "above" if ema_data.get("above_9") else "below"
+                above_21 = "above" if ema_data.get("above_21") else "below"
+                above_50 = "above" if ema_data.get("above_50") else "below"
+                tech_findings.append(f"EMA: Price {above_9} 9, {above_21} 21, {above_50} 50")
 
+            yield emit_step("technical_indicators", "completed", tech_findings or ["Analysis complete"])
+
+            # Step 3: Support & Resistance
+            yield emit_step("support_resistance", "active")
+
+            levels = agent._levels_data or {}
+            supports = levels.get("support_levels", [])[:3]
+            resistances = levels.get("resistance_levels", [])[:3]
+
+            level_findings = []
+            if supports:
+                support_strs = [f"${s.get('price', s):.2f}" if isinstance(s, dict) else f"${s:.2f}" for s in supports[:2]]
+                level_findings.append(f"Support: {', '.join(support_strs)}")
+            if resistances:
+                resist_strs = [f"${r.get('price', r):.2f}" if isinstance(r, dict) else f"${r:.2f}" for r in resistances[:2]]
+                level_findings.append(f"Resistance: {', '.join(resist_strs)}")
+
+            yield emit_step("support_resistance", "completed", level_findings or ["Levels identified"])
+
+            # Step 4: Chart patterns
+            yield emit_step("chart_patterns", "active")
+
+            patterns = agent._patterns_data or {}
+            pattern_list = patterns.get("patterns", [])
+
+            pattern_findings = []
+            if pattern_list:
+                for p in pattern_list[:2]:
+                    pname = p.get("name", "Pattern")
+                    pconf = p.get("confidence", 0)
+                    pattern_findings.append(f"Found: {pname} ({pconf}% confidence)")
+            else:
+                pattern_findings.append("No clear patterns detected")
+
+            yield emit_step("chart_patterns", "completed", pattern_findings)
+
+            # Step 5: Generate chart for Vision
+            yield emit_step("generating_chart", "active")
+
+            try:
+                bars = fetch_price_bars(symbol, timeframe="1d", days_back=120)
+                if bars and len(bars) >= 60:
+                    ema_9 = calculate_ema_series(bars, 9)
+                    ema_21 = calculate_ema_series(bars, 21)
+                    ema_50 = calculate_ema_series(bars, 50)
+                    rsi_vals = calculate_rsi_series(bars, 14)
+
+                    indicators = {"ema_9": ema_9, "ema_21": ema_21, "ema_50": ema_50, "rsi": rsi_vals}
+                    chart_image = generate_chart_image(symbol, bars, indicators, lookback=60)
+                    chart_size_kb = len(chart_image) / 1024
+                    chart_findings = [f"Chart rendered ({chart_size_kb:.0f}KB)", "EMAs + RSI + Volume overlays"]
+                else:
+                    chart_findings = ["Insufficient data for chart"]
+            except Exception as e:
+                chart_findings = [f"Chart generation: {str(e)[:50]}"]
+
+            yield emit_step("generating_chart", "completed", chart_findings)
+
+            # Step 6: Vision analysis - Actually run visual analysis on the chart
+            yield emit_step("vision_analysis", "active")
+            yield emit_step("vision_analysis", "active", ["Sending chart to Claude Vision..."])
+
+            visual_analysis_result = None
+            try:
+                # Call the agent's visual analysis method
+                visual_analysis_result = await agent._perform_visual_analysis()
+                if visual_analysis_result:
+                    trend = visual_analysis_result.get("trend_quality", {}).get("assessment", "unknown")
+                    modifier = visual_analysis_result.get("visual_confidence_modifier", 0)
+                    patterns = visual_analysis_result.get("visual_patterns_identified", [])
+                    warnings = visual_analysis_result.get("warning_signs", [])
+
+                    vision_findings = [
+                        f"Trend quality: {trend.title()}",
+                        f"Visual confidence: {'+' if modifier >= 0 else ''}{modifier}",
+                    ]
+                    if patterns:
+                        vision_findings.append(f"Patterns: {', '.join(patterns[:2])}")
+                    if warnings:
+                        vision_findings.append(f"Warning: {warnings[0][:40]}...")
+
+                    yield emit_step("vision_analysis", "completed", vision_findings)
+                else:
+                    yield emit_step("vision_analysis", "completed", ["No significant patterns found"])
+            except Exception as e:
+                logger.warning(f"Visual analysis failed for {symbol}: {e}")
+                yield emit_step("vision_analysis", "completed", ["Visual analysis unavailable"])
+
+            # Step 7: Generate the plan
+            yield emit_step("generating_plan", "active")
+
+            # Stream the actual plan generation
+            plan_result = None
             async for chunk in agent.generate_plan_streaming(force_new=force_new):
+                # Capture plan from plan_complete or existing_plan events
+                chunk_type = chunk.get("type")
+                if chunk_type in ("plan_complete", "existing_plan"):
+                    plan_result = chunk.get("plan", {})
+                    # Inject visual analysis results into the plan
+                    if visual_analysis_result and plan_result:
+                        modifier = visual_analysis_result.get("visual_confidence_modifier", 0)
+                        plan_result["visual_analysis"] = {
+                            "confidence_modifier": modifier,
+                            "trend_quality": visual_analysis_result.get("trend_quality", {}),
+                            "patterns_identified": visual_analysis_result.get("visual_patterns_identified", []),
+                            "warning_signs": visual_analysis_result.get("warning_signs", []),
+                        }
+                        # Update the chunk with enriched plan
+                        chunk["plan"] = plan_result
                 yield f"data: {json.dumps(chunk)}\n\n"
 
+            # Final plan step completion
+            if plan_result:
+                bias = plan_result.get("bias", "neutral")
+                confidence = plan_result.get("confidence", 0)
+                plan_findings = [
+                    f"Bias: {bias.title()}",
+                    f"Confidence: {confidence}%",
+                ]
+                yield emit_step("generating_plan", "completed", plan_findings)
+            else:
+                yield emit_step("generating_plan", "completed", ["Plan generated"])
+
+            # Complete
+            yield emit_step("complete", "completed", ["Trading plan ready for review"])
             yield "data: [DONE]\n\n"
 
         except Exception as e:
             logger.error(f"Streaming plan error for {symbol}: {str(e)}")
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield "data: [DONE]\n\n"  # Always send DONE to close stream cleanly
 
     return StreamingResponse(
         generate_stream(),

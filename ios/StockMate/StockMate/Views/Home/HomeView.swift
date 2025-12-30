@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Main home screen combining market overview, profile selection, and user watchlist
+/// Main home screen combining market overview and user watchlist
 struct HomeView: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @StateObject private var viewModel = HomeViewModel()

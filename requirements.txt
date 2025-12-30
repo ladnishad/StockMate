@@ -31,3 +31,7 @@ psycopg2-binary>=2.9.9
 
 # Security & Rate Limiting
 slowapi>=0.1.9
+
+# Chart Generation (Visual Analysis)
+mplfinance>=0.12.10b0
+matplotlib>=3.7.0

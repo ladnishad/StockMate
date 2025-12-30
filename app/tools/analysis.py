@@ -1137,6 +1137,51 @@ def detect_chart_patterns(
                     "pattern_complete": False,  # Continuation patterns are anticipatory
                 })
 
+    # Pattern 8: Bear Flag (Bearish Continuation)
+    # Look for strong downtrend followed by consolidation with slight upward slope
+    # IMPORTANT: For long-only traders, this signals potential EXIT from long positions
+    if len(price_bars) >= 30:
+        # Check for prior downtrend (flagpole)
+        lookback = min(20, len(closes) - 10)
+        bear_flagpole_start = closes[-lookback]
+        bear_flag_start = closes[-10]
+
+        # Strong prior move down (>5%)
+        bear_flagpole_change = (bear_flag_start - bear_flagpole_start) / bear_flagpole_start
+        if bear_flagpole_change < -0.05:  # 5% decline
+            # Recent consolidation/slight bounce
+            bear_recent_closes = closes[-10:]
+            bear_consolidation_range = (np.max(bear_recent_closes) - np.min(bear_recent_closes)) / np.mean(bear_recent_closes)
+
+            # Calculate slope of consolidation (should be slightly upward for bear flag)
+            bear_flag_slope = (bear_recent_closes[-1] - bear_recent_closes[0]) / bear_recent_closes[0]
+
+            # Tight consolidation (<3%) with characteristic upward slope
+            # True bear flag: 0 < slope < 5% (slight upward drift/bounce)
+            if bear_consolidation_range < 0.03 and 0 < bear_flag_slope < 0.05:
+                bear_flagpole_height = abs(bear_flag_start - bear_flagpole_start)
+                bear_target_price = current_price - bear_flagpole_height
+
+                # Higher confidence if slope is ideal (0% to 1%)
+                if 0 < bear_flag_slope <= 0.01:
+                    bear_confidence = 75  # Ideal slope
+                else:
+                    bear_confidence = 68  # Acceptable but not perfect
+
+                patterns_found.append({
+                    "name": "Bear Flag",
+                    "type": "bearish_continuation",
+                    "confidence": round(bear_confidence, 1),
+                    "flag_low": round(np.min(bear_recent_closes), 2),
+                    "flag_slope_pct": round(bear_flag_slope * 100, 2),
+                    "target_price": round(bear_target_price, 2),
+                    "current_price": round(current_price, 2),
+                    "flagpole_move_pct": round((bear_flagpole_change * 100), 2),
+                    "expected_move_pct": round((-bear_flagpole_height / current_price * 100), 2),
+                    "pattern_complete": False,  # Continuation patterns are anticipatory
+                    "action_for_longs": "CONSIDER EXIT - Bear flag signals potential further decline",
+                })
+
     # Calculate statistics
     bullish_patterns = [p for p in patterns_found if 'bullish' in p['type']]
     bearish_patterns = [p for p in patterns_found if 'bearish' in p['type']]
@@ -1321,28 +1366,23 @@ def generate_trade_plan(
     account_size: float,
     risk_percentage: float = 1.0,
     use_live_quote: bool = True,
-    profile: Optional["TraderProfile"] = None,
 ) -> Optional[TradePlan]:
     """Generate a trade plan based on market snapshot.
 
     This tool analyzes the market snapshot and generates a detailed trade plan
     including entry, stop loss, targets, and position sizing.
 
+    The trade type (day/swing/position) is determined automatically from market
+    structure and technical analysis - not user preferences.
+
     With AlgoTrader Plus, this function can optionally fetch real-time bid/ask
     quotes for more accurate entry pricing and spread analysis.
-
-    When a trader profile is provided, the trade plan is customized:
-    - Stop method: ATR-based, structure-based, or percentage-based
-    - Target method: R:R ratios, resistance levels, or Fibonacci extensions
-    - Risk parameters: Profile-specific risk % and position limits
-    - Trade type: Aligned with profile's allowed trade types
 
     Args:
         snapshot: MarketSnapshot containing all market data
         account_size: Total account size in dollars
         risk_percentage: Percentage of account to risk per trade (default: 1%)
         use_live_quote: Whether to fetch real-time quote for entry price (default: True)
-        profile: Optional TraderProfile for customized trade planning
 
     Returns:
         TradePlan object if conditions are favorable, None otherwise
@@ -1359,8 +1399,7 @@ def generate_trade_plan(
         ...     print(f"Stop: ${trade_plan.stop_loss:.2f}")
         ...     print(f"Position Size: {trade_plan.position_size} shares")
     """
-    profile_name = profile.name if profile else "default"
-    logger.info(f"Generating trade plan for {snapshot.symbol} (profile: {profile_name})")
+    logger.info(f"Generating expert trade plan for {snapshot.symbol}")
 
     if account_size <= 0:
         raise ValueError("account_size must be > 0")
@@ -1399,52 +1438,66 @@ def generate_trade_plan(
     supports.sort(key=lambda x: current_price - x.price)
     resistances.sort(key=lambda x: x.price - current_price)
 
-    # Determine trade type based on profile or market structure
+    # Determine optimal trade type from market structure (not user preference)
     # Get EMAs for trend analysis
     ema_9 = next((i for i in snapshot.indicators if i.name == "EMA_9"), None)
     ema_20 = next((i for i in snapshot.indicators if i.name == "EMA_20"), None)
     ema_50 = next((i for i in snapshot.indicators if i.name == "EMA_50"), None)
 
-    # If profile specified, use profile's preferred trade type
-    if profile:
-        # Use the first allowed trade type from the profile
-        trade_type = profile.allowed_trade_types[0]
-    else:
-        # Determine trend and trade type from market structure
-        if ema_9 and ema_20 and ema_50:
-            if ema_9.value > ema_20.value > ema_50.value:
-                # Strong uptrend - prefer swing/long
-                if current_price > ema_9.value * 1.02:
-                    trade_type = "swing"
-                else:
-                    trade_type = "long"
-            elif ema_9.value > ema_20.value:
-                # Moderate uptrend - swing trade
-                trade_type = "swing"
-            else:
-                # Short-term momentum - day trade
-                trade_type = "day"
-        else:
-            # Default to swing if we can't determine trend
-            trade_type = "swing"
+    # Get ATR for volatility assessment
+    atr_indicator = next((i for i in snapshot.indicators if i.name.startswith("ATR")), None)
+    atr_pct = (atr_indicator.value / current_price * 100) if atr_indicator else 2.0
 
-    # Get profile-specific parameters or defaults
-    if profile:
-        stop_method = profile.risk.stop_method
-        atr_multiplier = profile.risk.atr_multiplier
-        max_position_pct = profile.risk.max_position_percent
-        target_method = profile.targets.method
-        rr_ratios = profile.targets.rr_ratios
-        validate_targets = profile.targets.validate_against_resistance
-        use_fib_extensions = profile.targets.use_fibonacci_extensions
+    # Determine trade type from technical analysis:
+    # - High volatility (ATR > 3%) + short-term momentum → Day trade
+    # - Strong trend + moderate volatility → Swing trade
+    # - Strong multi-week trend + low volatility → Position/Long trade
+    if ema_9 and ema_20 and ema_50:
+        ema_aligned_bullish = ema_9.value > ema_20.value > ema_50.value
+        ema_aligned_bearish = ema_9.value < ema_20.value < ema_50.value
+        ema_moderate_bullish = ema_9.value > ema_20.value
+
+        if atr_pct > 3.0:
+            # High volatility - day trade to capture quick moves
+            trade_type = "day"
+        elif ema_aligned_bullish or ema_aligned_bearish:
+            # Strong trend alignment
+            if atr_pct < 1.5:
+                # Low volatility + strong trend → position trade
+                trade_type = "long"
+            else:
+                # Moderate volatility + strong trend → swing trade
+                trade_type = "swing"
+        elif ema_moderate_bullish:
+            # Moderate uptrend - swing trade
+            trade_type = "swing"
+        else:
+            # No clear trend - default to swing for flexibility
+            trade_type = "swing"
     else:
-        stop_method = "atr"
-        atr_multiplier = 2.0
-        max_position_pct = 20.0
-        target_method = "rr_ratio"
-        rr_ratios = [1.5, 2.5, 3.5]
-        validate_targets = True
+        # Default to swing if we can't determine trend
+        trade_type = "swing"
+
+    # Expert parameters based on determined trade type
+    # These are optimized defaults that work well across different setups
+    stop_method = "atr"  # ATR-based stops work best across all styles
+    max_position_pct = 20.0
+    target_method = "rr_ratio"
+    validate_targets = True
+
+    # Adjust parameters based on determined trade type
+    if trade_type == "day":
+        atr_multiplier = 1.5  # Tighter stops for day trades
+        rr_ratios = [1.5, 2.0, 2.5]  # Quick targets
         use_fib_extensions = False
+    elif trade_type == "swing":
+        atr_multiplier = 2.0  # Standard swing stops
+        rr_ratios = [1.5, 2.5, 3.5]  # Multi-day targets
+        use_fib_extensions = True
+    else:  # long/position
+        atr_multiplier = 2.5  # Wider stops for position trades
+        rr_ratios = [2.0, 3.0, 5.0]  # Larger targets
+        use_fib_extensions = True
 
     # Set entry price based on live quote or historical data
     if live_quote:
@@ -1454,12 +1507,9 @@ def generate_trade_plan(
         # Fallback: use current price minus small buffer
         entry_price = current_price * 0.998  # 0.2% below current
 
-    # Get ATR for volatility-based stop loss
-    atr_indicator = next((i for i in snapshot.indicators if i.name.startswith("ATR")), None)
-
-    # Set stop loss based on profile's stop method
+    # Set stop loss based on ATR (preferred) or structure
     if stop_method == "atr" and atr_indicator:
-        # Use ATR-based stop loss with profile's multiplier
+        # Use ATR-based stop loss with trade-type-appropriate multiplier
         atr_value = atr_indicator.value
         atr_stop_distance = atr_value * atr_multiplier
         stop_loss = entry_price - atr_stop_distance
@@ -1575,25 +1625,20 @@ def run_analysis(
     symbol: str,
     account_size: float,
     use_ai: bool = False,
-    trader_profile: Optional[str] = None,
 ) -> AnalysisResponse:
     """Run complete stock analysis and generate trading recommendation.
 
     This is the main orchestration function that ties together all analysis tools
     to produce a final BUY or NO_BUY recommendation with detailed trade plan.
 
-    When a trader profile is specified, the analysis is customized:
-    - Scoring weights are adjusted based on the profile's trading style
-    - Profile-specific indicators (ADX, Stochastic, Fibonacci) are included
-    - Risk parameters and thresholds are profile-specific
-    - Trade plans use profile-appropriate stop/target methods
+    The analysis uses balanced "expert" weights across all indicators to provide
+    an unbiased assessment. The optimal trade style (day/swing/position) is
+    determined purely from technical analysis, not user preferences.
 
     Args:
         symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
         account_size: Total account size in dollars
         use_ai: Whether to use AI-enhanced analysis (future feature)
-        trader_profile: Optional profile name ('day_trader', 'swing_trader',
-                        'position_trader', 'long_term_investor')
 
     Returns:
         AnalysisResponse object with recommendation and trade plan
@@ -1603,83 +1648,50 @@ def run_analysis(
         Exception: If analysis fails
 
     Example:
-        >>> result = run_analysis("AAPL", account_size=10000, trader_profile="swing_trader")
+        >>> result = run_analysis("AAPL", account_size=10000)
         >>> print(f"Recommendation: {result.recommendation}")
         >>> print(f"Confidence: {result.confidence:.1f}%")
         >>> if result.trade_plan:
         ...     print(f"Entry: ${result.trade_plan.entry_price:.2f}")
     """
-    logger.info(
-        f"Running analysis for {symbol} (account: ${account_size:.2f}, "
-        f"profile: {trader_profile or 'default'})"
-    )
+    logger.info(f"Running expert analysis for {symbol} (account: ${account_size:.2f})")
 
     try:
-        # Load profile if specified
-        profile = None
-        if trader_profile:
-            from app.models.profile_presets import get_profile
-            profile = get_profile(trader_profile)
-            logger.info(f"Using trader profile: {profile.name}")
-
         # Build market snapshot
         snapshot = build_snapshot(symbol)
 
         # Initialize scoring system (0-100)
-        # True percentage-based weights that sum to 100%.
+        # Expert weights: Balanced across ALL indicators for unbiased analysis
         # Each factor contributes a percentage of the final score.
         # Starting from 0, factors add/subtract their weighted percentages.
         # Final score clamped to [0,100] with threshold triggering BUY recommendation.
         score = 0  # Start at 0
         reasons = []
 
-        # Get weights from profile or use defaults
-        if profile:
-            WEIGHTS = {
-                "sentiment": profile.weights.sentiment,
-                "ema_trend": profile.weights.ema_trend,
-                "rsi": profile.weights.rsi,
-                "vwap": profile.weights.vwap,
-                "volume": profile.weights.volume,
-                "macd": profile.weights.macd,
-                "bollinger": profile.weights.bollinger,
-                "multi_tf": profile.weights.multi_tf,
-                "support_resistance": profile.weights.support_resistance,
-                "divergence": profile.weights.divergence,
-                "volume_profile": profile.weights.volume_profile,
-                "chart_patterns": profile.weights.chart_patterns,
-                "fibonacci": profile.weights.fibonacci,
-                "adx": profile.weights.adx,
-                "stochastic": profile.weights.stochastic,
-            }
-            confidence_threshold = profile.buy_confidence_threshold
-            rsi_overbought = profile.rsi_overbought
-            rsi_oversold = profile.rsi_oversold
-            adx_threshold = profile.adx_trend_threshold
-        else:
-            # Default weights (percentages that sum to 100%)
-            # Total: 100.0% distributed across 12 active factors
-            WEIGHTS = {
-                "sentiment": 10.26,      # Sentiment strength
-                "ema_trend": 12.82,      # Trend alignment (most important)
-                "rsi": 7.69,             # Momentum oscillator
-                "vwap": 7.69,            # Institutional positioning
-                "volume": 10.26,         # Volume confirmation (critical)
-                "macd": 10.26,           # Momentum and crossovers
-                "bollinger": 7.69,       # Volatility bands
-                "multi_tf": 7.69,        # Multi-timeframe confluence
-                "support_resistance": 5.13,  # Key levels
-                "divergence": 7.69,      # Reversal signals
-                "volume_profile": 5.13,  # Institutional volume
-                "chart_patterns": 7.69,  # Pattern recognition
-                "fibonacci": 0.0,        # Not used in default
-                "adx": 0.0,              # Not used in default
-                "stochastic": 0.0,       # Not used in default
-            }
-            confidence_threshold = 65.0
-            rsi_overbought = 70.0
-            rsi_oversold = 30.0
-            adx_threshold = 25.0
+        # Expert weights: Balanced distribution across 15 factors
+        # Total: 100.0% - No bias toward any trading style
+        # The analysis determines the optimal trade style, not user preferences
+        WEIGHTS = {
+            "sentiment": 8.0,          # Market sentiment
+            "ema_trend": 12.0,         # Trend alignment (most important)
+            "rsi": 7.0,                # Momentum oscillator
+            "vwap": 6.0,               # Institutional positioning
+            "volume": 10.0,            # Volume confirmation (critical)
+            "macd": 9.0,               # Momentum and crossovers
+            "bollinger": 6.0,          # Volatility bands
+            "multi_tf": 8.0,           # Multi-timeframe confluence
+            "support_resistance": 6.0, # Key levels
+            "divergence": 7.0,         # Reversal signals
+            "volume_profile": 5.0,     # Institutional volume
+            "chart_patterns": 8.0,     # Pattern recognition
+            "fibonacci": 4.0,          # Fib levels (useful for targets)
+            "adx": 2.0,                # Trend strength
+            "stochastic": 2.0,         # Momentum confirmation
+        }
+        confidence_threshold = 65.0
+        rsi_overbought = 70.0
+        rsi_oversold = 30.0
+        adx_threshold = 25.0
         # Note: ATR excluded (0%) - informational only, non-directional
 
         # 1. Sentiment Analysis (weight: 10.26%)
@@ -2041,16 +2053,14 @@ def run_analysis(
         # Adding 50 shifts the range to 0-100 for display
         confidence = max(0, min(100, score + 50))
 
-        # Generate recommendation using profile-specific threshold
+        # Generate recommendation
         if confidence >= confidence_threshold:
             recommendation = "BUY"
-            # Generate trade plan with profile-specific parameters
-            risk_pct = profile.risk.risk_percentage if profile else 1.0
+            # Generate trade plan - trade type determined by market structure
             trade_plan = generate_trade_plan(
                 snapshot,
                 account_size,
-                risk_percentage=risk_pct,
-                profile=profile,
+                risk_percentage=1.0,  # Standard 1% risk per trade
             )
         else:
             recommendation = "NO_BUY"

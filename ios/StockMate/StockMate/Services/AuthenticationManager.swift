@@ -54,6 +54,7 @@ final class AuthenticationManager: ObservableObject {
     // MARK: - Public Methods
 
     /// Check if existing session is valid by calling /auth/me
+    /// If access token is expired, attempts to refresh it before logging out
     func checkSession() async {
         guard keychain.hasValidSession else {
             isAuthenticated = false
@@ -66,9 +67,23 @@ final class AuthenticationManager: ObservableObject {
             currentUser = user
             isAuthenticated = true
         } catch {
-            // Token is invalid, clear session
-            print("Session check failed: \(error)")
-            await logout()
+            // Token might be expired - try refreshing before giving up
+            print("Session check failed: \(error), attempting token refresh...")
+
+            do {
+                try await refreshAccessToken()
+                print("Token refresh successful, retrying session check...")
+
+                // Retry fetching user with new token
+                let user = try await fetchCurrentUser()
+                currentUser = user
+                isAuthenticated = true
+                print("Session restored successfully")
+            } catch {
+                // Refresh also failed - now we can logout
+                print("Token refresh failed: \(error), logging out")
+                await logout()
+            }
         }
     }
 

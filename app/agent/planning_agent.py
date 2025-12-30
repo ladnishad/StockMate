@@ -36,7 +36,9 @@ from app.agent.prompts import (
     SMART_PLANNING_SYSTEM_PROMPT,
     SMART_PLAN_GENERATION_PROMPT,
     SMART_PLAN_EVALUATION_PROMPT,
+    VISUAL_ANALYSIS_PROMPT,
 )
+from app.tools.chart_generator import generate_chart_image
 from app.models.response import (
     EnhancedTradePlan,
     TradeStyleRecommendation,
@@ -115,6 +117,64 @@ def _sanitize_plan_data(plan_data: Dict[str, Any]) -> Dict[str, Any]:
 
     return sanitized
 
+
+def validate_plan_price_consistency(
+    bias: str,
+    entry_zone_low: Optional[float],
+    entry_zone_high: Optional[float],
+    stop_loss: Optional[float],
+    targets: List[Optional[float]],
+) -> List[str]:
+    """Validate price levels are consistent with trade bias.
+
+    For BULLISH (long) trades:
+    - stop_loss should be BELOW entry
+    - targets should be ABOVE entry
+
+    For BEARISH (short) trades:
+    - stop_loss should be ABOVE entry
+    - targets should be BELOW entry
+
+    Returns list of warning messages if inconsistent.
+    """
+    warnings = []
+
+    if not entry_zone_low or not entry_zone_high:
+        return warnings
+
+    entry_mid = (entry_zone_low + entry_zone_high) / 2
+
+    if bias == "bullish":
+        # LONG: stop < entry, targets > entry
+        if stop_loss and stop_loss >= entry_mid:
+            warnings.append(
+                f"BULLISH plan has stop_loss ${stop_loss:.2f} >= entry ${entry_mid:.2f}. "
+                "Stop should be BELOW entry for long trades."
+            )
+        for i, target in enumerate(targets, 1):
+            if target and target <= entry_mid:
+                warnings.append(
+                    f"BULLISH plan has target_{i} ${target:.2f} <= entry ${entry_mid:.2f}. "
+                    "Targets should be ABOVE entry for long trades."
+                )
+
+    elif bias == "bearish":
+        # SHORT: stop > entry, targets < entry
+        if stop_loss and stop_loss <= entry_mid:
+            warnings.append(
+                f"BEARISH plan has stop_loss ${stop_loss:.2f} <= entry ${entry_mid:.2f}. "
+                "Stop should be ABOVE entry for short trades."
+            )
+        for i, target in enumerate(targets, 1):
+            if target and target >= entry_mid:
+                warnings.append(
+                    f"BEARISH plan has target_{i} ${target:.2f} >= entry ${entry_mid:.2f}. "
+                    "Targets should be BELOW entry for short trades."
+                )
+
+    return warnings
+
+
 # System prompt for the planning agent
 PLANNING_AGENT_SYSTEM = """You are an expert swing trader and technical analyst. Your job is to analyze stocks comprehensively and create actionable trading plans.
 
@@ -133,10 +193,19 @@ When web search is available, ALWAYS search for:
 
 Focus on recent, relevant information. Ignore outdated articles or old Reddit posts.
 
-## When Creating a Plan
+## When Creating a Plan - Level Placement by Bias
+
+### For BULLISH (Long) Plans:
 - Entry should be at support or on a pullback, not chasing
-- Stop loss should be below a meaningful level (support, swing low)
-- Targets should be at resistance levels or Fibonacci extensions
+- Stop loss MUST be BELOW entry (below support, swing low, or EMA)
+- Targets should be ABOVE entry (at resistance levels or Fib extensions)
+
+### For BEARISH (Short) Plans:
+- Entry should be at resistance or on a bounce into overhead supply
+- Stop loss MUST be ABOVE entry (above resistance, swing high, or EMA)
+- Targets should be BELOW entry (at support levels where you cover)
+
+### For Both:
 - Risk/reward should be at least 2:1 for swing trades
 - Consider the broader market direction
 - Factor in any news catalysts or Reddit buzz into your thesis
@@ -547,6 +616,8 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                 news_summary=plan_data.get("news_summary", ""),
                 reddit_sentiment=plan_data.get("reddit_sentiment", "none"),
                 reddit_buzz=plan_data.get("reddit_buzz", ""),
+                # Validation warnings (if price levels don't match bias)
+                validation_warnings=plan_data.get("_validation_warnings", []),
             )
 
             # Save plan
@@ -659,6 +730,8 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                 news_summary=plan_data.get("news_summary", ""),
                 reddit_sentiment=plan_data.get("reddit_sentiment", "none"),
                 reddit_buzz=plan_data.get("reddit_buzz", ""),
+                # Validation warnings (if price levels don't match bias)
+                validation_warnings=plan_data.get("_validation_warnings", []),
             )
 
             # Save plan
@@ -702,6 +775,7 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
             "news_summary": plan.news_summary,
             "reddit_sentiment": plan.reddit_sentiment,
             "reddit_buzz": plan.reddit_buzz,
+            "validation_warnings": plan.validation_warnings,
         }
 
     async def generate_smart_plan(self) -> EnhancedTradePlan:
@@ -753,6 +827,37 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
 
                 # Parse the JSON response
                 plan_data = self._parse_smart_plan_response(response_text)
+
+                # Perform visual chart analysis
+                visual_analysis = await self._perform_visual_analysis()
+
+                if visual_analysis:
+                    # Apply visual confidence modifier to the plan
+                    original_confidence = plan_data.get("confidence", 0)
+                    visual_modifier = visual_analysis.get("visual_confidence_modifier", 0)
+
+                    # Clamp modifier to reasonable range
+                    visual_modifier = max(-20, min(20, visual_modifier))
+
+                    # Apply modifier and clamp final confidence to 0-100
+                    adjusted_confidence = max(0, min(100, original_confidence + visual_modifier))
+                    plan_data["confidence"] = adjusted_confidence
+
+                    # Store visual analysis data in the plan
+                    plan_data["visual_analysis"] = {
+                        "confidence_modifier": visual_modifier,
+                        "original_confidence": original_confidence,
+                        "trend_quality": visual_analysis.get("trend_quality", {}),
+                        "patterns_identified": visual_analysis.get("visual_patterns_identified", []),
+                        "warning_signs": visual_analysis.get("warning_signs", []),
+                        "visual_summary": visual_analysis.get("visual_summary", ""),
+                    }
+
+                    logger.info(
+                        f"Visual analysis applied for {self.symbol}: "
+                        f"confidence {original_confidence} -> {adjusted_confidence} "
+                        f"(modifier: {visual_modifier:+d})"
+                    )
 
                 # Build the EnhancedTradePlan
                 enhanced_plan = self._build_enhanced_plan(plan_data)
@@ -925,6 +1030,119 @@ ATR (14): ${levels.get('atr', 0):.2f}
             "position_data": position_str,
         }
 
+    async def _perform_visual_analysis(self) -> Optional[Dict[str, Any]]:
+        """Generate chart and perform visual analysis using Claude Vision.
+
+        Returns the visual analysis results including confidence modifier,
+        or None if visual analysis fails.
+        """
+        try:
+            from app.tools.market_data import fetch_price_bars
+            from app.tools.indicators import calculate_ema_series, calculate_rsi_series
+
+            settings = get_settings()
+
+            # Get price bars for charting (need enough for indicators + lookback)
+            bars = fetch_price_bars(self.symbol, timeframe="1d", days_back=120)
+
+            if not bars or len(bars) < 60:
+                logger.warning(f"Insufficient bars for visual analysis: {len(bars) if bars else 0}")
+                return None
+
+            # Calculate indicator arrays using series functions (for chart overlay)
+            ema_9 = calculate_ema_series(bars, 9)
+            ema_21 = calculate_ema_series(bars, 21)
+            ema_50 = calculate_ema_series(bars, 50)
+            rsi_values = calculate_rsi_series(bars, 14)
+
+            indicators = {
+                "ema_9": ema_9,
+                "ema_21": ema_21,
+                "ema_50": ema_50,
+                "rsi": rsi_values,
+            }
+
+            # Generate chart image
+            logger.info(f"Generating chart for visual analysis: {self.symbol}")
+            chart_image = generate_chart_image(
+                symbol=self.symbol,
+                bars=bars,
+                indicators=indicators,
+                lookback=60,
+                show_volume=True,
+                show_rsi=True,
+            )
+
+            # Send to Claude Vision for analysis
+            logger.info(f"Sending chart to Claude Vision for {self.symbol}")
+            client = self._get_client()
+
+            vision_response = client.messages.create(
+                model=settings.claude_model_planning,
+                max_tokens=2000,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": chart_image,
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": VISUAL_ANALYSIS_PROMPT,
+                            }
+                        ]
+                    }
+                ]
+            )
+
+            response_text = vision_response.content[0].text
+
+            # Parse the visual analysis JSON
+            visual_analysis = self._parse_visual_analysis_response(response_text)
+
+            logger.info(
+                f"Visual analysis complete for {self.symbol}: "
+                f"modifier={visual_analysis.get('visual_confidence_modifier', 0)}, "
+                f"trend={visual_analysis.get('trend_quality', {}).get('assessment', 'unknown')}"
+            )
+
+            return visual_analysis
+
+        except ImportError as e:
+            logger.warning(f"Visual analysis dependencies not available: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Visual analysis failed for {self.symbol}: {e}")
+            return None
+
+    def _parse_visual_analysis_response(self, response_text: str) -> Dict[str, Any]:
+        """Parse Claude Vision's visual analysis response."""
+        try:
+            # Look for JSON block
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                json_str = response_text[json_start:json_end].strip()
+            elif "{" in response_text:
+                json_start = response_text.find("{")
+                json_end = response_text.rfind("}") + 1
+                json_str = response_text[json_start:json_end]
+            else:
+                logger.warning("No JSON found in visual analysis response")
+                return {"visual_confidence_modifier": 0, "visual_summary": response_text[:500]}
+
+            return json.loads(json_str)
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse visual analysis JSON: {e}")
+            return {"visual_confidence_modifier": 0, "visual_summary": "Analysis parsing failed"}
+
     def _parse_smart_plan_response(self, response_text: str) -> Dict[str, Any]:
         """Parse the smart plan JSON response."""
         try:
@@ -942,7 +1160,29 @@ ATR (14): ${levels.get('atr', 0):.2f}
 
             plan_data = json.loads(json_str)
             # Sanitize price fields to handle $ signs and ensure numeric types
-            return _sanitize_plan_data(plan_data)
+            plan_data = _sanitize_plan_data(plan_data)
+
+            # Validate price level consistency with bias
+            # Smart plan format uses nested targets array
+            bias = plan_data.get("bias", "neutral")
+            targets_data = plan_data.get("targets", [])
+            targets = [t.get("price") if isinstance(t, dict) else t for t in targets_data]
+            warnings = validate_plan_price_consistency(
+                bias=bias,
+                entry_zone_low=plan_data.get("entry_zone_low"),
+                entry_zone_high=plan_data.get("entry_zone_high"),
+                stop_loss=plan_data.get("stop_loss"),
+                targets=targets,
+            )
+
+            for warning in warnings:
+                logger.warning(f"Smart plan validation for {self.symbol}: {warning}")
+
+            # Flag the plan with warnings so iOS can display badge
+            if warnings:
+                plan_data["_validation_warnings"] = warnings
+
+            return plan_data
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse smart plan JSON: {e}")
             logger.error(f"Response was: {response_text[:1000]}")
@@ -1103,7 +1343,27 @@ ATR (14): ${levels.get('atr', 0):.2f}
 
             plan_data = json.loads(json_str)
             # Sanitize price fields to handle $ signs and ensure numeric types
-            return _sanitize_plan_data(plan_data)
+            plan_data = _sanitize_plan_data(plan_data)
+
+            # Validate price level consistency with bias
+            bias = plan_data.get("bias", "neutral")
+            targets = [plan_data.get("target_1"), plan_data.get("target_2"), plan_data.get("target_3")]
+            warnings = validate_plan_price_consistency(
+                bias=bias,
+                entry_zone_low=plan_data.get("entry_zone_low"),
+                entry_zone_high=plan_data.get("entry_zone_high"),
+                stop_loss=plan_data.get("stop_loss"),
+                targets=targets,
+            )
+
+            for warning in warnings:
+                logger.warning(f"Plan validation for {self.symbol}: {warning}")
+
+            # Flag the plan with warnings so iOS can display badge
+            if warnings:
+                plan_data["_validation_warnings"] = warnings
+
+            return plan_data
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse plan JSON: {e}")
             # Return a basic structure

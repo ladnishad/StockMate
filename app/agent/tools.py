@@ -172,14 +172,15 @@ async def get_technical_indicators(symbol: str) -> Dict[str, Any]:
 
 async def run_full_analysis(
     symbol: str,
-    trader_profile: str = "swing_trader",
     account_size: float = 10000.0,
 ) -> Dict[str, Any]:
     """Run full stock analysis with scoring and trade plan.
 
+    The analysis automatically determines the optimal trade style
+    (day/swing/position) based on technical analysis.
+
     Args:
         symbol: Stock ticker symbol
-        trader_profile: Trader profile (swing_trader, day_trader, etc.)
         account_size: Account size for position sizing
 
     Returns:
@@ -189,7 +190,6 @@ async def run_full_analysis(
         result = run_analysis(
             symbol=symbol.upper(),
             account_size=account_size,
-            trader_profile=trader_profile,
             use_ai=False,
         )
 
@@ -448,16 +448,11 @@ def get_agent_tools() -> List[Dict[str, Any]]:
         },
         {
             "name": "run_full_analysis",
-            "description": "Run comprehensive stock analysis with scoring and trade plan",
+            "description": "Run comprehensive expert stock analysis with scoring and trade plan. Automatically determines optimal trade style (day/swing/position) from technical analysis.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "symbol": {"type": "string", "description": "Stock ticker symbol"},
-                    "trader_profile": {
-                        "type": "string",
-                        "description": "Trader profile",
-                        "enum": ["swing_trader", "day_trader", "position_trader", "long_term_investor"],
-                    },
                 },
                 "required": ["symbol"],
             },

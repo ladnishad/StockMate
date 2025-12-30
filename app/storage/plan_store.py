@@ -69,12 +69,16 @@ class TradingPlan:
     last_evaluation: str = ""
     evaluation_notes: str = ""  # Latest AI evaluation
 
+    # Validation warnings (if price levels don't match bias)
+    validation_warnings: List[str] = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         data = asdict(self)
         # Convert lists to JSON strings for storage
         data["key_supports"] = json.dumps(data["key_supports"])
         data["key_resistances"] = json.dumps(data["key_resistances"])
+        data["validation_warnings"] = json.dumps(data["validation_warnings"])
         return data
 
     @classmethod
@@ -84,6 +88,7 @@ class TradingPlan:
         # Parse JSON lists
         data["key_supports"] = json.loads(data.get("key_supports", "[]"))
         data["key_resistances"] = json.loads(data.get("key_resistances", "[]"))
+        data["validation_warnings"] = json.loads(data.get("validation_warnings", "[]"))
         return cls(**data)
 
 
@@ -142,6 +147,7 @@ class PlanStore:
                     updated_at TEXT,
                     last_evaluation TEXT,
                     evaluation_notes TEXT,
+                    validation_warnings TEXT DEFAULT '[]',
 
                     UNIQUE(user_id, symbol)
                 )

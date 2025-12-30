@@ -1,136 +1,22 @@
 import SwiftUI
 
 /// Shows the AI's analysis as it streams in during plan generation
+/// Uses the terminal-style AgentStreamingView for Claude Code-like experience
 struct StreamingPlanView: View {
     @ObservedObject var viewModel: TradingPlanViewModel
 
     var body: some View {
-        VStack(spacing: 24) {
-            // Header
-            headerView
-
-            // Progress indicator
-            EnhancedPhaseIndicator(phase: viewModel.updatePhase)
-
-            // Streaming text area
-            if !viewModel.streamingText.isEmpty {
-                streamingTextView
-            } else {
-                waitingView
-            }
-
-            Spacer()
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var headerView: some View {
-        HStack(spacing: 12) {
-            // Animated sparkle icon
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.blue.opacity(0.8), Color.purple.opacity(0.8)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 48, height: 48)
-
-                Image(systemName: "sparkles")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundColor(.white)
-                    .symbolEffect(.pulse)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Analyzing \(viewModel.symbol)")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.primary)
-
-                Text("AI is generating your trading plan")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-        }
-    }
-
-    private var streamingTextView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: "text.bubble.fill")
-                    .font(.system(size: 12))
-                    .foregroundColor(.blue)
-                Text("Analysis")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-
-                Spacer()
-
-                // Live indicator
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 6, height: 6)
-                    Text("LIVE")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.green)
-                }
-            }
-
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(viewModel.streamingText)
-                        .font(.system(size: 14, design: .monospaced))
-                        .foregroundStyle(.primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                        .id("streamingText")
-                }
-                .frame(maxHeight: 350)
-                .background(Color(.tertiarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.blue.opacity(0.3), lineWidth: 1)
-                )
-                .onChange(of: viewModel.streamingText) { _, _ in
-                    withAnimation(.easeOut(duration: 0.1)) {
-                        proxy.scrollTo("streamingText", anchor: .bottom)
-                    }
-                }
-            }
-
-            // Typing cursor indicator
-            HStack(spacing: 4) {
-                StreamingCursor()
-                Text("Generating...")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-    }
-
-    private var waitingView: some View {
-        VStack(spacing: 16) {
-            StreamingDotsView()
-
-            Text("Preparing analysis...")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 40)
+        AgentStreamingView(
+            symbol: viewModel.symbol,
+            steps: $viewModel.analysisSteps,
+            isComplete: $viewModel.isAnalysisComplete
+        )
     }
 }
 
-// MARK: - Enhanced Phase Indicator
+// MARK: - Legacy Components (kept for backwards compatibility)
 
+/// Enhanced phase indicator for simpler streaming displays
 struct EnhancedPhaseIndicator: View {
     let phase: TradingPlanViewModel.UpdatePhase
 

@@ -297,6 +297,79 @@ def calculate_rsi(
         }
     )
 
+
+def calculate_rsi_series(
+    price_bars: List[PriceBar],
+    period: int = 14,
+) -> List[float]:
+    """Calculate RSI series for all bars (for chart overlay).
+
+    Unlike calculate_rsi() which returns just the latest value, this function
+    returns the full RSI series for use in chart overlays and visual analysis.
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        period: RSI period (default: 14)
+
+    Returns:
+        List of RSI values, one for each input bar (first `period` values may be NaN or 50).
+
+    Raises:
+        ValueError: If price_bars is empty or period is invalid
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 100)
+        >>> rsi_values = calculate_rsi_series(bars, period=14)
+        >>> print(f"Latest RSI: {rsi_values[-1]:.1f}")
+    """
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    if period < 2:
+        raise ValueError("period must be >= 2")
+
+    if len(price_bars) < period + 1:
+        raise ValueError(f"Need at least {period + 1} bars for RSI({period})")
+
+    # Extract closing prices
+    closes = np.array([bar.close for bar in price_bars])
+
+    # Calculate price changes
+    deltas = np.diff(closes)
+
+    # Separate gains and losses
+    gains = np.where(deltas > 0, deltas, 0)
+    losses = np.where(deltas < 0, -deltas, 0)
+
+    # Calculate RSI series
+    rsi_values = [50.0] * (period)  # Initialize first period with neutral RSI
+
+    # Initial average gain/loss
+    avg_gain = np.mean(gains[:period])
+    avg_loss = np.mean(losses[:period])
+
+    # Calculate RSI for initial period
+    if avg_loss == 0:
+        rsi_values.append(100.0)
+    else:
+        rs = avg_gain / avg_loss
+        rsi_values.append(100 - (100 / (1 + rs)))
+
+    # Calculate subsequent RSI values using Wilder's smoothing
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+        if avg_loss == 0:
+            rsi_values.append(100.0)
+        else:
+            rs = avg_gain / avg_loss
+            rsi_values.append(100 - (100 / (1 + rs)))
+
+    # Round to 2 decimal places
+    return [round(v, 2) for v in rsi_values]
+
+
 def analyze_volume(
     price_bars: List[PriceBar],
     sma_period: int = 20,

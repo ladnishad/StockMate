@@ -1,10 +1,10 @@
 import SwiftUI
 
 /// Displays the smart watchlist of top contender stocks
+/// The agent automatically determines the optimal trade style for each stock
 struct WatchlistView: View {
     let stocks: [Stock]
     let isLoading: Bool
-    let profile: TraderProfile
     let onStockTap: ((Stock) -> Void)?
 
     @State private var hasAppeared = false
@@ -12,12 +12,10 @@ struct WatchlistView: View {
     init(
         stocks: [Stock],
         isLoading: Bool = false,
-        profile: TraderProfile = .swingTrader,
         onStockTap: ((Stock) -> Void)? = nil
     ) {
         self.stocks = stocks
         self.isLoading = isLoading
-        self.profile = profile
         self.onStockTap = onStockTap
     }
 
@@ -32,9 +30,9 @@ struct WatchlistView: View {
                         .textCase(.uppercase)
                         .tracking(0.5)
 
-                    Text("\(profile.displayName) Picks")
+                    Text("Expert Picks")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(profile.accentColor)
+                        .foregroundStyle(.blue)
                 }
 
                 Spacer()
@@ -70,7 +68,7 @@ struct WatchlistView: View {
                 .padding(.horizontal, 20)
             } else if stocks.isEmpty {
                 // Empty state
-                WatchlistEmptyState(profile: profile)
+                WatchlistEmptyState()
                     .padding(.horizontal, 20)
             } else {
                 // Stock list
@@ -104,8 +102,6 @@ struct WatchlistView: View {
 
 /// Empty state specific to watchlist
 struct WatchlistEmptyState: View {
-    let profile: TraderProfile
-
     var body: some View {
         VStack(spacing: 16) {
             // Icon with gradient background
@@ -113,7 +109,7 @@ struct WatchlistEmptyState: View {
                 Circle()
                     .fill(
                         LinearGradient(
-                            colors: profile.gradientColors.map { $0.opacity(0.2) },
+                            colors: [Color.blue.opacity(0.2), Color.purple.opacity(0.2)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -124,7 +120,7 @@ struct WatchlistEmptyState: View {
                     .font(.system(size: 32, weight: .medium))
                     .foregroundStyle(
                         LinearGradient(
-                            colors: profile.gradientColors,
+                            colors: [.blue, .purple],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -136,7 +132,7 @@ struct WatchlistEmptyState: View {
                     .font(.system(size: 17, weight: .semibold, design: .rounded))
                     .foregroundStyle(.primary)
 
-                Text("No stocks currently match the \(profile.displayName) criteria. Markets may be closed or data is loading.")
+                Text("No stocks currently meet the expert criteria. Markets may be closed or data is loading.")
                     .font(.system(size: 14, weight: .regular))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -148,15 +144,15 @@ struct WatchlistEmptyState: View {
                 Image(systemName: "info.circle.fill")
                     .font(.system(size: 12, weight: .medium))
 
-                Text("Looking for scores above \(profile.confidenceThreshold)%")
+                Text("Looking for high-confidence setups")
                     .font(.system(size: 12, weight: .medium))
             }
-            .foregroundStyle(profile.accentColor)
+            .foregroundStyle(.blue)
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .background(
                 Capsule()
-                    .fill(profile.accentColor.opacity(0.1))
+                    .fill(Color.blue.opacity(0.1))
             )
         }
         .padding(.vertical, 32)
@@ -175,8 +171,7 @@ struct WatchlistEmptyState: View {
     ScrollView {
         WatchlistView(
             stocks: Stock.samples,
-            isLoading: false,
-            profile: .swingTrader
+            isLoading: false
         )
     }
     .background(Color(.systemGroupedBackground))
@@ -186,8 +181,7 @@ struct WatchlistEmptyState: View {
     ScrollView {
         WatchlistView(
             stocks: [],
-            isLoading: true,
-            profile: .dayTrader
+            isLoading: true
         )
     }
     .background(Color(.systemGroupedBackground))
@@ -197,8 +191,7 @@ struct WatchlistEmptyState: View {
     ScrollView {
         WatchlistView(
             stocks: [],
-            isLoading: false,
-            profile: .positionTrader
+            isLoading: false
         )
     }
     .background(Color(.systemGroupedBackground))
