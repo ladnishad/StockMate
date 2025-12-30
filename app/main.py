@@ -2,13 +2,13 @@
 
 import json
 import logging
-from typing import List, Optional
+from typing import List, Optional, Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, status, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.models.request import AnalysisRequest
 from app.auth import auth_router, get_current_user, get_optional_user, User
@@ -2861,6 +2861,23 @@ class ChatResponse(BaseModel):
     plan_status: Optional[str] = None
 
 
+def _parse_price(value: Any) -> Optional[float]:
+    """Parse a price value, handling dollar signs and formatting."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = value.replace("$", "").replace(",", "").strip()
+        if not cleaned:
+            return None
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
 class PlanResponse(BaseModel):
     """Response containing a trading plan."""
     symbol: str
@@ -2892,6 +2909,26 @@ class PlanResponse(BaseModel):
     news_summary: Optional[str] = None
     reddit_sentiment: Optional[str] = None
     reddit_buzz: Optional[str] = None
+
+    @field_validator(
+        'entry_zone_low', 'entry_zone_high', 'stop_loss',
+        'target_1', 'target_2', 'target_3', 'risk_reward',
+        mode='before'
+    )
+    @classmethod
+    def parse_price_fields(cls, v):
+        """Parse price fields, handling dollar signs."""
+        return _parse_price(v)
+
+    @field_validator('key_supports', 'key_resistances', mode='before')
+    @classmethod
+    def parse_price_lists(cls, v):
+        """Parse price list fields, handling dollar signs."""
+        if not v:
+            return []
+        if isinstance(v, list):
+            return [p for p in [_parse_price(x) for x in v] if p is not None]
+        return []
 
 
 @app.post(
