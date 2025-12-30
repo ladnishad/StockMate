@@ -362,9 +362,9 @@ class DatabasePlanSessionStore:
                 """INSERT INTO plan_sessions
                    (id, user_id, symbol, status, messages, draft_plan_data,
                     approved_plan_id, revision_count, created_at, updated_at, approved_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (session.id, session.user_id, session.symbol, session.status,
-                 json.dumps([]), None, None, 0, now, now, None)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
+                session.id, session.user_id, session.symbol, session.status,
+                json.dumps([]), None, None, 0, now, now, None
             )
 
         logger.info(f"Created plan session {session.id} for {symbol} (user: {user_id})")
@@ -374,8 +374,8 @@ class DatabasePlanSessionStore:
         """Get a planning session by ID."""
         async with self._get_connection() as conn:
             row = await conn.fetchrow(
-                "SELECT * FROM plan_sessions WHERE id = ?",
-                (session_id,)
+                "SELECT * FROM plan_sessions WHERE id = $1",
+                session_id
             )
             if row:
                 return self._row_to_session(row)
@@ -386,9 +386,9 @@ class DatabasePlanSessionStore:
         async with self._get_connection() as conn:
             row = await conn.fetchrow(
                 """SELECT * FROM plan_sessions
-                   WHERE user_id = ? AND symbol = ? AND status NOT IN ('approved', 'rejected', 'expired')
+                   WHERE user_id = $1 AND symbol = $2 AND status NOT IN ('approved', 'rejected', 'expired')
                    ORDER BY created_at DESC LIMIT 1""",
-                (user_id, symbol.upper())
+                user_id, symbol.upper()
             )
             if row:
                 return self._row_to_session(row)
@@ -404,13 +404,13 @@ class DatabasePlanSessionStore:
         async with self._get_connection() as conn:
             await conn.execute(
                 """UPDATE plan_sessions
-                   SET user_id = ?, symbol = ?, status = ?, messages = ?,
-                       draft_plan_data = ?, approved_plan_id = ?, revision_count = ?,
-                       updated_at = ?, approved_at = ?
-                   WHERE id = ?""",
-                (session.user_id, session.symbol, session.status, messages_json,
-                 draft_json, session.approved_plan_id, session.revision_count,
-                 session.updated_at, session.approved_at, session.id)
+                   SET user_id = $1, symbol = $2, status = $3, messages = $4,
+                       draft_plan_data = $5, approved_plan_id = $6, revision_count = $7,
+                       updated_at = $8, approved_at = $9
+                   WHERE id = $10""",
+                session.user_id, session.symbol, session.status, messages_json,
+                draft_json, session.approved_plan_id, session.revision_count,
+                session.updated_at, session.approved_at, session.id
             )
 
         return session
@@ -478,9 +478,9 @@ class DatabasePlanSessionStore:
         async with self._get_connection() as conn:
             rows = await conn.fetch(
                 """SELECT * FROM plan_sessions
-                   WHERE user_id = ? AND symbol = ?
-                   ORDER BY created_at DESC LIMIT ?""",
-                (user_id, symbol.upper(), limit)
+                   WHERE user_id = $1 AND symbol = $2
+                   ORDER BY created_at DESC LIMIT $3""",
+                user_id, symbol.upper(), limit
             )
             for row in rows:
                 sessions.append(self._row_to_session(row))
@@ -494,10 +494,15 @@ class DatabasePlanSessionStore:
         async with self._get_connection() as conn:
             result = await conn.execute(
                 """DELETE FROM plan_sessions
-                   WHERE created_at < ? AND status != 'approved'""",
-                (cutoff,)
+                   WHERE created_at < $1 AND status != 'approved'""",
+                cutoff
             )
-            return result.rowcount
+            # asyncpg returns status string like "DELETE 5"
+            if isinstance(result, str):
+                parts = result.split()
+                if len(parts) >= 2 and parts[-1].isdigit():
+                    return int(parts[-1])
+            return 0
 
 
 # Singleton instances
