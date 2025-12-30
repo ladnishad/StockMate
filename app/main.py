@@ -3256,9 +3256,18 @@ async def create_plan_stream(
                         f"Visual confidence: {'+' if modifier >= 0 else ''}{modifier}",
                     ]
                     if patterns:
-                        vision_findings.append(f"Patterns: {', '.join(patterns[:2])}")
+                        # Handle patterns that may be strings or dicts
+                        pattern_strs = [
+                            p.get("name", str(p)) if isinstance(p, dict) else str(p)
+                            for p in patterns[:2]
+                        ]
+                        vision_findings.append(f"Patterns: {', '.join(pattern_strs)}")
                     if warnings:
-                        vision_findings.append(f"Warning: {warnings[0][:40]}...")
+                        # Handle warnings that may be strings or dicts
+                        first_warning = warnings[0]
+                        if isinstance(first_warning, dict):
+                            first_warning = first_warning.get("message", str(first_warning))
+                        vision_findings.append(f"Warning: {str(first_warning)[:40]}...")
 
                     yield emit_step("vision_analysis", "completed", vision_findings)
                 else:
