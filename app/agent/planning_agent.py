@@ -48,6 +48,73 @@ from app.models.response import (
 
 logger = logging.getLogger(__name__)
 
+
+# Price fields that should be numeric (not strings with $ signs)
+PRICE_FIELDS = {
+    "entry_zone_low", "entry_zone_high", "stop_loss",
+    "target_1", "target_2", "target_3", "risk_reward",
+    "price_at_creation", "position_size_pct"
+}
+
+# List fields that contain prices
+PRICE_LIST_FIELDS = {"key_supports", "key_resistances"}
+
+
+def _sanitize_price_value(value: Any) -> Optional[float]:
+    """Convert a price value to float, handling dollar signs and formatting.
+
+    Handles cases like:
+    - "$122.50" -> 122.50
+    - "122.50" -> 122.50
+    - 122.50 -> 122.50
+    - "$1,234.56" -> 1234.56
+    - None -> None
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    if isinstance(value, str):
+        # Remove $ and commas
+        cleaned = value.replace("$", "").replace(",", "").strip()
+        if not cleaned:
+            return None
+        try:
+            return float(cleaned)
+        except ValueError:
+            logger.warning(f"Could not parse price value: {value}")
+            return None
+
+    return None
+
+
+def _sanitize_plan_data(plan_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize all price fields in plan data to ensure they are numeric."""
+    sanitized = plan_data.copy()
+
+    # Sanitize individual price fields
+    for field in PRICE_FIELDS:
+        if field in sanitized:
+            sanitized[field] = _sanitize_price_value(sanitized[field])
+
+    # Sanitize price lists
+    for field in PRICE_LIST_FIELDS:
+        if field in sanitized and isinstance(sanitized[field], list):
+            sanitized[field] = [
+                _sanitize_price_value(v) for v in sanitized[field]
+                if _sanitize_price_value(v) is not None
+            ]
+
+    # Handle nested targets if present (for smart plan format)
+    if "targets" in sanitized and isinstance(sanitized["targets"], list):
+        for target in sanitized["targets"]:
+            if isinstance(target, dict) and "price" in target:
+                target["price"] = _sanitize_price_value(target["price"])
+
+    return sanitized
+
 # System prompt for the planning agent
 PLANNING_AGENT_SYSTEM = """You are an expert swing trader and technical analyst. Your job is to analyze stocks comprehensively and create actionable trading plans.
 
@@ -873,7 +940,9 @@ ATR (14): ${levels.get('atr', 0):.2f}
             else:
                 raise ValueError("No JSON found in response")
 
-            return json.loads(json_str)
+            plan_data = json.loads(json_str)
+            # Sanitize price fields to handle $ signs and ensure numeric types
+            return _sanitize_plan_data(plan_data)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse smart plan JSON: {e}")
             logger.error(f"Response was: {response_text[:1000]}")
@@ -1032,7 +1101,9 @@ ATR (14): ${levels.get('atr', 0):.2f}
             else:
                 raise ValueError("No JSON found in response")
 
-            return json.loads(json_str)
+            plan_data = json.loads(json_str)
+            # Sanitize price fields to handle $ signs and ensure numeric types
+            return _sanitize_plan_data(plan_data)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse plan JSON: {e}")
             # Return a basic structure
@@ -1170,7 +1241,11 @@ Invalidation: {plan.invalidation_criteria}
             else:
                 raise ValueError("No JSON found in response")
 
-            return json.loads(json_str)
+            eval_data = json.loads(json_str)
+            # Sanitize adjustments if present
+            if eval_data.get("adjustments"):
+                eval_data["adjustments"] = _sanitize_plan_data(eval_data["adjustments"])
+            return eval_data
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse evaluation JSON: {e}")
             # Fall back to basic parsing
@@ -1507,6 +1582,8 @@ Only include fields that should be changed. If you don't recommend a change, don
                                     break
                         json_str = json_text[:end_idx]
                         adjustments = json.loads(json_str)
+                        # Sanitize price fields in adjustments
+                        adjustments = _sanitize_plan_data(adjustments)
 
                         # Apply adjustments to draft plan
                         updated_plan = draft_plan.copy()
