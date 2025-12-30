@@ -17,7 +17,7 @@ struct StockDetailView: View {
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-        ScrollView(showsIndicators: false) {
+        ScrollView(.vertical, showsIndicators: false) {
             if let error = viewModel.error, viewModel.detail == nil {
                 // Only show error if we have no data at all
                 ErrorStateView(message: error) {

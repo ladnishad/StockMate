@@ -314,11 +314,11 @@ struct TrackPositionButton: View {
                 // Auto-create position from plan
                 Task {
                     await viewModel.createPosition(
-                        stopLoss: plan.stopLoss ?? 0,
+                        tradeType: plan.tradeStyle ?? "swing",
+                        stopLoss: plan.stopLoss,
                         target1: plan.target1,
                         target2: plan.target2,
-                        target3: plan.target3,
-                        tradeType: plan.tradeStyle ?? "swing"
+                        target3: plan.target3
                     )
                 }
             } else {

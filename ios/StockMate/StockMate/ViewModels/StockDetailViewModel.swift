@@ -255,11 +255,11 @@ class StockDetailViewModel: ObservableObject {
 
     /// Create a new position (starts in "watching" status)
     func createPosition(
-        stopLoss: Double,
+        tradeType: String = "swing",
+        stopLoss: Double? = nil,
         target1: Double? = nil,
         target2: Double? = nil,
-        target3: Double? = nil,
-        tradeType: String = "swing"
+        target3: Double? = nil
     ) async {
         isLoadingPosition = true
         positionError = nil
@@ -267,8 +267,8 @@ class StockDetailViewModel: ObservableObject {
         do {
             position = try await apiService.createPosition(
                 symbol: symbol,
-                stopLoss: stopLoss,
                 tradeType: tradeType,
+                stopLoss: stopLoss,
                 target1: target1,
                 target2: target2,
                 target3: target3

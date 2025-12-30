@@ -201,7 +201,7 @@ struct PositionEntrySheet: View {
             HStack {
                 Text("Stop Loss")
                 Spacer()
-                TextField("Required", text: $stopLoss)
+                TextField("Optional", text: $stopLoss)
                     .keyboardType(.decimalPad)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 100)
@@ -288,9 +288,7 @@ struct PositionEntrySheet: View {
     // MARK: - Validation
 
     private var isValid: Bool {
-        if isNewPosition {
-            guard let _ = Double(stopLoss) else { return false }
-        }
+        // Note: stopLoss is now optional, no validation needed
 
         if entryMode == .quick {
             guard let _ = Double(avgPrice),
@@ -313,7 +311,7 @@ struct PositionEntrySheet: View {
     private func prefillFromPlan() {
         // Try to get values from existing position or trading plan
         if let position = viewModel.position {
-            stopLoss = String(format: "%.2f", position.stopLoss)
+            if let sl = position.stopLoss { stopLoss = String(format: "%.2f", sl) }
             if let t1 = position.target1 { target1 = String(format: "%.2f", t1) }
             if let t2 = position.target2 { target2 = String(format: "%.2f", t2) }
             if let t3 = position.target3 { target3 = String(format: "%.2f", t3) }
@@ -332,7 +330,7 @@ struct PositionEntrySheet: View {
         if isNewPosition {
             // Create position first
             await viewModel.createPosition(
-                stopLoss: Double(stopLoss) ?? 0,
+                stopLoss: Double(stopLoss),
                 target1: Double(target1),
                 target2: Double(target2),
                 target3: Double(target3)
