@@ -130,12 +130,15 @@ struct StockDetailView: View {
         }
         .sheet(isPresented: $showingPlan) {
             NavigationStack {
-                TradingPlanView(symbol: viewModel.symbol)
+                SimplifiedPlanView(symbol: viewModel.symbol)
+                    .navigationTitle("Trading Plan")
+                    .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .topBarLeading) {
                             Button("Done") {
                                 showingPlan = false
                             }
+                            .fontWeight(.medium)
                         }
                     }
             }

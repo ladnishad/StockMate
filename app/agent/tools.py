@@ -140,9 +140,10 @@ async def get_technical_indicators(symbol: str) -> Dict[str, Any]:
             },
             "macd": {
                 "macd": macd_result.value if hasattr(macd_result, 'value') else macd_result.get("macd") if isinstance(macd_result, dict) else None,
-                "signal": macd_result.metadata.get("signal_line") if hasattr(macd_result, 'metadata') else None,
+                "signal": macd_result.signal if hasattr(macd_result, 'signal') else "neutral",  # String: bullish/bearish/neutral
+                "signal_line": macd_result.metadata.get("signal_line") if hasattr(macd_result, 'metadata') else None,  # Float value
                 "histogram": macd_result.metadata.get("histogram") if hasattr(macd_result, 'metadata') else None,
-                "crossover": macd_result.metadata.get("crossover") if hasattr(macd_result, 'metadata') else None,
+                "crossover": macd_result.metadata.get("bullish_crossover") or macd_result.metadata.get("bearish_crossover") if hasattr(macd_result, 'metadata') else None,
             },
             "emas": {
                 "ema_9": ema_9,

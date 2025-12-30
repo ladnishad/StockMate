@@ -540,24 +540,112 @@ final class TradingPlanViewModel: ObservableObject {
         error = nil
         updatePhase = .gatheringData
 
+        // Initialize analysis steps for agent-style display
+        initializeAnalysisSteps()
+        isAnalysisComplete = false
+
+        var receivedPlan = false
+
         do {
-            let session = try await APIService.shared.startPlanSession(symbol: symbol)
-            withAnimation {
-                self.sessionId = session.sessionId
-                self.sessionStatus = session.status
-                self.draftPlan = session.draftPlan
-                self.conversationMessages = session.messages
+            // Use streaming to get real-time step updates
+            let stream = APIService.shared.generateTradingPlanStream(
+                symbol: symbol,
+                forceNew: false  // Use existing plan if available
+            )
+
+            for try await event in stream {
+                print("[PlanSession] Event: \(event.type), stepType: \(event.stepType ?? "nil"), status: \(event.status ?? "nil")")
+
+                switch event.type {
+                case "step":
+                    // Handle new detailed step events for agent-style display
+                    await handleStepEvent(event)
+
+                case "phase":
+                    await handlePhaseEvent(event.phase)
+
+                case "plan_complete", "plan":
+                    print("[PlanSession] Received plan event")
+                    if let newPlan = event.plan {
+                        receivedPlan = true
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                            self.draftPlan = newPlan
+                            self.sessionStatus = "draft"
+                            self.updatePhase = .complete
+                            self.isAnalysisComplete = true
+                        }
+                    } else {
+                        print("[PlanSession] Plan event had nil plan!")
+                    }
+
+                case "existing_plan":
+                    print("[PlanSession] Received existing_plan event")
+                    if let existingPlan = event.plan {
+                        receivedPlan = true
+                        withAnimation {
+                            self.draftPlan = existingPlan
+                            self.sessionStatus = "draft"
+                            self.updatePhase = .complete
+                            self.isAnalysisComplete = true
+                        }
+                    } else {
+                        print("[PlanSession] existing_plan event had nil plan!")
+                    }
+
+                case "error":
+                    throw NSError(
+                        domain: "PlanGeneration",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: event.message ?? "Unknown error"]
+                    )
+
+                default:
+                    print("[PlanSession] Unknown event type: \(event.type)")
+                    break
+                }
+            }
+            print("[PlanSession] Stream ended, receivedPlan: \(receivedPlan)")
+
+            // If stream ended without a plan, try to fetch existing plan
+            if !receivedPlan {
+                print("[PlanSession] Stream ended without plan, fetching existing...")
+                if let existingPlan = try? await APIService.shared.getTradingPlan(symbol: symbol) {
+                    withAnimation {
+                        self.draftPlan = existingPlan
+                        self.sessionStatus = "draft"
+                        self.isAnalysisComplete = true
+                        receivedPlan = true
+                    }
+                }
             }
 
-            // If session is still generating, poll for updates
-            if session.isGenerating {
-                await pollSessionUntilDraft()
-            } else {
+            // Brief pause before transitioning to plan view
+            if receivedPlan {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            withAnimation {
                 updatePhase = .idle
             }
+
         } catch {
-            self.error = error.localizedDescription
-            updatePhase = .idle
+            print("[PlanSession] Error: \(error.localizedDescription)")
+
+            // Try to load existing plan on error
+            if let existingPlan = try? await APIService.shared.getTradingPlan(symbol: symbol) {
+                withAnimation {
+                    self.draftPlan = existingPlan
+                    self.sessionStatus = "draft"
+                    self.isAnalysisComplete = true
+                    self.updatePhase = .idle
+                    self.analysisSteps = []
+                }
+            } else {
+                withAnimation {
+                    self.error = error.localizedDescription
+                    updatePhase = .idle
+                    analysisSteps = []  // Clear stale steps on error
+                }
+            }
         }
 
         isLoading = false
@@ -752,5 +840,101 @@ final class TradingPlanViewModel: ObservableObject {
             conversationMessages = []
             lastAIResponse = nil
         }
+    }
+
+    // MARK: - Simplified Plan View Methods
+
+    /// Submit feedback (question or adjustment) - unified method for SimplifiedPlanView
+    func submitFeedback(_ feedback: String) async {
+        guard !feedback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        // If we have a session, use the session-based feedback
+        if let sessionId = sessionId {
+            isProcessingFeedback = true
+
+            do {
+                let response = try await APIService.shared.submitPlanFeedback(
+                    symbol: symbol,
+                    sessionId: sessionId,
+                    feedbackType: "adjust",
+                    content: feedback
+                )
+
+                withAnimation {
+                    self.lastAIResponse = response.aiResponse
+                    self.sessionStatus = response.sessionStatus
+                    if let updatedPlan = response.updatedPlan {
+                        self.plan = updatedPlan
+                        self.draftPlan = updatedPlan
+                    }
+                }
+
+                await refreshSession()
+            } catch {
+                self.error = error.localizedDescription
+            }
+
+            isProcessingFeedback = false
+        } else {
+            // No session - start one and submit feedback
+            isUpdating = true
+
+            do {
+                // Start a session from the existing plan
+                let session = try await APIService.shared.startSessionFromExisting(symbol: symbol)
+                self.sessionId = session.sessionId
+                self.sessionStatus = session.status
+
+                // Now submit the feedback
+                let response = try await APIService.shared.submitPlanFeedback(
+                    symbol: symbol,
+                    sessionId: session.sessionId,
+                    feedbackType: "adjust",
+                    content: feedback
+                )
+
+                withAnimation {
+                    self.lastAIResponse = response.aiResponse
+                    self.sessionStatus = response.sessionStatus
+                    if let updatedPlan = response.updatedPlan {
+                        self.plan = updatedPlan
+                        self.draftPlan = updatedPlan
+                    }
+                }
+            } catch {
+                self.error = error.localizedDescription
+            }
+
+            isUpdating = false
+        }
+    }
+
+    /// Accept the current plan - for SimplifiedPlanView
+    func acceptPlan() async {
+        // If we have a session with a draft, approve it
+        if let sessionId = sessionId, draftPlan != nil {
+            await approveDraftPlan()
+        } else if let currentPlan = plan {
+            // No session - just mark the plan as accepted (no backend call needed)
+            withAnimation {
+                self.hasActivePosition = true
+                self.lastUpdated = Date()
+            }
+        }
+    }
+
+    /// Start over - clear everything and regenerate
+    func startOver() async {
+        // Clear session state
+        clearSession()
+
+        // Clear current plan
+        withAnimation {
+            self.plan = nil
+            self.error = nil
+        }
+
+        // Start fresh plan generation
+        await startPlanSession()
     }
 }

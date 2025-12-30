@@ -3191,7 +3191,10 @@ async def create_plan_stream(
                 tech_findings.append(f"RSI: {rsi_val:.1f} ({rsi_signal})")
             if macd_data:
                 macd_signal = macd_data.get("signal", "neutral")
-                tech_findings.append(f"MACD: {macd_signal.replace('_', ' ').title()}")
+                # Handle case where signal might be a float (signal_line value) instead of string
+                if isinstance(macd_signal, (int, float)):
+                    macd_signal = "bullish" if macd_signal > 0 else "bearish" if macd_signal < 0 else "neutral"
+                tech_findings.append(f"MACD: {str(macd_signal).replace('_', ' ').title()}")
             if ema_data:
                 above_9 = "above" if ema_data.get("above_9") else "below"
                 above_21 = "above" if ema_data.get("above_21") else "below"
