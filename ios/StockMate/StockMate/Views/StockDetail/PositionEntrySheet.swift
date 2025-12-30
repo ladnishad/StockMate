@@ -3,6 +3,7 @@ import SwiftUI
 /// Sheet for logging position entries
 struct PositionEntrySheet: View {
     @ObservedObject var viewModel: StockDetailViewModel
+    var hasPlan: Bool = false
     @Environment(\.dismiss) private var dismiss
 
     // Entry mode
@@ -97,8 +98,8 @@ struct PositionEntrySheet: View {
             .onAppear {
                 prefillFromPlan()
             }
-            .alert("Re-evaluate Trading Plan?", isPresented: $showReEvalConfirmation) {
-                Button("Yes") {
+            .alert(hasPlan ? "Update Trading Plan?" : "Generate Trading Plan?", isPresented: $showReEvalConfirmation) {
+                Button(hasPlan ? "Yes, Update" : "Yes, Generate") {
                     NotificationCenter.default.post(
                         name: .planEvaluationTriggered,
                         object: nil,
@@ -106,11 +107,15 @@ struct PositionEntrySheet: View {
                     )
                     dismiss()
                 }
-                Button("No", role: .cancel) {
+                Button("Skip for Now", role: .cancel) {
                     dismiss()
                 }
             } message: {
-                Text("Update the AI analysis based on your position?")
+                if hasPlan {
+                    Text("Update the AI analysis to optimize for your position?")
+                } else {
+                    Text("Generate a trading plan tailored to your position?")
+                }
             }
         }
     }

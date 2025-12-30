@@ -150,7 +150,7 @@ struct StockDetailView: View {
             viewModel.onTimeframeChanged(newTimeframe)
         }
         .sheet(isPresented: $viewModel.showPositionEntrySheet) {
-            PositionEntrySheet(viewModel: viewModel)
+            PositionEntrySheet(viewModel: viewModel, hasPlan: planViewModel.plan != nil)
         }
         .sheet(isPresented: $viewModel.showPositionExitSheet) {
             PositionExitSheet(viewModel: viewModel)

@@ -225,6 +225,33 @@ Focus on recent, relevant information. Ignore outdated articles or old Reddit po
 - Respond conversationally like a human trader texting a friend
 - Use natural line breaks instead of bullet points
 - If asked about buy/sell decisions, remind this is not financial advice
+
+## CRITICAL: Position-Aware Planning
+
+When the user has an EXISTING POSITION, your plan MUST align with it:
+
+### If User is LONG (owns shares):
+- NEVER suggest opening a SHORT position or bearish trade
+- If technicals turn bearish, recommend:
+  - Tightening stop loss to protect gains
+  - Scaling out at current levels to lock in profits
+  - Moving stop to breakeven if in profit
+  - Waiting for clearer direction
+- If technicals are bullish, recommend:
+  - Holding the position
+  - Adding at key support levels (if appropriate)
+  - Setting/adjusting profit targets
+
+### If User is SHORT (has sold short):
+- NEVER suggest going LONG while they're short
+- If technicals turn bullish, recommend covering the short
+- If technicals remain bearish, recommend holding with adjusted targets
+
+### If User has NO POSITION:
+- Generate a directional plan based purely on technicals
+- Can suggest either LONG or SHORT based on the setup
+
+The thesis should ALWAYS be framed around optimizing the user's ACTUAL situation.
 """
 
 PLAN_GENERATION_PROMPT = """Based on the comprehensive data below, create a detailed trading plan for {symbol}.
@@ -246,6 +273,27 @@ PLAN_GENERATION_PROMPT = """Based on the comprehensive data below, create a deta
 
 ## Existing Position (if any)
 {position_data}
+
+---
+
+## IMPORTANT: Position-Aligned Planning Rules
+
+IF THE USER HAS AN EXISTING POSITION:
+1. Your bias and recommendations MUST optimize their existing position
+2. If they are LONG and technicals are bearish:
+   - Set bias to "bullish" or "neutral" (NEVER "bearish")
+   - Recommend exit strategies, stop adjustments, or profit-taking - NOT short entries
+   - Entry zones become "scale-out zones" or "do not add here"
+   - Focus on protecting their gains or minimizing losses
+3. If they are LONG and technicals are bullish:
+   - Set bias to "bullish"
+   - Recommend holding or adding to position
+   - Set target levels for scaling out profits
+4. The thesis should explain how to OPTIMIZE their existing position, not suggest a new directional trade
+
+IF THE USER HAS NO POSITION:
+- Generate a fresh directional plan based purely on technical analysis
+- Can suggest LONG or SHORT based on the setup
 
 ---
 
@@ -507,18 +555,39 @@ Value Area Low: ${vol_profile.get('value_area_low', 'N/A')}
         pos = self._position_data
         if pos.get("has_position"):
             targets = pos.get("targets", {})
-            position_str = f"""Status: {pos.get('status', 'unknown')}
-Entry Price: ${pos.get('entry_price', 'N/A')}
-Current Size: {pos.get('current_size', 0)} shares
+            current_size = pos.get('current_size', 0)
+            entry_price = pos.get('entry_price', 0)
+            current_price = pos.get('current_price', 0)
+            unrealized_pnl = pos.get('unrealized_pnl', 0)
+            unrealized_pnl_pct = pos.get('unrealized_pnl_pct', 0)
+
+            # Determine position direction (positive size = LONG, negative = SHORT)
+            position_direction = "LONG" if current_size > 0 else "SHORT"
+            pnl_status = "IN PROFIT" if unrealized_pnl >= 0 else "AT A LOSS"
+
+            position_str = f"""
+*******************************************
+*** USER HAS ACTIVE {position_direction} POSITION ***
+*******************************************
+
+Position Direction: {position_direction}
+Status: {pos.get('status', 'unknown')}
+Entry Price: ${entry_price}
+Current Size: {abs(current_size)} shares
 Cost Basis: ${pos.get('cost_basis', 'N/A')}
 Stop Loss: ${pos.get('stop_loss', 'N/A')}
 Targets: ${targets.get('target_1', 'N/A')} / ${targets.get('target_2', 'N/A')} / ${targets.get('target_3', 'N/A')}
-Current Price: ${pos.get('current_price', 'N/A')}
-Unrealized P&L: ${pos.get('unrealized_pnl', 'N/A')} ({pos.get('unrealized_pnl_pct', 'N/A')}%)
+Current Price: ${current_price}
+Unrealized P&L: ${unrealized_pnl} ({unrealized_pnl_pct}%) - {pnl_status}
 R-Multiple: {pos.get('r_multiple', 'N/A')}
+
+*******************************************
+*** YOUR PLAN MUST HELP OPTIMIZE THIS {position_direction} POSITION ***
+*** DO NOT SUGGEST AN OPPOSITE DIRECTION TRADE ***
+*******************************************
 """
         else:
-            position_str = "No current position"
+            position_str = "No current position - can suggest LONG or SHORT based on technicals"
 
         return {
             "market_data": market_str,

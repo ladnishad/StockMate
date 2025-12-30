@@ -109,12 +109,17 @@ final class TradingPlanViewModel: ObservableObject {
                   let triggerSymbol = userInfo["symbol"] as? String,
                   triggerSymbol.uppercased() == self.symbol else { return }
 
-            // Mark that plan is now position-based and trigger re-evaluation
+            // Mark that plan is now position-based
             Task { @MainActor in
                 self.hasActivePosition = true
 
-                // Actually trigger a re-evaluation of the plan
-                await self.evaluatePlan()
+                // If plan exists, evaluate it; otherwise generate a new one
+                if self.plan != nil {
+                    await self.evaluatePlan()
+                } else {
+                    // No plan exists - generate a new position-aware plan
+                    await self.startPlanSession()
+                }
             }
         }
     }

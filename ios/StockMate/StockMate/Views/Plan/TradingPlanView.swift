@@ -112,7 +112,7 @@ private struct NoPlanViewWithSession: View {
                 Text("No Trading Plan")
                     .font(.title2.bold())
 
-                Text("AI will analyze the stock and create a plan you can review and adjust")
+                Text("AI will analyze the stock and create a plan tailored to your position if you have one")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)

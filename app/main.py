@@ -1103,14 +1103,8 @@ async def add_to_watchlist(
         except Exception:
             pass
 
-        # Proactively generate trading plan in background
-        if background_tasks:
-            background_tasks.add_task(
-                generate_plan_for_stock,
-                symbol.upper(),
-                user_id
-            )
-            logger.info(f"Queued plan generation for {symbol.upper()}")
+        # Plan generation is now manual - user triggers it from the Trading Plan view
+        # This ensures the plan considers their position if they have one
 
         logger.info(f"Added {symbol.upper()} to watchlist for user {user_id}")
         return WatchlistItem(**item)
