@@ -465,6 +465,161 @@ actor APIService {
         return try decoder.decode(EvaluationResponse.self, from: data)
     }
 
+    // MARK: - Interactive Plan Sessions
+
+    /// Start a new interactive planning session
+    func startPlanSession(symbol: String) async throws -> PlanSessionResponse {
+        let url = URL(string: "\(baseURL)/plan/\(symbol.uppercased())/session")!
+
+        struct EmptyBody: Encodable {}
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
+        request.httpBody = try JSONEncoder().encode(EmptyBody())
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIServiceError.invalidResponse
+        }
+
+        return try JSONDecoder().decode(PlanSessionResponse.self, from: data)
+    }
+
+    /// Get plan session state
+    func getPlanSession(symbol: String, sessionId: String) async throws -> PlanSessionResponse {
+        let url = URL(string: "\(baseURL)/plan/\(symbol.uppercased())/session/\(sessionId)")!
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIServiceError.invalidResponse
+        }
+
+        return try JSONDecoder().decode(PlanSessionResponse.self, from: data)
+    }
+
+    /// Submit feedback (question or adjustment) on a draft plan
+    func submitPlanFeedback(
+        symbol: String,
+        sessionId: String,
+        feedbackType: String,
+        content: String
+    ) async throws -> PlanFeedbackResponse {
+        let url = URL(string: "\(baseURL)/plan/\(symbol.uppercased())/session/\(sessionId)/feedback")!
+
+        struct FeedbackRequest: Encodable {
+            let feedbackType: String
+            let content: String
+
+            enum CodingKeys: String, CodingKey {
+                case feedbackType = "feedback_type"
+                case content
+            }
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
+        request.httpBody = try JSONEncoder().encode(FeedbackRequest(feedbackType: feedbackType, content: content))
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIServiceError.invalidResponse
+        }
+
+        return try JSONDecoder().decode(PlanFeedbackResponse.self, from: data)
+    }
+
+    /// Approve the draft plan
+    func approvePlanSession(symbol: String, sessionId: String) async throws -> TradingPlanResponse {
+        let url = URL(string: "\(baseURL)/plan/\(symbol.uppercased())/session/\(sessionId)/approve")!
+
+        struct EmptyBody: Encodable {}
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
+        request.httpBody = try JSONEncoder().encode(EmptyBody())
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIServiceError.invalidResponse
+        }
+
+        return try JSONDecoder().decode(TradingPlanResponse.self, from: data)
+    }
+
+    /// Start a session from an existing plan (for modifying existing plans)
+    func startSessionFromExisting(symbol: String) async throws -> PlanSessionResponse {
+        let url = URL(string: "\(baseURL)/plan/\(symbol.uppercased())/session/from-existing")!
+
+        struct EmptyBody: Encodable {}
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
+        request.httpBody = try JSONEncoder().encode(EmptyBody())
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            if let httpResponse = response as? HTTPURLResponse {
+                throw APIServiceError.httpError(httpResponse.statusCode)
+            }
+            throw APIServiceError.invalidResponse
+        }
+
+        return try JSONDecoder().decode(PlanSessionResponse.self, from: data)
+    }
+
+    /// Reopen an approved session to continue making adjustments
+    func reopenPlanSession(symbol: String, sessionId: String) async throws -> PlanSessionResponse {
+        let url = URL(string: "\(baseURL)/plan/\(symbol.uppercased())/session/\(sessionId)/reopen")!
+
+        struct EmptyBody: Encodable {}
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
+        request.httpBody = try JSONEncoder().encode(EmptyBody())
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            if let httpResponse = response as? HTTPURLResponse {
+                throw APIServiceError.httpError(httpResponse.statusCode)
+            }
+            throw APIServiceError.invalidResponse
+        }
+
+        return try JSONDecoder().decode(PlanSessionResponse.self, from: data)
+    }
+
     // MARK: - Position Tracking
 
     /// Get position for a symbol

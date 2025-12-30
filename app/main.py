@@ -2864,25 +2864,25 @@ class ChatResponse(BaseModel):
 class PlanResponse(BaseModel):
     """Response containing a trading plan."""
     symbol: str
-    bias: str
-    thesis: str
-    entry_zone_low: Optional[float]
-    entry_zone_high: Optional[float]
-    stop_loss: Optional[float]
-    stop_reasoning: str
-    target_1: Optional[float]
-    target_2: Optional[float]
-    target_3: Optional[float]
-    target_reasoning: str
-    risk_reward: Optional[float]
-    key_supports: List[float]
-    key_resistances: List[float]
-    invalidation_criteria: str
-    technical_summary: str
-    status: str
-    created_at: str
-    last_evaluation: Optional[str]
-    evaluation_notes: Optional[str]
+    bias: str = "neutral"
+    thesis: str = ""
+    entry_zone_low: Optional[float] = None
+    entry_zone_high: Optional[float] = None
+    stop_loss: Optional[float] = None
+    stop_reasoning: str = ""
+    target_1: Optional[float] = None
+    target_2: Optional[float] = None
+    target_3: Optional[float] = None
+    target_reasoning: str = ""
+    risk_reward: Optional[float] = None
+    key_supports: List[float] = []
+    key_resistances: List[float] = []
+    invalidation_criteria: str = ""
+    technical_summary: str = ""
+    status: str = "draft"
+    created_at: str = ""
+    last_evaluation: Optional[str] = None
+    evaluation_notes: Optional[str] = None
     # Trade style fields
     trade_style: Optional[str] = None
     trade_style_reasoning: Optional[str] = None
@@ -3221,6 +3221,739 @@ async def clear_conversation(symbol: str, user: User = Depends(get_current_user)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to clear conversation: {str(e)}"
+        )
+
+
+# ============================================================================
+# Interactive Plan Session Endpoints (Claude Code-style planning)
+# ============================================================================
+
+
+class PlanSessionResponse(BaseModel):
+    """Response for a plan session."""
+    session_id: str
+    status: str  # generating, draft, refining, approved, rejected
+    symbol: str
+    draft_plan: Optional[PlanResponse] = None
+    messages: List[dict] = []
+    revision_count: int = 0
+    created_at: str
+    updated_at: str
+
+
+class PlanFeedbackRequest(BaseModel):
+    """Request to submit feedback on a draft plan."""
+    feedback_type: str  # "question" or "adjust"
+    content: str
+
+
+class PlanFeedbackResponse(BaseModel):
+    """Response after processing feedback."""
+    ai_response: str
+    updated_plan: Optional[PlanResponse] = None
+    options: List[dict] = []  # For adjustment options
+    session_status: str
+
+
+@app.post(
+    "/plan/{symbol}/session",
+    response_model=PlanSessionResponse,
+    summary="Start interactive planning session",
+    description="Start a new interactive planning session. AI generates a draft plan for user review.",
+)
+async def start_plan_session(
+    symbol: str,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user)
+):
+    """Start a new interactive planning session."""
+    from app.storage.plan_session_store import get_plan_session_store
+    from app.agent.planning_agent import StockPlanningAgent
+
+    user_id = user.id
+    symbol = symbol.upper()
+
+    try:
+        session_store = get_plan_session_store()
+
+        # Check for existing active session
+        existing = await session_store.get_active_session(user_id, symbol)
+        if existing and existing.status in ("draft", "refining"):
+            # Return existing session
+            draft_plan = None
+            if existing.draft_plan_data:
+                draft_plan = PlanResponse(**existing.draft_plan_data)
+
+            return PlanSessionResponse(
+                session_id=existing.id,
+                status=existing.status,
+                symbol=symbol,
+                draft_plan=draft_plan,
+                messages=[m.to_dict() for m in existing.messages],
+                revision_count=existing.revision_count,
+                created_at=existing.created_at,
+                updated_at=existing.updated_at,
+            )
+
+        # Create new session
+        session = await session_store.create_session(user_id, symbol)
+
+        # Generate plan in background and update session
+        async def generate_plan_for_session():
+            try:
+                agent = StockPlanningAgent(symbol, user_id)
+                plan = await agent.generate_plan(force_new=True)
+
+                # Convert plan to dict for storage
+                plan_dict = {
+                    "symbol": plan.symbol,
+                    "bias": plan.bias,
+                    "thesis": plan.thesis,
+                    "entry_zone_low": plan.entry_zone_low,
+                    "entry_zone_high": plan.entry_zone_high,
+                    "stop_loss": plan.stop_loss,
+                    "stop_reasoning": plan.stop_reasoning,
+                    "target_1": plan.target_1,
+                    "target_2": plan.target_2,
+                    "target_3": plan.target_3,
+                    "target_reasoning": plan.target_reasoning,
+                    "risk_reward": plan.risk_reward,
+                    "key_supports": plan.key_supports,
+                    "key_resistances": plan.key_resistances,
+                    "invalidation_criteria": plan.invalidation_criteria,
+                    "technical_summary": plan.technical_summary,
+                    "status": "draft",
+                    "created_at": plan.created_at,
+                    "last_evaluation": plan.last_evaluation,
+                    "evaluation_notes": plan.evaluation_notes,
+                    "trade_style": plan.trade_style,
+                    "trade_style_reasoning": plan.trade_style_reasoning,
+                    "holding_period": plan.holding_period,
+                    "confidence": plan.confidence,
+                    "news_summary": plan.news_summary,
+                    "reddit_sentiment": plan.reddit_sentiment,
+                    "reddit_buzz": plan.reddit_buzz,
+                }
+
+                await session_store.set_draft_plan(session.id, plan_dict)
+
+                # Add system message about draft plan
+                await session_store.add_message(
+                    session.id,
+                    role="assistant",
+                    content=f"I've analyzed {symbol} and created a draft trading plan. Review the plan above and let me know if you'd like to adjust anything or have questions about my analysis.",
+                    message_type="info"
+                )
+
+            except Exception as e:
+                logger.error(f"Error generating plan for session {session.id}: {e}")
+                await session_store.add_message(
+                    session.id,
+                    role="system",
+                    content=f"Error generating plan: {str(e)}",
+                    message_type="info"
+                )
+
+        # Run in background
+        import asyncio
+        asyncio.create_task(generate_plan_for_session())
+
+        return PlanSessionResponse(
+            session_id=session.id,
+            status=session.status,
+            symbol=symbol,
+            draft_plan=None,
+            messages=[],
+            revision_count=0,
+            created_at=session.created_at,
+            updated_at=session.updated_at,
+        )
+
+    except Exception as e:
+        logger.error(f"Error starting plan session for {symbol}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start planning session: {str(e)}"
+        )
+
+
+@app.get(
+    "/plan/{symbol}/session/{session_id}",
+    response_model=PlanSessionResponse,
+    summary="Get plan session state",
+    description="Get the current state of a planning session.",
+)
+async def get_plan_session(
+    symbol: str,
+    session_id: str,
+    user: User = Depends(get_current_user)
+):
+    """Get a planning session's current state."""
+    from app.storage.plan_session_store import get_plan_session_store
+
+    try:
+        session_store = get_plan_session_store()
+        session = await session_store.get_session(session_id)
+
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found"
+            )
+
+        if session.user_id != user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this session"
+            )
+
+        draft_plan = None
+        if session.draft_plan_data:
+            draft_plan = PlanResponse(**session.draft_plan_data)
+
+        return PlanSessionResponse(
+            session_id=session.id,
+            status=session.status,
+            symbol=session.symbol,
+            draft_plan=draft_plan,
+            messages=[m.to_dict() for m in session.messages],
+            revision_count=session.revision_count,
+            created_at=session.created_at,
+            updated_at=session.updated_at,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting plan session {session_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get session: {str(e)}"
+        )
+
+
+@app.post(
+    "/plan/{symbol}/session/{session_id}/feedback",
+    response_model=PlanFeedbackResponse,
+    summary="Submit feedback on draft plan",
+    description="Ask a question or request an adjustment to the draft plan.",
+)
+async def submit_plan_feedback(
+    symbol: str,
+    session_id: str,
+    request: PlanFeedbackRequest,
+    user: User = Depends(get_current_user)
+):
+    """Submit feedback (question or adjustment request) on a draft plan."""
+    from app.storage.plan_session_store import get_plan_session_store
+    from app.agent.planning_agent import StockPlanningAgent
+
+    try:
+        session_store = get_plan_session_store()
+        session = await session_store.get_session(session_id)
+
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found"
+            )
+
+        if session.user_id != user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this session"
+            )
+
+        if session.status not in ("draft", "refining"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Session is not in a state that accepts feedback"
+            )
+
+        # Add user's message
+        await session_store.add_message(
+            session_id,
+            role="user",
+            content=request.content,
+            message_type=request.feedback_type
+        )
+
+        # Process with AI agent
+        agent = StockPlanningAgent(symbol.upper(), user.id)
+
+        if request.feedback_type == "question":
+            # Handle question about the plan
+            ai_response = await agent.handle_user_question(
+                session.draft_plan_data,
+                request.content,
+                [m.to_dict() for m in session.messages]
+            )
+
+            await session_store.add_message(
+                session_id,
+                role="assistant",
+                content=ai_response["response"],
+                message_type="answer",
+                options=ai_response.get("options", [])
+            )
+
+            return PlanFeedbackResponse(
+                ai_response=ai_response["response"],
+                updated_plan=None,
+                options=ai_response.get("options", []),
+                session_status=session.status
+            )
+
+        elif request.feedback_type == "adjust":
+            # Handle adjustment request
+            await session_store.increment_revision(session_id)
+
+            ai_response = await agent.handle_adjustment_request(
+                session.draft_plan_data,
+                request.content,
+                [m.to_dict() for m in session.messages]
+            )
+
+            await session_store.add_message(
+                session_id,
+                role="assistant",
+                content=ai_response["response"],
+                message_type="adjustment_response",
+                options=ai_response.get("options", [])
+            )
+
+            # If AI suggests updated plan, update the draft
+            updated_plan = None
+            if ai_response.get("updated_plan"):
+                await session_store.set_draft_plan(session_id, ai_response["updated_plan"])
+                updated_plan = PlanResponse(**ai_response["updated_plan"])
+
+            return PlanFeedbackResponse(
+                ai_response=ai_response["response"],
+                updated_plan=updated_plan,
+                options=ai_response.get("options", []),
+                session_status="refining"
+            )
+
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid feedback type. Use 'question' or 'adjust'."
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing feedback for session {session_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to process feedback: {str(e)}"
+        )
+
+
+@app.post(
+    "/plan/{symbol}/session/{session_id}/approve",
+    response_model=PlanResponse,
+    summary="Approve draft plan",
+    description="Approve the draft plan and make it the active trading plan.",
+)
+async def approve_plan_session(
+    symbol: str,
+    session_id: str,
+    user: User = Depends(get_current_user)
+):
+    """Approve the draft plan and finalize it."""
+    from app.storage.plan_session_store import get_plan_session_store
+    from app.storage.plan_store import get_plan_store, TradingPlan
+    import uuid
+
+    try:
+        session_store = get_plan_session_store()
+        session = await session_store.get_session(session_id)
+
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found"
+            )
+
+        if session.user_id != user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this session"
+            )
+
+        if not session.draft_plan_data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No draft plan to approve"
+            )
+
+        # Create the final plan from draft
+        plan_store = get_plan_store()
+        plan_id = str(uuid.uuid4())
+
+        final_plan = TradingPlan(
+            id=plan_id,
+            user_id=user.id,
+            symbol=symbol.upper(),
+            status="active",
+            bias=session.draft_plan_data.get("bias", ""),
+            thesis=session.draft_plan_data.get("thesis", ""),
+            entry_zone_low=session.draft_plan_data.get("entry_zone_low"),
+            entry_zone_high=session.draft_plan_data.get("entry_zone_high"),
+            stop_loss=session.draft_plan_data.get("stop_loss"),
+            stop_reasoning=session.draft_plan_data.get("stop_reasoning", ""),
+            target_1=session.draft_plan_data.get("target_1"),
+            target_2=session.draft_plan_data.get("target_2"),
+            target_3=session.draft_plan_data.get("target_3"),
+            target_reasoning=session.draft_plan_data.get("target_reasoning", ""),
+            risk_reward=session.draft_plan_data.get("risk_reward"),
+            key_supports=session.draft_plan_data.get("key_supports", []),
+            key_resistances=session.draft_plan_data.get("key_resistances", []),
+            invalidation_criteria=session.draft_plan_data.get("invalidation_criteria", ""),
+            trade_style=session.draft_plan_data.get("trade_style", ""),
+            trade_style_reasoning=session.draft_plan_data.get("trade_style_reasoning", ""),
+            holding_period=session.draft_plan_data.get("holding_period", ""),
+            confidence=session.draft_plan_data.get("confidence", 0),
+            technical_summary=session.draft_plan_data.get("technical_summary", ""),
+            news_summary=session.draft_plan_data.get("news_summary", ""),
+            reddit_sentiment=session.draft_plan_data.get("reddit_sentiment", ""),
+            reddit_buzz=session.draft_plan_data.get("reddit_buzz", ""),
+        )
+
+        await plan_store.save_plan(final_plan)
+
+        # Mark session as approved
+        await session_store.approve_session(session_id, plan_id)
+
+        # Add approval message
+        await session_store.add_message(
+            session_id,
+            role="system",
+            content="Plan approved and now active. I'll monitor the stock and alert you when price approaches key levels.",
+            message_type="approval"
+        )
+
+        return PlanResponse(
+            symbol=final_plan.symbol,
+            bias=final_plan.bias,
+            thesis=final_plan.thesis,
+            entry_zone_low=final_plan.entry_zone_low,
+            entry_zone_high=final_plan.entry_zone_high,
+            stop_loss=final_plan.stop_loss,
+            stop_reasoning=final_plan.stop_reasoning,
+            target_1=final_plan.target_1,
+            target_2=final_plan.target_2,
+            target_3=final_plan.target_3,
+            target_reasoning=final_plan.target_reasoning,
+            risk_reward=final_plan.risk_reward,
+            key_supports=final_plan.key_supports,
+            key_resistances=final_plan.key_resistances,
+            invalidation_criteria=final_plan.invalidation_criteria,
+            technical_summary=final_plan.technical_summary,
+            status=final_plan.status,
+            created_at=final_plan.created_at,
+            last_evaluation=final_plan.last_evaluation,
+            evaluation_notes=final_plan.evaluation_notes,
+            trade_style=final_plan.trade_style,
+            trade_style_reasoning=final_plan.trade_style_reasoning,
+            holding_period=final_plan.holding_period,
+            confidence=final_plan.confidence,
+            news_summary=final_plan.news_summary,
+            reddit_sentiment=final_plan.reddit_sentiment,
+            reddit_buzz=final_plan.reddit_buzz,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error approving plan session {session_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to approve plan: {str(e)}"
+        )
+
+
+@app.get(
+    "/plan/{symbol}/session/{session_id}/history",
+    summary="Get session conversation history",
+    description="Get the full conversation history for a planning session.",
+)
+async def get_session_history(
+    symbol: str,
+    session_id: str,
+    user: User = Depends(get_current_user)
+):
+    """Get the conversation history for a planning session."""
+    from app.storage.plan_session_store import get_plan_session_store
+
+    try:
+        session_store = get_plan_session_store()
+        session = await session_store.get_session(session_id)
+
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found"
+            )
+
+        if session.user_id != user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this session"
+            )
+
+        return {
+            "session_id": session.id,
+            "symbol": session.symbol,
+            "status": session.status,
+            "messages": [m.to_dict() for m in session.messages],
+            "revision_count": session.revision_count,
+            "created_at": session.created_at,
+            "approved_at": session.approved_at,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting session history {session_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get history: {str(e)}"
+        )
+
+
+@app.post(
+    "/plan/{symbol}/session/from-existing",
+    response_model=PlanSessionResponse,
+    summary="Start session from existing plan",
+    description="Start a new planning session using an existing approved plan as the draft. Allows modifying existing plans.",
+)
+async def start_session_from_existing(
+    symbol: str,
+    user: User = Depends(get_current_user)
+):
+    """Start a planning session from an existing approved plan."""
+    from app.storage.plan_session_store import get_plan_session_store
+    from app.storage.plan_store import get_plan_store
+
+    user_id = user.id
+    symbol = symbol.upper()
+
+    try:
+        plan_store = get_plan_store()
+        session_store = get_plan_session_store()
+
+        # Get the existing plan
+        existing_plan = await plan_store.get_plan(user_id, symbol)
+        if not existing_plan:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No existing plan found for {symbol}"
+            )
+
+        # Check for existing active session
+        existing_session = await session_store.get_active_session(user_id, symbol)
+        if existing_session and existing_session.status in ("draft", "refining"):
+            # Return existing session
+            draft_plan = None
+            if existing_session.draft_plan_data:
+                draft_plan = PlanResponse(**existing_session.draft_plan_data)
+
+            return PlanSessionResponse(
+                session_id=existing_session.id,
+                status=existing_session.status,
+                symbol=symbol,
+                draft_plan=draft_plan,
+                messages=[m.to_dict() for m in existing_session.messages],
+                revision_count=existing_session.revision_count,
+                created_at=existing_session.created_at,
+                updated_at=existing_session.updated_at,
+            )
+
+        # Create new session with existing plan as draft
+        session = await session_store.create_session(user_id, symbol)
+
+        # Convert existing plan to draft format
+        plan_dict = {
+            "symbol": existing_plan.symbol,
+            "bias": existing_plan.bias,
+            "thesis": existing_plan.thesis,
+            "entry_zone_low": existing_plan.entry_zone_low,
+            "entry_zone_high": existing_plan.entry_zone_high,
+            "stop_loss": existing_plan.stop_loss,
+            "stop_reasoning": existing_plan.stop_reasoning,
+            "target_1": existing_plan.target_1,
+            "target_2": existing_plan.target_2,
+            "target_3": existing_plan.target_3,
+            "target_reasoning": existing_plan.target_reasoning,
+            "risk_reward": existing_plan.risk_reward,
+            "key_supports": existing_plan.key_supports,
+            "key_resistances": existing_plan.key_resistances,
+            "invalidation_criteria": existing_plan.invalidation_criteria,
+            "technical_summary": existing_plan.technical_summary,
+            "status": "draft",
+            "created_at": existing_plan.created_at,
+            "last_evaluation": existing_plan.last_evaluation,
+            "evaluation_notes": existing_plan.evaluation_notes,
+            "trade_style": existing_plan.trade_style,
+            "trade_style_reasoning": existing_plan.trade_style_reasoning,
+            "holding_period": existing_plan.holding_period,
+            "confidence": existing_plan.confidence,
+            "news_summary": existing_plan.news_summary,
+            "reddit_sentiment": existing_plan.reddit_sentiment,
+            "reddit_buzz": existing_plan.reddit_buzz,
+        }
+
+        # Set the draft plan immediately (no generation needed)
+        await session_store.set_draft_plan(session.id, plan_dict)
+
+        # Add info message
+        await session_store.add_message(
+            session.id,
+            role="assistant",
+            content=f"I've loaded your existing {symbol} plan for editing. What would you like to adjust? You can ask questions about the plan or request specific changes to levels, targets, or stop loss.",
+            message_type="info"
+        )
+
+        # Refresh session to get updated data
+        session = await session_store.get_session(session.id)
+
+        return PlanSessionResponse(
+            session_id=session.id,
+            status=session.status,
+            symbol=symbol,
+            draft_plan=PlanResponse(**plan_dict),
+            messages=[m.to_dict() for m in session.messages],
+            revision_count=session.revision_count,
+            created_at=session.created_at,
+            updated_at=session.updated_at,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting session from existing plan for {symbol}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start session: {str(e)}"
+        )
+
+
+@app.post(
+    "/plan/{symbol}/session/{session_id}/reopen",
+    response_model=PlanSessionResponse,
+    summary="Reopen approved session",
+    description="Reopen an approved planning session to continue making adjustments.",
+)
+async def reopen_plan_session(
+    symbol: str,
+    session_id: str,
+    user: User = Depends(get_current_user)
+):
+    """Reopen an approved session to continue adjustments."""
+    from app.storage.plan_session_store import get_plan_session_store
+    from app.storage.plan_store import get_plan_store
+
+    try:
+        session_store = get_plan_session_store()
+        session = await session_store.get_session(session_id)
+
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found"
+            )
+
+        if session.user_id != user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this session"
+            )
+
+        if session.status != "approved":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Session is not approved (status: {session.status}). Only approved sessions can be reopened."
+            )
+
+        # If we have an approved_plan_id, load the current plan data
+        if session.approved_plan_id:
+            plan_store = get_plan_store()
+            current_plan = await plan_store.get_plan(user.id, symbol.upper())
+
+            if current_plan:
+                # Update draft with current plan data
+                plan_dict = {
+                    "symbol": current_plan.symbol,
+                    "bias": current_plan.bias,
+                    "thesis": current_plan.thesis,
+                    "entry_zone_low": current_plan.entry_zone_low,
+                    "entry_zone_high": current_plan.entry_zone_high,
+                    "stop_loss": current_plan.stop_loss,
+                    "stop_reasoning": current_plan.stop_reasoning,
+                    "target_1": current_plan.target_1,
+                    "target_2": current_plan.target_2,
+                    "target_3": current_plan.target_3,
+                    "target_reasoning": current_plan.target_reasoning,
+                    "risk_reward": current_plan.risk_reward,
+                    "key_supports": current_plan.key_supports,
+                    "key_resistances": current_plan.key_resistances,
+                    "invalidation_criteria": current_plan.invalidation_criteria,
+                    "technical_summary": current_plan.technical_summary,
+                    "status": "draft",
+                    "created_at": current_plan.created_at,
+                    "last_evaluation": current_plan.last_evaluation,
+                    "evaluation_notes": current_plan.evaluation_notes,
+                    "trade_style": current_plan.trade_style,
+                    "trade_style_reasoning": current_plan.trade_style_reasoning,
+                    "holding_period": current_plan.holding_period,
+                    "confidence": current_plan.confidence,
+                    "news_summary": current_plan.news_summary,
+                    "reddit_sentiment": current_plan.reddit_sentiment,
+                    "reddit_buzz": current_plan.reddit_buzz,
+                }
+                session.draft_plan_data = plan_dict
+
+        # Reopen the session
+        session.status = "refining"
+        session.approved_at = None  # Clear approved timestamp
+        await session_store.update_session(session)
+
+        # Add message about reopening
+        await session_store.add_message(
+            session.id,
+            role="assistant",
+            content="Session reopened. You can continue adjusting the plan. What would you like to change?",
+            message_type="info"
+        )
+
+        # Refresh session
+        session = await session_store.get_session(session.id)
+
+        draft_plan = None
+        if session.draft_plan_data:
+            draft_plan = PlanResponse(**session.draft_plan_data)
+
+        return PlanSessionResponse(
+            session_id=session.id,
+            status=session.status,
+            symbol=symbol.upper(),
+            draft_plan=draft_plan,
+            messages=[m.to_dict() for m in session.messages],
+            revision_count=session.revision_count,
+            created_at=session.created_at,
+            updated_at=session.updated_at,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reopening session {session_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reopen session: {str(e)}"
         )
 
 

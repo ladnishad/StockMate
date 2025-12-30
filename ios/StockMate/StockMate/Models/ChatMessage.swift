@@ -354,3 +354,74 @@ struct TradingPlanResponse: Codable {
         }
     }
 }
+
+// MARK: - Interactive Plan Session Models
+
+/// Message in a planning conversation
+struct PlanMessage: Codable, Identifiable {
+    let id: String
+    let role: String  // "user", "assistant", "system"
+    let content: String
+    let messageType: String  // "question", "answer", "adjustment_request", "adjustment_response", "approval", "info"
+    let timestamp: String
+    let options: [PlanOption]
+    let selectedOption: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, role, content, timestamp, options
+        case messageType = "message_type"
+        case selectedOption = "selected_option"
+    }
+
+    var isUser: Bool { role == "user" }
+    var isAssistant: Bool { role == "assistant" }
+}
+
+/// Option presented by AI for adjustments
+struct PlanOption: Codable {
+    let label: String
+    let description: String
+    let value: String?
+}
+
+/// Response for a plan session
+struct PlanSessionResponse: Codable {
+    let sessionId: String
+    let status: String  // "generating", "draft", "refining", "approved", "rejected"
+    let symbol: String
+    let draftPlan: TradingPlanResponse?
+    let messages: [PlanMessage]
+    let revisionCount: Int
+    let createdAt: String
+    let updatedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case symbol, status, messages
+        case sessionId = "session_id"
+        case draftPlan = "draft_plan"
+        case revisionCount = "revision_count"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+
+    var isGenerating: Bool { status == "generating" }
+    var isDraft: Bool { status == "draft" }
+    var isRefining: Bool { status == "refining" }
+    var isApproved: Bool { status == "approved" }
+    var hasDraftPlan: Bool { draftPlan != nil }
+}
+
+/// Response after submitting feedback
+struct PlanFeedbackResponse: Codable {
+    let aiResponse: String
+    let updatedPlan: TradingPlanResponse?
+    let options: [PlanOption]
+    let sessionStatus: String
+
+    enum CodingKeys: String, CodingKey {
+        case options
+        case aiResponse = "ai_response"
+        case updatedPlan = "updated_plan"
+        case sessionStatus = "session_status"
+    }
+}

@@ -13,13 +13,23 @@ struct TradingPlanView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                if viewModel.isLoading && viewModel.plan == nil {
+                // Check for active draft session first
+                if viewModel.isDraftMode || viewModel.draftPlan != nil {
+                    // Interactive draft plan mode (Claude Code-style)
+                    DraftPlanView(viewModel: viewModel)
+
+                } else if viewModel.isLoading && viewModel.plan == nil {
                     PlanLoadingView()
                 } else if viewModel.isStreaming {
                     // Show streaming view while AI generates the plan
                     StreamingPlanView(viewModel: viewModel)
                 } else if let plan = viewModel.plan {
-                    // Plan content
+                    // Show "Continue Editing" banner if there's an approved session
+                    if viewModel.sessionStatus == "approved" && viewModel.sessionId != nil {
+                        ApprovedSessionBanner(viewModel: viewModel)
+                    }
+
+                    // Approved plan content
                     PlanHeaderCard(plan: plan, viewModel: viewModel)
 
                     ThesisCard(plan: plan, isUpdating: viewModel.isUpdating)
@@ -47,18 +57,18 @@ struct TradingPlanView: View {
                     ActionButtonsRow(viewModel: viewModel)
 
                 } else {
-                    // No plan yet
-                    NoPlanView(viewModel: viewModel)
+                    // No plan yet - show option to start interactive session
+                    NoPlanViewWithSession(viewModel: viewModel)
                 }
             }
             .padding(20)
         }
         .background(Color(.systemGroupedBackground))
-        .navigationTitle("Trading Plan")
+        .navigationTitle(viewModel.isDraftMode ? "Draft Plan" : "Trading Plan")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                if viewModel.isUpdating {
+                if viewModel.isUpdating || viewModel.isProcessingFeedback {
                     ProgressView()
                         .scaleEffect(0.8)
                 }
@@ -84,6 +94,53 @@ struct TradingPlanView: View {
                 )
             }
         }
+    }
+}
+
+// MARK: - No Plan View with Session Option
+
+private struct NoPlanViewWithSession: View {
+    @ObservedObject var viewModel: TradingPlanViewModel
+
+    var body: some View {
+        VStack(spacing: 24) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 50))
+                .foregroundColor(.secondary)
+
+            VStack(spacing: 8) {
+                Text("No Trading Plan")
+                    .font(.title2.bold())
+
+                Text("AI will analyze the stock and create a plan you can review and adjust")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            Button {
+                Task { await viewModel.startPlanSession() }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "sparkles")
+                    Text("Generate Plan")
+                }
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Color.blue)
+                .cornerRadius(12)
+            }
+            .disabled(viewModel.isLoading)
+            .padding(.top, 8)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
     }
 }
 
@@ -1067,109 +1124,111 @@ private struct ActionButtonsRow: View {
     @ObservedObject var viewModel: TradingPlanViewModel
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Evaluate button
-            Button {
-                Task {
-                    await viewModel.evaluatePlan()
+        VStack(spacing: 12) {
+            // Primary row: Evaluate and Modify
+            HStack(spacing: 12) {
+                // Evaluate button
+                Button {
+                    Task {
+                        await viewModel.evaluatePlan()
+                    }
+                } label: {
+                    Label("Evaluate", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
                 }
-            } label: {
-                Label("Evaluate", systemImage: "arrow.triangle.2.circlepath")
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-            }
-            .buttonStyle(.bordered)
-            .disabled(viewModel.isUpdating || viewModel.isStreaming)
+                .buttonStyle(.bordered)
+                .disabled(viewModel.isUpdating || viewModel.isStreaming)
 
-            // Regenerate button (uses streaming for live updates)
+                // Modify button - starts interactive session from existing plan
+                Button {
+                    Task {
+                        await viewModel.startSessionFromExisting()
+                    }
+                } label: {
+                    Label("Modify", systemImage: "slider.horizontal.3")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                .disabled(viewModel.isUpdating || viewModel.isStreaming || viewModel.isLoading)
+            }
+
+            // Secondary row: Start fresh with new plan
             Button {
                 Task {
-                    await viewModel.generateNewPlanWithStreaming()
+                    viewModel.clearSession()  // Clear any existing session state
+                    await viewModel.startPlanSession()  // Start fresh session
                 }
             } label: {
-                Label("New Plan", systemImage: "sparkles")
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 12))
+                    Text("Start Fresh")
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(Color(.tertiarySystemBackground))
+                .cornerRadius(10)
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(viewModel.isUpdating || viewModel.isStreaming)
+            .disabled(viewModel.isUpdating || viewModel.isLoading)
         }
         .padding(.top, 8)
     }
 }
 
-// MARK: - No Plan View
+// MARK: - Approved Session Banner
 
-private struct NoPlanView: View {
+private struct ApprovedSessionBanner: View {
     @ObservedObject var viewModel: TradingPlanViewModel
 
     var body: some View {
-        VStack(spacing: 24) {
-            // Icon
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.blue.opacity(0.1), Color.purple.opacity(0.1)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 80, height: 80)
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 18))
+                .foregroundColor(.green)
 
-                Image(systemName: "chart.line.text.clipboard")
-                    .font(.system(size: 32, weight: .light))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [.blue, .purple],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Plan Approved")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.primary)
+
+                Text("You can continue editing if needed")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
             }
 
-            VStack(spacing: 8) {
-                Text("No Trading Plan")
-                    .font(.system(size: 20, weight: .semibold))
+            Spacer()
 
-                Text("The AI agent will analyze \(viewModel.symbol) and create a comprehensive trading plan with entry, stop loss, and targets.")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 20)
-            }
-
-            // Generate button with streaming
             Button {
                 Task {
-                    await viewModel.generateNewPlanWithStreaming()
+                    await viewModel.reopenSession()
                 }
             } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 16, weight: .medium))
-                    Text("Generate Plan")
-                        .font(.system(size: 16, weight: .semibold))
-                }
-                .foregroundColor(.white)
-                .padding(.horizontal, 28)
-                .padding(.vertical, 14)
-                .background(
-                    LinearGradient(
-                        colors: [.blue, .purple],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .clipShape(Capsule())
-                .shadow(color: .blue.opacity(0.3), radius: 8, y: 4)
+                Text("Continue")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.blue)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.blue.opacity(0.1))
+                    .cornerRadius(8)
             }
-            .disabled(viewModel.isUpdating || viewModel.isStreaming)
+            .disabled(viewModel.isUpdating)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 60)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.green.opacity(0.1))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.green.opacity(0.3), lineWidth: 1)
+        )
     }
 }
 

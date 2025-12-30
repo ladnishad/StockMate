@@ -444,4 +444,238 @@ final class TradingPlanViewModel: ObservableObject {
             }
         }
     }
+
+    // MARK: - Interactive Plan Session (Claude Code-style planning)
+
+    @Published private(set) var sessionId: String?
+    @Published private(set) var sessionStatus: String = "idle"
+    @Published private(set) var draftPlan: TradingPlanResponse?
+    @Published private(set) var conversationMessages: [PlanMessage] = []
+    @Published private(set) var isProcessingFeedback: Bool = false
+    @Published private(set) var lastAIResponse: String?
+
+    var hasActiveSession: Bool { sessionId != nil && (sessionStatus == "draft" || sessionStatus == "refining") }
+    var isDraftMode: Bool { sessionStatus == "draft" || sessionStatus == "refining" }
+
+    /// Start an interactive planning session
+    func startPlanSession() async {
+        guard !isLoading else { return }
+
+        isLoading = true
+        error = nil
+        updatePhase = .gatheringData
+
+        do {
+            let session = try await APIService.shared.startPlanSession(symbol: symbol)
+            withAnimation {
+                self.sessionId = session.sessionId
+                self.sessionStatus = session.status
+                self.draftPlan = session.draftPlan
+                self.conversationMessages = session.messages
+            }
+
+            // If session is still generating, poll for updates
+            if session.isGenerating {
+                await pollSessionUntilDraft()
+            } else {
+                updatePhase = .idle
+            }
+        } catch {
+            self.error = error.localizedDescription
+            updatePhase = .idle
+        }
+
+        isLoading = false
+    }
+
+    /// Poll session until draft plan is ready
+    private func pollSessionUntilDraft() async {
+        guard let sessionId = sessionId else { return }
+
+        updatePhase = .generatingPlan
+
+        for _ in 0..<60 { // Max 60 attempts (2 minutes)
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+
+                let session = try await APIService.shared.getPlanSession(symbol: symbol, sessionId: sessionId)
+
+                withAnimation {
+                    self.sessionStatus = session.status
+                    self.draftPlan = session.draftPlan
+                    self.conversationMessages = session.messages
+                }
+
+                if session.hasDraftPlan {
+                    withAnimation {
+                        self.updatePhase = .complete
+                    }
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                    withAnimation {
+                        self.updatePhase = .idle
+                    }
+                    return
+                }
+            } catch {
+                // Continue polling on error
+            }
+        }
+
+        // Timeout
+        self.error = "Plan generation timed out"
+        updatePhase = .idle
+    }
+
+    /// Submit a question about the draft plan
+    func askQuestion(_ question: String) async {
+        guard let sessionId = sessionId, !isProcessingFeedback else { return }
+
+        isProcessingFeedback = true
+
+        do {
+            let response = try await APIService.shared.submitPlanFeedback(
+                symbol: symbol,
+                sessionId: sessionId,
+                feedbackType: "question",
+                content: question
+            )
+
+            withAnimation {
+                self.lastAIResponse = response.aiResponse
+                self.sessionStatus = response.sessionStatus
+            }
+
+            // Refresh session to get updated messages
+            await refreshSession()
+        } catch {
+            self.error = error.localizedDescription
+        }
+
+        isProcessingFeedback = false
+    }
+
+    /// Request an adjustment to the draft plan
+    func requestAdjustment(_ request: String) async {
+        guard let sessionId = sessionId, !isProcessingFeedback else { return }
+
+        isProcessingFeedback = true
+
+        do {
+            let response = try await APIService.shared.submitPlanFeedback(
+                symbol: symbol,
+                sessionId: sessionId,
+                feedbackType: "adjust",
+                content: request
+            )
+
+            withAnimation {
+                self.lastAIResponse = response.aiResponse
+                self.sessionStatus = response.sessionStatus
+                if let updatedPlan = response.updatedPlan {
+                    self.draftPlan = updatedPlan
+                }
+            }
+
+            // Refresh session to get updated messages
+            await refreshSession()
+        } catch {
+            self.error = error.localizedDescription
+        }
+
+        isProcessingFeedback = false
+    }
+
+    /// Approve the draft plan
+    func approveDraftPlan() async {
+        guard let sessionId = sessionId else { return }
+
+        isUpdating = true
+
+        do {
+            let approvedPlan = try await APIService.shared.approvePlanSession(symbol: symbol, sessionId: sessionId)
+
+            withAnimation {
+                self.plan = approvedPlan
+                self.sessionStatus = "approved"
+                self.draftPlan = nil
+                self.conversationMessages = []
+                self.lastUpdated = Date()
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+
+        isUpdating = false
+    }
+
+    /// Refresh session state
+    private func refreshSession() async {
+        guard let sessionId = sessionId else { return }
+
+        do {
+            let session = try await APIService.shared.getPlanSession(symbol: symbol, sessionId: sessionId)
+
+            withAnimation {
+                self.sessionStatus = session.status
+                self.draftPlan = session.draftPlan
+                self.conversationMessages = session.messages
+            }
+        } catch {
+            // Silent refresh
+        }
+    }
+
+    /// Start a session from an existing plan (for modifying existing plans)
+    func startSessionFromExisting() async {
+        guard !isLoading, plan != nil else { return }
+
+        isLoading = true
+        error = nil
+
+        do {
+            let session = try await APIService.shared.startSessionFromExisting(symbol: symbol)
+            withAnimation {
+                self.sessionId = session.sessionId
+                self.sessionStatus = session.status
+                self.draftPlan = session.draftPlan
+                self.conversationMessages = session.messages
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+
+        isLoading = false
+    }
+
+    /// Reopen an approved session to continue making adjustments
+    func reopenSession() async {
+        guard let sessionId = sessionId, sessionStatus == "approved" else { return }
+
+        isUpdating = true
+        error = nil
+
+        do {
+            let session = try await APIService.shared.reopenPlanSession(symbol: symbol, sessionId: sessionId)
+            withAnimation {
+                self.sessionStatus = session.status
+                self.draftPlan = session.draftPlan
+                self.conversationMessages = session.messages
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
+
+        isUpdating = false
+    }
+
+    /// Clear the current session (start fresh)
+    func clearSession() {
+        withAnimation {
+            sessionId = nil
+            sessionStatus = "idle"
+            draftPlan = nil
+            conversationMessages = []
+            lastAIResponse = nil
+        }
+    }
 }

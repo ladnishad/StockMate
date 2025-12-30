@@ -204,6 +204,28 @@ async def init_postgres_tables():
             ON conversations (user_id)
         """)
 
+        # Plan sessions table (for interactive Claude Code-style planning)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS plan_sessions (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                status TEXT DEFAULT 'generating',
+                messages JSONB DEFAULT '[]',
+                draft_plan_data JSONB,
+                approved_plan_id TEXT,
+                revision_count INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                approved_at TEXT
+            )
+        """)
+
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_plan_sessions_user_symbol
+            ON plan_sessions (user_id, symbol)
+        """)
+
         logger.info("PostgreSQL tables initialized")
 
 

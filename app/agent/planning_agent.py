@@ -1314,3 +1314,303 @@ Answer the user's question based on this data. If they ask to create or update a
             "has_position": self._position_data.get("has_position", False),
             "market_direction": self._market_data.get("market", {}).get("market_direction"),
         }
+
+    # =========================================================================
+    # Interactive Plan Session Methods (Claude Code-style planning)
+    # =========================================================================
+
+    async def handle_user_question(
+        self,
+        draft_plan: Dict[str, Any],
+        question: str,
+        conversation_history: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Handle a user's question about the draft plan.
+
+        Returns an explanation and optionally presents options.
+        """
+        settings = get_settings()
+
+        # Build context from the plan
+        plan_context = self._format_plan_for_prompt(draft_plan)
+
+        # Format conversation history
+        history_text = ""
+        for msg in conversation_history[-5:]:  # Last 5 messages for context
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            history_text += f"{role.upper()}: {content}\n"
+
+        prompt = f"""The user has a draft trading plan and is asking a question about it.
+
+## Draft Plan for {self.symbol}
+{plan_context}
+
+## Recent Conversation
+{history_text}
+
+## User's Question
+{question}
+
+## Instructions
+Answer the user's question thoughtfully and thoroughly. Key principles:
+
+1. EXPLAIN YOUR REASONING - Don't just state facts, explain WHY
+2. BE HONEST - If there are tradeoffs or risks, mention them
+3. REFERENCE SPECIFIC DATA - Use actual price levels, indicators, ATR values
+4. IF THE QUESTION SUGGESTS A CHANGE - Explain the implications but don't automatically agree
+
+For questions about trade style, explain based on:
+- Pattern timeframe (intraday vs daily vs weekly)
+- ATR and volatility characteristics
+- Distance to targets vs typical daily range
+
+For questions about levels (stop, entry, targets), explain based on:
+- Technical significance of the level
+- Risk/reward implications of changing it
+- Probability of getting stopped out by normal volatility
+
+If the user's question implies they want something that might not be optimal, respectfully explain the tradeoff and offer alternatives.
+
+Respond conversationally in plain text. No markdown formatting."""
+
+        try:
+            client = self._get_client()
+            response = client.messages.create(
+                model=settings.claude_model_fast,
+                max_tokens=1000,
+                system="You are an expert trading advisor explaining a trading plan. Be thorough but conversational.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            ai_response = response.content[0].text
+
+            # Check if the response suggests options
+            options = []
+            if "option" in ai_response.lower() or "alternative" in ai_response.lower():
+                # AI mentioned alternatives, but we let the UI parse them from the text
+                pass
+
+            return {
+                "response": ai_response,
+                "options": options
+            }
+
+        except Exception as e:
+            logger.error(f"Error handling user question: {e}")
+            return {
+                "response": f"I apologize, but I encountered an error processing your question. Please try again.",
+                "options": []
+            }
+
+    async def handle_adjustment_request(
+        self,
+        draft_plan: Dict[str, Any],
+        request: str,
+        conversation_history: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Handle a user's request to adjust the draft plan.
+
+        Returns an explanation of tradeoffs and options, NOT blind agreement.
+        """
+        settings = get_settings()
+
+        # Gather fresh market data for context
+        await self.gather_comprehensive_data()
+
+        # Build context
+        plan_context = self._format_plan_for_prompt(draft_plan)
+        market_context = self._format_market_data_for_prompt()
+
+        # Format conversation history
+        history_text = ""
+        for msg in conversation_history[-5:]:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            history_text += f"{role.upper()}: {content}\n"
+
+        prompt = f"""The user wants to adjust their draft trading plan. Your job is to evaluate the request and provide thoughtful guidance - NOT to blindly agree.
+
+## Draft Plan for {self.symbol}
+{plan_context}
+
+## Current Market Data
+{market_context}
+
+## Recent Conversation
+{history_text}
+
+## User's Adjustment Request
+{request}
+
+## Instructions
+Evaluate the user's adjustment request carefully. DO NOT automatically agree with changes that might harm the trade's probability of success.
+
+1. UNDERSTAND THE REQUEST - What specifically does the user want to change?
+
+2. EVALUATE THE TRADEOFFS - For any adjustment:
+   - How does it affect risk/reward ratio?
+   - How does it affect probability of success?
+   - Are there technical reasons why this might not work?
+
+3. PRESENT OPTIONS - Always give 2-3 concrete options:
+   - Option 1: Keep the original (explain why it's reasonable)
+   - Option 2: The user's requested change (explain the tradeoffs)
+   - Option 3: A compromise (if applicable)
+
+4. MAKE A RECOMMENDATION - State which option you recommend and why
+
+5. If the user's request is reasonable, you can apply it. If it's problematic, explain why and offer alternatives.
+
+## Response Format
+Respond with your analysis in plain conversational text.
+
+At the end, if you recommend applying a change, include a JSON block with the updated plan values:
+
+UPDATED_PLAN_JSON:
+{{"stop_loss": 184.50, "risk_reward": 2.8}}
+
+Only include fields that should be changed. If you don't recommend a change, don't include the JSON block."""
+
+        try:
+            client = self._get_client()
+            response = client.messages.create(
+                model=settings.claude_model_fast,
+                max_tokens=1500,
+                system="You are an expert trading advisor. Your job is to protect the user from making bad trades while respecting their preferences. Never blindly agree - always explain tradeoffs.",
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            ai_response = response.content[0].text
+
+            # Parse options from the response (simplified - UI can do more sophisticated parsing)
+            options = []
+
+            # Check if AI provided updated plan values
+            updated_plan = None
+            if "UPDATED_PLAN_JSON:" in ai_response:
+                try:
+                    json_start = ai_response.index("UPDATED_PLAN_JSON:") + len("UPDATED_PLAN_JSON:")
+                    json_text = ai_response[json_start:].strip()
+                    # Find the JSON object
+                    if json_text.startswith("{"):
+                        # Find matching closing brace
+                        brace_count = 0
+                        end_idx = 0
+                        for i, char in enumerate(json_text):
+                            if char == "{":
+                                brace_count += 1
+                            elif char == "}":
+                                brace_count -= 1
+                                if brace_count == 0:
+                                    end_idx = i + 1
+                                    break
+                        json_str = json_text[:end_idx]
+                        adjustments = json.loads(json_str)
+
+                        # Apply adjustments to draft plan
+                        updated_plan = draft_plan.copy()
+                        for key, value in adjustments.items():
+                            if key in updated_plan:
+                                updated_plan[key] = value
+
+                        # Recalculate risk/reward if stop or targets changed
+                        if "stop_loss" in adjustments or "target_1" in adjustments:
+                            entry_mid = (updated_plan.get("entry_zone_low", 0) + updated_plan.get("entry_zone_high", 0)) / 2
+                            if entry_mid and updated_plan.get("stop_loss") and updated_plan.get("target_1"):
+                                risk = abs(entry_mid - updated_plan["stop_loss"])
+                                reward = abs(updated_plan["target_1"] - entry_mid)
+                                if risk > 0:
+                                    updated_plan["risk_reward"] = round(reward / risk, 2)
+
+                        # Remove the JSON from the response text
+                        ai_response = ai_response[:ai_response.index("UPDATED_PLAN_JSON:")].strip()
+
+                except (json.JSONDecodeError, ValueError) as e:
+                    logger.warning(f"Could not parse updated plan JSON: {e}")
+
+            return {
+                "response": ai_response,
+                "options": options,
+                "updated_plan": updated_plan
+            }
+
+        except Exception as e:
+            logger.error(f"Error handling adjustment request: {e}")
+            return {
+                "response": f"I apologize, but I encountered an error processing your adjustment request. Please try again.",
+                "options": [],
+                "updated_plan": None
+            }
+
+    def _format_plan_for_prompt(self, plan: Dict[str, Any]) -> str:
+        """Format a plan dict into a readable prompt string."""
+        lines = []
+
+        if plan.get("trade_style"):
+            lines.append(f"Trade Style: {plan['trade_style']} ({plan.get('holding_period', 'N/A')})")
+
+        if plan.get("bias"):
+            lines.append(f"Bias: {plan['bias'].upper()}")
+
+        if plan.get("confidence"):
+            lines.append(f"Confidence: {plan['confidence']}%")
+
+        if plan.get("thesis"):
+            lines.append(f"\nThesis: {plan['thesis']}")
+
+        lines.append("\nLevels:")
+        if plan.get("entry_zone_low") and plan.get("entry_zone_high"):
+            lines.append(f"  Entry Zone: ${plan['entry_zone_low']:.2f} - ${plan['entry_zone_high']:.2f}")
+        if plan.get("stop_loss"):
+            lines.append(f"  Stop Loss: ${plan['stop_loss']:.2f}")
+            if plan.get("stop_reasoning"):
+                lines.append(f"    Reasoning: {plan['stop_reasoning']}")
+        if plan.get("target_1"):
+            lines.append(f"  Target 1: ${plan['target_1']:.2f}")
+        if plan.get("target_2"):
+            lines.append(f"  Target 2: ${plan['target_2']:.2f}")
+        if plan.get("target_3"):
+            lines.append(f"  Target 3: ${plan['target_3']:.2f}")
+        if plan.get("risk_reward"):
+            lines.append(f"  Risk/Reward: {plan['risk_reward']:.1f}:1")
+
+        if plan.get("key_supports"):
+            lines.append(f"\nKey Supports: {', '.join(f'${s:.2f}' for s in plan['key_supports'][:3])}")
+        if plan.get("key_resistances"):
+            lines.append(f"Key Resistances: {', '.join(f'${r:.2f}' for r in plan['key_resistances'][:3])}")
+
+        if plan.get("invalidation_criteria"):
+            lines.append(f"\nInvalidation: {plan['invalidation_criteria']}")
+
+        return "\n".join(lines)
+
+    def _format_market_data_for_prompt(self) -> str:
+        """Format current market data for prompt context."""
+        lines = []
+
+        price_data = self._market_data.get("price", {})
+        if price_data:
+            lines.append(f"Current Price: ${price_data.get('price', 0):.2f}")
+            if price_data.get("change_pct"):
+                lines.append(f"Daily Change: {price_data['change_pct']:+.2f}%")
+
+        tech_data = self._market_data.get("technicals", {})
+        if tech_data:
+            if tech_data.get("rsi"):
+                lines.append(f"RSI(14): {tech_data['rsi']:.1f}")
+            if tech_data.get("atr"):
+                lines.append(f"ATR: ${tech_data['atr']:.2f}")
+
+        levels_data = self._market_data.get("levels", {})
+        if levels_data:
+            if levels_data.get("supports"):
+                lines.append(f"Nearby Supports: {', '.join(f'${s:.2f}' for s in levels_data['supports'][:2])}")
+            if levels_data.get("resistances"):
+                lines.append(f"Nearby Resistances: {', '.join(f'${r:.2f}' for r in levels_data['resistances'][:2])}")
+
+        market_ctx = self._market_data.get("market", {})
+        if market_ctx:
+            lines.append(f"Market Direction: {market_ctx.get('market_direction', 'N/A')}")
+
+        return "\n".join(lines) if lines else "No current market data available."
