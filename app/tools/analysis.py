@@ -1628,6 +1628,16 @@ def run_analysis(
 ) -> AnalysisResponse:
     """Run complete stock analysis and generate trading recommendation.
 
+    .. deprecated::
+        This rule-based analysis function is deprecated in favor of AI-powered
+        trading plans via StockPlanningAgent. The AI-powered analysis provides:
+        - Position-aware recommendations (adapts to user's existing positions)
+        - More nuanced judgment on trade quality
+        - Comprehensive thesis explaining the trade rationale
+
+        For new implementations, use the /chat/{symbol}/plan endpoint instead.
+        This function is kept for backwards compatibility with the /analyze endpoint.
+
     This is the main orchestration function that ties together all analysis tools
     to produce a final BUY or NO_BUY recommendation with detailed trade plan.
 

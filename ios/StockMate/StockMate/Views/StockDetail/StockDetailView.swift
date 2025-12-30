@@ -55,14 +55,10 @@ struct StockDetailView: View {
 
                     // Main Content
                     VStack(spacing: 16) {
-                        // Expert Guidance Card - shows loading or data
-                        if let detail = viewModel.detail {
-                            ExpertGuidanceCard(detail: detail, planViewModel: planViewModel)
-                        } else {
-                            ExpertGuidanceCardSkeleton()
-                        }
+                        // Trading Levels - minimal display when plan exists
+                        TradingLevelsCard(planViewModel: planViewModel)
 
-                        // Position Card (after Expert Guidance)
+                        // Position Card
                         if let position = viewModel.position {
                             PositionCard(position: position, viewModel: viewModel)
                         } else if viewModel.isInWatchlist && !viewModel.isLoadingPosition {
@@ -80,10 +76,7 @@ struct StockDetailView: View {
                             )
                         }
 
-                        // Key Insights (at the end)
-                        if let detail = viewModel.detail, !detail.reasons.isEmpty {
-                            KeyInsightsSection(reasons: detail.reasons)
-                        }
+                        // Note: Key Insights section removed - AI thesis in ExpertGuidanceCard now provides insights
 
                         // Disclaimer
                         DisclaimerFooter()
@@ -291,314 +284,188 @@ private struct PriceHeroSection: View {
     }
 }
 
-// MARK: - Expert Guidance Card
+// MARK: - Trading Levels Card (Minimal)
 
-private struct ExpertGuidanceCard: View {
-    let detail: StockDetail
+private struct TradingLevelsCard: View {
     @ObservedObject var planViewModel: TradingPlanViewModel
 
-    private var isBuy: Bool { detail.isRecommendedBuy }
-
-    private var guidanceText: String {
-        if isBuy {
-            if detail.score >= 80 {
-                return "Strong opportunity detected. Technical indicators and market conditions favor this trade."
-            } else if detail.score >= 70 {
-                return "Good setup identified. The analysis shows favorable conditions for entry."
-            } else {
-                return "Moderate opportunity. Consider position sizing carefully."
-            }
-        } else {
-            if detail.score < 40 {
-                return "Not recommended right now. Wait for better market conditions."
-            } else {
-                return "Hold off for now. The setup doesn't meet our criteria yet."
-            }
-        }
-    }
+    private var isGenerating: Bool { planViewModel.isLoading || planViewModel.isStreaming }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack(spacing: 12) {
-                // Score ring
-                ZStack {
-                    Circle()
-                        .stroke(Color(.systemGray5), lineWidth: 4)
-
-                    Circle()
-                        .trim(from: 0, to: detail.score / 100)
-                        .stroke(
-                            isBuy ? Color(.systemGreen) : Color(.systemGray3),
-                            style: StrokeStyle(lineWidth: 4, lineCap: .round)
-                        )
-                        .rotationEffect(.degrees(-90))
-
-                    Text("\(Int(detail.score))")
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
-                        .foregroundStyle(isBuy ? Color(.systemGreen) : .secondary)
-                }
-                .frame(width: 52, height: 52)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(isBuy ? "Buy Signal" : "Wait")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(.primary)
-
-                        if isBuy {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 18))
-                                .foregroundStyle(Color(.systemGreen))
-                        }
-                    }
-
-                    Text("Confidence Score")
-                        .font(.system(size: 13, weight: .regular))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-            }
-            .padding(16)
-
-            Divider()
-                .padding(.horizontal, 16)
-
-            // Guidance text
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Expert Analysis")
-                    .font(.system(size: 12, weight: .semibold))
+        if isGenerating {
+            // Minimal loading state
+            HStack(spacing: 10) {
+                ProgressView()
+                    .scaleEffect(0.8)
+                Text("Generating plan...")
+                    .font(.system(size: 14))
                     .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .tracking(0.5)
-
-                Text(guidanceText)
-                    .font(.system(size: 16, weight: .regular))
-                    .foregroundStyle(.primary)
-                    .lineSpacing(4)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-
-            // Trading Levels Section
-            if let plan = planViewModel.plan, !planViewModel.isLoading {
-                Divider()
-                    .padding(.horizontal, 16)
-
-                TradingLevelsSection(plan: plan)
-                    .padding(16)
-            } else if planViewModel.isLoading {
-                Divider()
-                    .padding(.horizontal, 16)
-
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                    Text("Loading trading levels...")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(16)
-            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 20)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(.secondarySystemBackground))
+            )
+        } else if let plan = planViewModel.plan {
+            // Show trading levels
+            TradingLevelsDisplay(plan: plan)
+        } else {
+            // Subtle generate button
+            GeneratePlanButton(planViewModel: planViewModel)
         }
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(.secondarySystemBackground))
-        )
     }
 }
 
-// MARK: - Trading Levels Section
+// MARK: - Trading Levels Display
 
-private struct TradingLevelsSection: View {
+private struct TradingLevelsDisplay: View {
     let plan: TradingPlanResponse
 
-    private var isBearish: Bool {
-        plan.bias.lowercased() == "bearish"
-    }
+    private var isBearish: Bool { plan.bias.lowercased() == "bearish" }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Header with direction indicator
+        VStack(spacing: 0) {
+            // Compact header
             HStack {
-                Text("Trading Levels")
-                    .font(.system(size: 12, weight: .semibold))
+                Text("Trading Plan")
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .tracking(0.5)
 
                 Spacer()
 
-                // Direction badge
+                // Direction pill
                 HStack(spacing: 4) {
                     Image(systemName: isBearish ? "arrow.down.right" : "arrow.up.right")
                         .font(.system(size: 9, weight: .bold))
                     Text(isBearish ? "SHORT" : "LONG")
                         .font(.system(size: 9, weight: .bold))
                 }
-                .foregroundColor(isBearish ? .red : .green)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background((isBearish ? Color.red : Color.green).opacity(0.12))
-                .clipShape(Capsule())
+                .foregroundStyle(isBearish ? Color(.systemRed) : Color(.systemGreen))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule()
+                        .fill(isBearish ? Color(.systemRed).opacity(0.12) : Color(.systemGreen).opacity(0.12))
+                )
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 12)
 
-            // Explanation for bearish trades
-            if isBearish {
-                HStack(spacing: 4) {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 10))
-                    Text("Profit when price falls below entry")
-                        .font(.system(size: 10))
-                }
-                .foregroundStyle(.secondary)
-            }
-
+            // Levels grid
             VStack(spacing: 8) {
                 // Entry Zone
                 if let low = plan.entryZoneLow, let high = plan.entryZoneHigh {
-                    TradingLevelRow(
-                        label: isBearish ? "Short Entry" : "Entry Zone",
-                        value: "$\(formatPrice(low)) - $\(formatPrice(high))",
-                        color: .blue
+                    LevelRow(
+                        label: "Entry",
+                        value: low == high ? formatPrice(low) : "\(formatPrice(low)) – \(formatPrice(high))",
+                        color: Color(.systemBlue)
                     )
                 }
 
                 // Stop Loss
                 if let stop = plan.stopLoss {
-                    TradingLevelRow(
-                        label: "Stop Loss",
-                        value: "$\(formatPrice(stop))",
-                        color: .red
+                    LevelRow(
+                        label: "Stop",
+                        value: formatPrice(stop),
+                        color: Color(.systemRed)
                     )
                 }
 
                 // Targets
                 if let t1 = plan.target1 {
-                    TradingLevelRow(
+                    LevelRow(
                         label: "Target 1",
-                        value: "$\(formatPrice(t1))",
-                        color: .green
+                        value: formatPrice(t1),
+                        color: Color(.systemGreen)
                     )
                 }
-
                 if let t2 = plan.target2 {
-                    TradingLevelRow(
+                    LevelRow(
                         label: "Target 2",
-                        value: "$\(formatPrice(t2))",
-                        color: .green
+                        value: formatPrice(t2),
+                        color: Color(.systemGreen).opacity(0.8)
                     )
                 }
-
                 if let t3 = plan.target3 {
-                    TradingLevelRow(
+                    LevelRow(
                         label: "Target 3",
-                        value: "$\(formatPrice(t3))",
-                        color: .green
+                        value: formatPrice(t3),
+                        color: Color(.systemGreen).opacity(0.6)
                     )
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 14)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
     }
 
     private func formatPrice(_ price: Double) -> String {
-        if price >= 1000 {
-            return String(format: "%.0f", price)
-        } else if price >= 100 {
-            return String(format: "%.1f", price)
-        } else {
-            return String(format: "%.2f", price)
-        }
+        String(format: "$%.2f", price)
     }
 }
 
-private struct TradingLevelRow: View {
+private struct LevelRow: View {
     let label: String
     let value: String
     let color: Color
 
     var body: some View {
         HStack {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(color)
-                    .frame(width: 8, height: 8)
+            // Color indicator
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
 
-                Text(label)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.primary)
-            }
+            Text(label)
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
 
             Spacer()
 
             Text(value)
-                .font(.system(size: 14, weight: .semibold, design: .monospaced))
-                .foregroundStyle(color)
+                .font(.system(size: 14, weight: .medium, design: .monospaced))
+                .foregroundStyle(.primary)
         }
+        .padding(.vertical, 4)
     }
 }
 
-// MARK: - Key Insights Section
+// MARK: - Generate Plan Button
 
-private struct KeyInsightsSection: View {
-    let reasons: [String]
+private struct GeneratePlanButton: View {
+    @ObservedObject var planViewModel: TradingPlanViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Key Insights")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-                .tracking(0.5)
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-
-            VStack(spacing: 0) {
-                ForEach(Array(reasons.enumerated()), id: \.offset) { index, reason in
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: iconForReason(reason))
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 20)
-
-                        Text(reason)
-                            .font(.system(size: 15, weight: .regular))
-                            .foregroundStyle(.primary)
-                            .lineSpacing(2)
-
-                        Spacer()
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-
-                    if index < reasons.count - 1 {
-                        Divider()
-                            .padding(.leading, 48)
-                    }
-                }
+        Button {
+            Task {
+                await planViewModel.generateNewPlanWithStreaming()
             }
-            .padding(.bottom, 4)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 13))
+                Text("Generate Trading Plan")
+                    .font(.system(size: 14, weight: .medium))
+            }
+            .foregroundStyle(Color(.systemBlue))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(.systemBlue).opacity(0.1))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color(.systemBlue).opacity(0.2), lineWidth: 1)
+            )
         }
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(.secondarySystemBackground))
-        )
-    }
-
-    private func iconForReason(_ reason: String) -> String {
-        let lowercased = reason.lowercased()
-        if lowercased.contains("rsi") { return "gauge" }
-        if lowercased.contains("ema") || lowercased.contains("moving") { return "chart.line.uptrend.xyaxis" }
-        if lowercased.contains("vwap") || lowercased.contains("volume") { return "chart.bar" }
-        if lowercased.contains("macd") { return "waveform.path.ecg" }
-        if lowercased.contains("support") { return "arrow.down.to.line" }
-        if lowercased.contains("resistance") { return "arrow.up.to.line" }
-        if lowercased.contains("bullish") || lowercased.contains("buy") { return "arrow.up.right" }
-        if lowercased.contains("bearish") || lowercased.contains("sell") { return "arrow.down.right" }
-        return "circle.fill"
+        .buttonStyle(.plain)
     }
 }
 
@@ -1202,49 +1069,6 @@ private struct KeyStatsRowSkeleton: View {
         .padding(.horizontal, 12)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(.secondarySystemBackground))
-        )
-    }
-}
-
-/// Skeleton for expert guidance card - shows loading spinner
-private struct ExpertGuidanceCardSkeleton: View {
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header skeleton
-            HStack(spacing: 12) {
-                // Score ring placeholder
-                Circle()
-                    .fill(Color(.systemGray5))
-                    .frame(width: 52, height: 52)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    SkeletonView(width: 100, height: 20)
-                    SkeletonView(width: 120, height: 13)
-                }
-
-                Spacer()
-            }
-            .padding(16)
-
-            Divider()
-                .padding(.horizontal, 16)
-
-            // Loading state for analysis
-            VStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .scaleEffect(0.9)
-                    Text("Analyzing stock...")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(24)
-        }
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color(.secondarySystemBackground))
         )
     }

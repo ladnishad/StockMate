@@ -17,12 +17,13 @@ struct StockDetail: Codable {
     let fiftyTwoWeekLow: Double?
     let avgVolume: Int?
 
-    // Analysis
-    let score: Double
-    let recommendation: String
-    let reasoning: String
-    let reasons: [String]
-    let tradePlan: TradePlanDetail?
+    // Analysis (deprecated - use TradingPlanViewModel for AI analysis)
+    // These fields now return default values from the backend
+    let score: Double  // Deprecated: always 0.0, use plan.confidence instead
+    let recommendation: String  // Deprecated: always "PENDING", use plan.bias instead
+    let reasoning: String  // Deprecated
+    let reasons: [String]  // Deprecated
+    let tradePlan: TradePlanDetail?  // Deprecated
 
     // Multi-timeframe chart data
     let bars1d: [PriceBar]
@@ -60,6 +61,8 @@ struct StockDetail: Codable {
         return "\(sign)\(String(format: "%.2f", changePct))%"
     }
 
+    /// Deprecated: This property always returns false since the backend
+    /// no longer performs rule-based analysis. Use TradingPlanViewModel.plan.bias instead.
     var isRecommendedBuy: Bool {
         recommendation.uppercased() == "BUY"
     }
@@ -153,11 +156,12 @@ struct StockDetail: Codable {
         fiftyTwoWeekHigh: 199.62,
         fiftyTwoWeekLow: 164.08,
         avgVolume: 52_000_000,
-        score: 78.5,
-        recommendation: "BUY",
-        reasoning: "Strong bullish momentum with volume confirmation",
-        reasons: ["Price above key EMAs", "MACD bullish crossover", "RSI healthy at 58"],
-        tradePlan: TradePlanDetail.sample,
+        // Deprecated analysis fields - now return default values
+        score: 0.0,
+        recommendation: "PENDING",
+        reasoning: "",
+        reasons: [],
+        tradePlan: nil,
         bars1d: PriceBar.samples,
         bars1h: [],
         bars15m: [],

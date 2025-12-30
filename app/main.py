@@ -1381,10 +1381,12 @@ async def search_tickers(query: str, limit: int = 10):
 
     Includes:
     - Current price and change
-    - Analysis score and recommendation
-    - Trade plan (if BUY recommendation)
     - Multi-timeframe bar data for charts (1D, 1H, 15M)
     - Support and resistance levels
+    - Technical indicators (EMA, VWAP)
+
+    Note: AI-powered analysis is provided separately via /chat/{symbol}/plan endpoint.
+    The score and recommendation fields are deprecated and return default values.
     """,
 )
 async def get_stock_detail(symbol: str):
@@ -1392,12 +1394,9 @@ async def get_stock_detail(symbol: str):
     try:
         symbol = symbol.upper()
 
-        # Run full analysis
-        analysis = run_analysis(
-            symbol=symbol,
-            account_size=10000.0,  # Default account size
-            use_ai=False,
-        )
+        # Note: Rule-based analysis (run_analysis) has been removed.
+        # AI-powered trading plans are now the sole source of analysis.
+        # Use /chat/{symbol}/plan endpoint for trading recommendations.
 
         # Fetch multi-timeframe bars
         bars_1d = []
@@ -1575,32 +1574,11 @@ async def get_stock_detail(symbol: str):
             except Exception as e:
                 logger.warning(f"Failed to calculate comprehensive levels for {symbol}: {e}")
 
-        # Build trade plan dict
+        # Note: Trade plan is now provided via /chat/{symbol}/plan endpoint
+        # The trade_plan field in this response is deprecated
         trade_plan = None
-        if analysis.trade_plan:
-            tp = analysis.trade_plan
-            trade_plan = {
-                "trade_type": tp.trade_type,
-                "entry_price": tp.entry_price,
-                "stop_loss": tp.stop_loss,
-                "target_1": tp.target_1,
-                "target_2": tp.target_2,
-                "target_3": tp.target_3,
-                "position_size": tp.position_size,
-                "risk_amount": tp.risk_amount,
-                "risk_percentage": tp.risk_percentage,
-            }
-            # Add trade plan levels to support/resistance if not already present
-            if tp.stop_loss and tp.stop_loss not in support_levels:
-                support_levels.append(round(tp.stop_loss, 2))
-            for target in [tp.target_1, tp.target_2, tp.target_3]:
-                if target and target not in resistance_levels:
-                    resistance_levels.append(round(target, 2))
 
-        # Parse reasons from analysis
-        reasons = analysis.reasoning.split(" | ") if analysis.reasoning else []
-
-        logger.info(f"Stock detail for {symbol}: {analysis.recommendation} ({analysis.confidence}%)")
+        logger.info(f"Stock detail for {symbol}: price=${current_price}")
 
         return StockDetailResponse(
             symbol=symbol,
@@ -1616,11 +1594,11 @@ async def get_stock_detail(symbol: str):
             fifty_two_week_high=fifty_two_week_high,
             fifty_two_week_low=fifty_two_week_low,
             avg_volume=avg_volume,
-            # Analysis data
-            score=analysis.confidence,
-            recommendation=analysis.recommendation,
-            reasoning=analysis.reasoning,
-            reasons=reasons[:5],  # Top 5 reasons
+            # Analysis data (deprecated - use /chat/{symbol}/plan for AI analysis)
+            score=0.0,  # Deprecated: AI analysis available via /chat/{symbol}/plan
+            recommendation="PENDING",  # Deprecated: AI analysis available via /chat/{symbol}/plan
+            reasoning="",  # Deprecated
+            reasons=[],  # Deprecated
             trade_plan=trade_plan,
             bars_1d=bars_1d,
             bars_1h=bars_1h,
