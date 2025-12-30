@@ -24,7 +24,6 @@ import logging
 from app.tools.market_data import fetch_price_bars, fetch_snapshots
 from app.tools.indicators import calculate_ema, calculate_rsi, analyze_volume
 from app.tools.analysis import run_analysis
-from app.services.scheduler import is_market_open, get_next_market_open, get_market_close_time
 
 logger = logging.getLogger(__name__)
 
@@ -575,7 +574,8 @@ def get_quick_market_status() -> Dict:
 
     logger.info(f"Quick market status: {market_direction} (avg: {avg_change:+.2f}%)")
 
-    # Build market status
+    # Build market status (lazy import to avoid circular dependency)
+    from app.services.scheduler import is_market_open, get_next_market_open, get_market_close_time
     market_is_open = is_market_open()
     if market_is_open:
         close_time = get_market_close_time()
