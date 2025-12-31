@@ -209,11 +209,11 @@ class TradePlanOrchestrator:
         """
         import os
 
-        # Check if we should use real API calls or simulation
-        use_real_api = os.getenv("USE_REAL_SUBAGENTS", "false").lower() == "true"
+        # Check if we should use simulation mode (for testing only)
+        use_simulation = os.getenv("USE_SIMULATED_SUBAGENTS", "false").lower() == "true"
 
-        if not use_real_api:
-            # Use simulation mode - demonstrates the expected flow
+        if use_simulation:
+            # Simulation mode - for testing/demo only
             logger.info(f"Running sub-agents in simulation mode for {symbol}")
             async for event in self._run_subagents_simulation(symbol, context):
                 yield event
