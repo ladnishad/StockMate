@@ -453,16 +453,141 @@ class TradePlanOrchestrator:
                 else:
                     position_context_str = ""
 
-                # Build thesis with position context
-                thesis = f"{trade_style.capitalize()} trade analysis for {symbol}. ATR: {atr_pct:.1f}%, EMA trend: {ema_trend}.{position_context_str}"
+                # ============================================================
+                # CALL CLAUDE FOR REAL ANALYSIS
+                # ============================================================
+                self.subagent_progress[agent_name].current_step = "AI generating analysis"
+
+                # Build context for Claude
+                analysis_context = f"""
+## Stock: {symbol}
+## Trade Style: {trade_style.upper()}
+## Current Price: ${current_price:.2f}
+
+## Technical Data:
+- ATR%: {atr_pct:.1f}%
+- RSI(14): {rsi:.1f}
+- EMA Trend: {ema_trend}
+- MACD: {indicators.get('macd', {}).get('histogram', 'N/A')}
+
+## Key Levels:
+- Support: {', '.join([f'${s:.2f}' for s in supports]) if supports else 'None identified'}
+- Resistance: {', '.join([f'${r:.2f}' for r in resistances]) if resistances else 'None identified'}
+
+## Vision Analysis:
+{vision_result.get('summary', 'No chart analysis available')}
+- Patterns: {', '.join(vision_result.get('visual_patterns', [])) or 'None'}
+- Trend Quality: {vision_result.get('trend_quality', 'unknown')}
+- Warning Signs: {', '.join(vision_result.get('warning_signs', [])) or 'None'}
+
+## Position Context:
+{position_context_str if position_context_str else 'No existing position.'}
+
+Based on this data, provide your {trade_style} trade analysis.
+"""
+
+                # Get the trade-style specific prompt
+                from app.agent.prompts import (
+                    build_day_trade_prompt,
+                    build_swing_trade_prompt,
+                    build_position_trade_prompt,
+                )
+
+                if trade_style == "day":
+                    system_prompt = build_day_trade_prompt(symbol, context.to_prompt_context())
+                elif trade_style == "swing":
+                    system_prompt = build_swing_trade_prompt(symbol, context.to_prompt_context())
+                else:
+                    system_prompt = build_position_trade_prompt(symbol, context.to_prompt_context())
+
+                # Call Claude for real analysis
+                plan_response = await client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=2000,
+                    system=system_prompt,
+                    messages=[{
+                        "role": "user",
+                        "content": f"""Analyze {symbol} for a {trade_style} trade setup.
+
+{analysis_context}
+
+Respond with a JSON object containing:
+{{
+    "suitable": true/false,
+    "confidence": 0-100,
+    "bias": "bullish" or "bearish" or "neutral",
+    "thesis": "Your detailed 2-3 sentence analysis of this setup...",
+    "entry_zone_low": price,
+    "entry_zone_high": price,
+    "entry_reasoning": "Why this entry zone...",
+    "stop_loss": price,
+    "stop_reasoning": "Why this stop level...",
+    "targets": [
+        {{"price": X, "reasoning": "Why this target..."}}
+    ],
+    "risk_reward": ratio,
+    "holding_period": "e.g., 3-5 days",
+    "invalidation_criteria": "What would invalidate this setup...",
+    "setup_explanation": "The technical pattern or setup type...",
+    "what_to_watch": ["Key thing 1", "Key thing 2"],
+    "risk_warnings": ["Warning 1 if any"]
+}}
+
+Return ONLY the JSON object, no other text."""
+                    }],
+                )
+
+                # Parse Claude's response
+                claude_text = plan_response.content[0].text.strip()
+                # Remove markdown code blocks if present
+                if claude_text.startswith("```"):
+                    claude_text = claude_text.split("```")[1]
+                    if claude_text.startswith("json"):
+                        claude_text = claude_text[4:]
+                    claude_text = claude_text.strip()
+
+                try:
+                    claude_plan = json.loads(claude_text)
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse Claude response for {agent_name}, using fallback")
+                    claude_plan = {}
+
+                # Use Claude's analysis or fall back to calculated values
+                thesis = claude_plan.get("thesis", f"{trade_style.capitalize()} trade analysis for {symbol}. ATR: {atr_pct:.1f}%, EMA trend: {ema_trend}.{position_context_str}")
+                final_suitable = claude_plan.get("suitable", suitable)
+                final_confidence = claude_plan.get("confidence", confidence)
+                final_bias = claude_plan.get("bias", bias)
+                final_entry_low = claude_plan.get("entry_zone_low", entry_low)
+                final_entry_high = claude_plan.get("entry_zone_high", entry_high)
+                final_stop = claude_plan.get("stop_loss", stop_loss)
+                final_holding = claude_plan.get("holding_period", holding_periods[trade_style])
+
+                # Parse targets from Claude
+                claude_targets = claude_plan.get("targets", [])
+                if claude_targets:
+                    targets = [
+                        PriceTargetWithReasoning(
+                            price=round(t.get("price", current_price * 1.05), 2),
+                            reasoning=t.get("reasoning", "Target level")
+                        )
+                        for t in claude_targets[:3]
+                    ]
+
+                # Merge what_to_watch and risk_warnings
+                claude_watch = claude_plan.get("what_to_watch", [])
+                claude_warnings = claude_plan.get("risk_warnings", [])
+                if claude_watch:
+                    what_to_watch = claude_watch
+                if claude_warnings:
+                    risk_warnings = list(set(risk_warnings + claude_warnings))
 
                 return SubAgentReport(
                     trade_style=trade_style,
                     symbol=symbol,
                     analysis_timestamp=datetime.utcnow().isoformat(),
-                    suitable=suitable,
-                    confidence=confidence,
-                    bias=bias,
+                    suitable=final_suitable,
+                    confidence=final_confidence,
+                    bias=final_bias,
                     thesis=thesis,
                     vision_analysis=VisionAnalysisResult(
                         trend_quality=vision_result.get("trend_quality", "moderate"),
@@ -474,21 +599,21 @@ class TradePlanOrchestrator:
                         confidence_modifier=vision_modifier,
                         summary=vision_result.get("summary", ""),
                     ),
-                    entry_zone_low=round(entry_low, 2),
-                    entry_zone_high=round(entry_high, 2),
-                    entry_reasoning=f"Near support at ${entry_low:.2f}",
-                    stop_loss=round(stop_loss, 2),
-                    stop_reasoning="Below recent support",
+                    entry_zone_low=round(final_entry_low, 2),
+                    entry_zone_high=round(final_entry_high, 2),
+                    entry_reasoning=claude_plan.get("entry_reasoning", f"Near support at ${final_entry_low:.2f}"),
+                    stop_loss=round(final_stop, 2),
+                    stop_reasoning=claude_plan.get("stop_reasoning", "Below recent support"),
                     targets=targets,
-                    risk_reward=2.0,
+                    risk_reward=claude_plan.get("risk_reward", 2.0),
                     position_size_pct=2.0,
-                    holding_period=holding_periods[trade_style],
+                    holding_period=final_holding,
                     key_supports=supports,
                     key_resistances=resistances,
-                    invalidation_criteria=f"Close below ${stop_loss:.2f}",
+                    invalidation_criteria=claude_plan.get("invalidation_criteria", f"Close below ${final_stop:.2f}"),
                     position_aligned=position_aligned,
                     position_recommendation=position_recommendation,
-                    setup_explanation=f"This {trade_style} setup is based on {ema_trend} EMA alignment.",
+                    setup_explanation=claude_plan.get("setup_explanation", f"This {trade_style} setup is based on {ema_trend} EMA alignment."),
                     what_to_watch=what_to_watch,
                     risk_warnings=risk_warnings,
                     atr_percent=atr_pct,
