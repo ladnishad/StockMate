@@ -515,7 +515,8 @@ actor APIService {
         let userId = keychain.userId ?? "default"
         return AsyncThrowingStream { continuation in
             Task {
-                var components = URLComponents(string: "https://stockmate-fggr.onrender.com/chat/\(symbol.uppercased())/plan/stream")!
+                // V2 endpoint with parallel sub-agents
+                var components = URLComponents(string: "https://stockmate-fggr.onrender.com/plan/\(symbol.uppercased())/generate/v2")!
                 components.queryItems = [
                     URLQueryItem(name: "user_id", value: userId),
                     URLQueryItem(name: "force_new", value: String(forceNew))
