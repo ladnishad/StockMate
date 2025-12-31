@@ -853,6 +853,7 @@ private struct AgentGeneratingView: View {
                 if viewModel.isV2Mode && !viewModel.subagentProgress.isEmpty {
                     // V2: Parallel sub-agent view
                     V2SubAgentsView(
+                        orchestratorSteps: viewModel.orchestratorSteps,
                         subagents: viewModel.sortedSubagents,
                         expandedAgents: viewModel.expandedSubagents,
                         onToggle: { viewModel.toggleSubagentExpansion($0) },
@@ -911,6 +912,7 @@ private struct AgentGeneratingView: View {
 // MARK: - V2 Sub-Agents View
 
 private struct V2SubAgentsView: View {
+    let orchestratorSteps: [OrchestratorStep]
     let subagents: [SubAgentProgress]
     let expandedAgents: Set<String>
     let onToggle: (String) -> Void
@@ -918,7 +920,17 @@ private struct V2SubAgentsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Progress header
+            // Orchestrator steps (shown first)
+            if !orchestratorSteps.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(orchestratorSteps) { step in
+                        OrchestratorStepRow(step: step, pulseAnimation: pulseAnimation)
+                    }
+                }
+                .padding(.bottom, 8)
+            }
+
+            // Progress header for sub-agents
             HStack(spacing: 10) {
                 Image(systemName: "arrow.triangle.branch")
                     .font(.system(size: 12, weight: .medium))
@@ -947,6 +959,77 @@ private struct V2SubAgentsView: View {
                 )
             }
         }
+    }
+}
+
+// MARK: - Orchestrator Step Row
+
+private struct OrchestratorStepRow: View {
+    let step: OrchestratorStep
+    let pulseAnimation: Bool
+
+    private var statusColor: Color {
+        step.status == .completed ? Color(hex: "10B981") : Color(hex: "3B82F6")
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            // Status indicator
+            ZStack {
+                Circle()
+                    .fill(statusColor.opacity(0.15))
+                    .frame(width: 28, height: 28)
+
+                if step.status == .active {
+                    Circle()
+                        .fill(statusColor.opacity(0.2))
+                        .frame(width: 28, height: 28)
+                        .scaleEffect(pulseAnimation ? 1.3 : 1.0)
+                        .opacity(pulseAnimation ? 0 : 0.5)
+
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: statusColor))
+                        .scaleEffect(0.5)
+                } else {
+                    Image(systemName: step.status == .completed ? "checkmark" : step.icon)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(statusColor)
+                }
+            }
+
+            // Step info
+            VStack(alignment: .leading, spacing: 2) {
+                Text(step.displayName)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.primary)
+
+                if !step.findings.isEmpty {
+                    Text(step.findings.joined(separator: " • "))
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            // Status badge
+            Text(step.status == .completed ? "DONE" : "ACTIVE")
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundColor(statusColor)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(
+                    Capsule()
+                        .fill(statusColor.opacity(0.12))
+                )
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(.secondarySystemBackground).opacity(0.5))
+        )
     }
 }
 
@@ -1321,6 +1404,7 @@ private struct ManagerGeneratingView: View {
             // Sub-agent progress
             ScrollView {
                 V2SubAgentsView(
+                    orchestratorSteps: manager.orchestratorSteps,
                     subagents: manager.sortedSubagents,
                     expandedAgents: manager.expandedSubagents,
                     onToggle: { manager.toggleSubagentExpansion($0) },

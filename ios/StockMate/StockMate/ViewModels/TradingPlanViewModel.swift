@@ -32,6 +32,7 @@ final class TradingPlanViewModel: ObservableObject {
     @Published var subagentProgress: [String: SubAgentProgress] = [:]
     @Published var expandedSubagents: Set<String> = []
     @Published var isV2Mode: Bool = false  // True when using parallel sub-agents
+    @Published var orchestratorSteps: [OrchestratorStep] = []  // Orchestrator-level steps
 
     // For live update animation
     @Published private(set) var updatePhase: UpdatePhase = .idle
@@ -589,6 +590,16 @@ final class TradingPlanViewModel: ObservableObject {
                         await handleSubagentComplete(agentName, findings: event.agentFindings ?? [])
                     }
 
+                // V2: Orchestrator-level step events
+                case "orchestrator_step":
+                    if let stepType = event.stepType {
+                        await handleOrchestratorStep(
+                            stepType: stepType,
+                            status: event.stepStatus,
+                            findings: event.stepFindings ?? []
+                        )
+                    }
+
                 case "plan_complete", "plan", "final_result":
                     print("[PlanSession] Received plan event")
                     if let newPlan = event.plan {
@@ -1033,6 +1044,26 @@ final class TradingPlanViewModel: ObservableObject {
         }
     }
 
+    /// Handle orchestrator-level step event
+    private func handleOrchestratorStep(stepType: String, status: String?, findings: [String]) async {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            // Find existing step or create new one
+            if let existingIndex = orchestratorSteps.firstIndex(where: { $0.stepType == stepType }) {
+                // Update existing step
+                orchestratorSteps[existingIndex].status = status == "completed" ? .completed : .active
+                orchestratorSteps[existingIndex].findings = findings
+            } else {
+                // Add new step
+                let step = OrchestratorStep(
+                    stepType: stepType,
+                    status: status == "completed" ? .completed : .active,
+                    findings: findings
+                )
+                orchestratorSteps.append(step)
+            }
+        }
+    }
+
     /// Mark all sub-agents as complete (called when final plan arrives)
     private func markAllSubagentsComplete() {
         for agentName in subagentProgress.keys {
@@ -1057,6 +1088,7 @@ final class TradingPlanViewModel: ObservableObject {
         withAnimation {
             self.isV2Mode = true
             self.subagentProgress = [:]
+            self.orchestratorSteps = []  // Clear orchestrator steps for fresh start
 
             for agentName in agents {
                 self.subagentProgress[agentName] = SubAgentProgress(

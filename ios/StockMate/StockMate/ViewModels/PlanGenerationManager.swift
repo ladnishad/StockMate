@@ -21,6 +21,9 @@ final class PlanGenerationManager: ObservableObject {
     @Published private(set) var generatedPlan: TradingPlanResponse?
     @Published private(set) var error: String?
 
+    /// Orchestrator-level progress (shown before sub-agents)
+    @Published private(set) var orchestratorSteps: [OrchestratorStep] = []
+
     /// For reconnecting views
     @Published private(set) var lastUpdated: Date?
 
@@ -52,6 +55,7 @@ final class PlanGenerationManager: ObservableObject {
         error = nil
         generatedPlan = nil
         subagentProgress = [:]
+        orchestratorSteps = []
 
         // Initialize sub-agents with pending state
         initializeSubagents()
@@ -71,6 +75,7 @@ final class PlanGenerationManager: ObservableObject {
         activeSymbol = nil
         generatedPlan = nil
         subagentProgress = [:]
+        orchestratorSteps = []
         error = nil
     }
 
@@ -80,6 +85,7 @@ final class PlanGenerationManager: ObservableObject {
         activeSymbol = nil
         generatedPlan = nil
         subagentProgress = [:]
+        orchestratorSteps = []
         error = nil
     }
 
@@ -219,22 +225,23 @@ final class PlanGenerationManager: ObservableObject {
     }
 
     private func handleOrchestratorStep(stepType: String?, status: String?, findings: [String]) {
-        // Log orchestrator progress for debugging
-        print("[PlanGenerationManager] Orchestrator step: \(stepType ?? "unknown") - \(status ?? "unknown")")
+        guard let stepType = stepType else { return }
 
-        // Update UI based on orchestrator step
-        if stepType == "gathering_common_data" && status == "completed" {
-            // Common data gathered, subagents will start soon
-            print("[PlanGenerationManager] Common data gathered: \(findings)")
-        } else if stepType == "spawning_subagents" {
-            // Subagents are being spawned - UI will update via subagent_progress events
-            print("[PlanGenerationManager] Spawning subagents...")
-        } else if stepType == "selecting_best" {
-            // All subagents done, selecting best plan
-            print("[PlanGenerationManager] Selecting best plan...")
-        } else if stepType == "complete" {
-            // Orchestration complete
-            print("[PlanGenerationManager] Orchestration complete")
+        withAnimation(.easeInOut(duration: 0.15)) {
+            // Find existing step or create new one
+            if let existingIndex = orchestratorSteps.firstIndex(where: { $0.stepType == stepType }) {
+                // Update existing step
+                orchestratorSteps[existingIndex].status = status == "completed" ? .completed : .active
+                orchestratorSteps[existingIndex].findings = findings
+            } else {
+                // Add new step
+                let step = OrchestratorStep(
+                    stepType: stepType,
+                    status: status == "completed" ? .completed : .active,
+                    findings: findings
+                )
+                orchestratorSteps.append(step)
+            }
         }
     }
 
@@ -274,6 +281,41 @@ final class PlanGenerationManager: ObservableObject {
                     subagentProgress[agentName] = progress
                 }
             }
+        }
+    }
+}
+
+// MARK: - Orchestrator Step Model
+
+/// Represents a single orchestrator-level step in the plan generation flow
+struct OrchestratorStep: Identifiable, Equatable {
+    let id = UUID()
+    let stepType: String
+    var status: Status
+    var findings: [String]
+
+    enum Status: Equatable {
+        case active
+        case completed
+    }
+
+    var displayName: String {
+        switch stepType {
+        case "gathering_common_data": return "Gathering Market Data"
+        case "spawning_subagents": return "Starting Analyzers"
+        case "selecting_best": return "Selecting Best Plan"
+        case "complete": return "Complete"
+        default: return stepType.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    var icon: String {
+        switch stepType {
+        case "gathering_common_data": return "antenna.radiowaves.left.and.right"
+        case "spawning_subagents": return "arrow.triangle.branch"
+        case "selecting_best": return "star.fill"
+        case "complete": return "checkmark.seal.fill"
+        default: return "gearshape"
         }
     }
 }
