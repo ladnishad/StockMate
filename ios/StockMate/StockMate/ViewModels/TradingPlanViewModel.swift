@@ -912,10 +912,11 @@ final class TradingPlanViewModel: ObservableObject {
     /// Accept the current plan - for SimplifiedPlanView
     func acceptPlan() async {
         // If we have a session with a draft, approve it
-        if let sessionId = sessionId, draftPlan != nil {
+        if sessionId != nil, draftPlan != nil {
             await approveDraftPlan()
-        } else if let currentPlan = plan {
-            // No session - just mark the plan as accepted (no backend call needed)
+            // Evaluation will happen later via periodic checks (30 min) or key-level triggers
+        } else if plan != nil {
+            // No session - just mark the plan as accepted
             withAnimation {
                 self.hasActivePosition = true
                 self.lastUpdated = Date()

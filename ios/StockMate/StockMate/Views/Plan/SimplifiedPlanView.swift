@@ -5,6 +5,7 @@ import SwiftUI
 struct SimplifiedPlanView: View {
     @StateObject private var viewModel: TradingPlanViewModel
     @State private var feedbackText: String = ""
+    @State private var showSavedConfirmation: Bool = false
     @FocusState private var isInputFocused: Bool
 
     let symbol: String
@@ -22,6 +23,11 @@ struct SimplifiedPlanView: View {
     /// Whether we're in draft mode (session with unapproved plan)
     private var isDraftMode: Bool {
         viewModel.draftPlan != nil && viewModel.plan == nil
+    }
+
+    /// Plan is saved when we have an approved plan (not draft)
+    private var isPlanSaved: Bool {
+        viewModel.plan != nil && viewModel.draftPlan == nil
     }
 
     var body: some View {
@@ -98,36 +104,69 @@ struct SimplifiedPlanView: View {
                         )
                     }
 
-                    // Evaluation Notes
-                    if let notes = plan.evaluationNotes, !notes.isEmpty {
-                        EvaluationNotesSectionView(notes: notes, status: plan.status)
-                    }
+                    // Evaluation Status Section (enhanced)
+                    EvaluationStatusSectionView(
+                        viewModel: viewModel,
+                        plan: plan
+                    )
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
                 .padding(.bottom, 140)
             }
 
-            // Bottom Action Bar
-            PlanActionBar(
-                feedbackText: $feedbackText,
-                isInputFocused: $isInputFocused,
-                isProcessing: viewModel.isUpdating || viewModel.isProcessingFeedback,
-                isDraftMode: isDraftMode,
-                onSubmit: {
-                    guard !feedbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                    Task {
-                        await viewModel.submitFeedback(feedbackText)
-                        feedbackText = ""
+            // Bottom Action Bar - conditional based on saved state
+            if isDraftMode {
+                // Draft mode: show Accept Plan button
+                PlanActionBar(
+                    feedbackText: $feedbackText,
+                    isInputFocused: $isInputFocused,
+                    isProcessing: viewModel.isUpdating || viewModel.isProcessingFeedback,
+                    isDraftMode: isDraftMode,
+                    onSubmit: {
+                        guard !feedbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                        Task {
+                            await viewModel.submitFeedback(feedbackText)
+                            feedbackText = ""
+                        }
+                    },
+                    onAccept: {
+                        Task {
+                            await viewModel.acceptPlan()
+                            // Show saved confirmation
+                            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                                showSavedConfirmation = true
+                            }
+                            // Auto-dismiss after 2.5 seconds
+                            try? await Task.sleep(nanoseconds: 2_500_000_000)
+                            withAnimation(.easeOut(duration: 0.3)) {
+                                showSavedConfirmation = false
+                            }
+                        }
+                    },
+                    onStartOver: {
+                        Task { await viewModel.startOver() }
                     }
-                },
-                onAccept: {
-                    Task { await viewModel.acceptPlan() }
-                },
-                onStartOver: {
-                    Task { await viewModel.startOver() }
-                }
-            )
+                )
+            } else {
+                // Saved mode: show saved confirmation and regenerate button
+                SavedPlanBar(
+                    feedbackText: $feedbackText,
+                    isInputFocused: $isInputFocused,
+                    isProcessing: viewModel.isUpdating || viewModel.isProcessingFeedback,
+                    showSavedConfirmation: $showSavedConfirmation,
+                    onSubmit: {
+                        guard !feedbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                        Task {
+                            await viewModel.submitFeedback(feedbackText)
+                            feedbackText = ""
+                        }
+                    },
+                    onRegenerate: {
+                        Task { await viewModel.startOver() }
+                    }
+                )
+            }
         }
     }
 }
@@ -551,6 +590,171 @@ private struct PlanActionBar: View {
             .padding(.bottom, 8)
         }
         .background(Color(.systemBackground))
+    }
+}
+
+// MARK: - Saved Plan Bar (for approved plans)
+
+private struct SavedPlanBar: View {
+    @Binding var feedbackText: String
+    var isInputFocused: FocusState<Bool>.Binding
+    let isProcessing: Bool
+    @Binding var showSavedConfirmation: Bool
+    let onSubmit: () -> Void
+    let onRegenerate: () -> Void
+
+    private var showSendButton: Bool {
+        !feedbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Success confirmation banner
+            if showSavedConfirmation {
+                SavedConfirmationBanner(onDismiss: {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        showSavedConfirmation = false
+                    }
+                })
+                .transition(.asymmetric(
+                    insertion: .move(edge: .top).combined(with: .opacity),
+                    removal: .opacity
+                ))
+            }
+
+            VStack(spacing: 12) {
+                // Divider
+                Divider()
+
+                // Text input row
+                HStack(spacing: 10) {
+                    TextField("Ask something or suggest changes...", text: $feedbackText, axis: .vertical)
+                        .font(.system(size: 15))
+                        .foregroundColor(.primary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color(.secondarySystemBackground))
+                        )
+                        .focused(isInputFocused)
+                        .lineLimit(1...3)
+                        .disabled(isProcessing)
+                        .submitLabel(.send)
+                        .onSubmit {
+                            onSubmit()
+                        }
+
+                    // Send button
+                    Button(action: onSubmit) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 30))
+                            .foregroundColor(Color(hex: "10B981"))
+                    }
+                    .disabled(isProcessing || !showSendButton)
+                    .opacity(showSendButton ? 1 : 0)
+                    .scaleEffect(showSendButton ? 1 : 0.5)
+                    .animation(.easeInOut(duration: 0.15), value: showSendButton)
+                }
+                .padding(.horizontal, 16)
+
+                // Regenerate button only (no Accept/Done since plan is saved)
+                Button(action: onRegenerate) {
+                    HStack(spacing: 8) {
+                        if isProcessing {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .secondary))
+                                .scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        Text("Regenerate Plan")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color(.secondarySystemBackground))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
+                    )
+                }
+                .disabled(isProcessing)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
+        }
+        .background(Color(.systemBackground))
+    }
+}
+
+// MARK: - Saved Confirmation Banner
+
+private struct SavedConfirmationBanner: View {
+    let onDismiss: () -> Void
+
+    @State private var checkmarkScale: CGFloat = 0
+    @State private var contentOpacity: Double = 0
+
+    var body: some View {
+        HStack(spacing: 12) {
+            // Animated checkmark
+            ZStack {
+                Circle()
+                    .fill(Color(hex: "10B981").opacity(0.15))
+                    .frame(width: 32, height: 32)
+
+                Image(systemName: "checkmark")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(Color(hex: "10B981"))
+                    .scaleEffect(checkmarkScale)
+            }
+
+            Text("Plan saved")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(.primary)
+
+            Spacer()
+
+            // Dismiss button
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(Color(.tertiaryLabel))
+                    .padding(6)
+                    .background(
+                        Circle()
+                            .fill(Color(.tertiarySystemFill))
+                    )
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(hex: "10B981").opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color(hex: "10B981").opacity(0.2), lineWidth: 1)
+                )
+        )
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .opacity(contentOpacity)
+        .onAppear {
+            // Staggered animation for polish
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
+                contentOpacity = 1
+            }
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.5).delay(0.1)) {
+                checkmarkScale = 1
+            }
+        }
     }
 }
 
@@ -1112,7 +1316,281 @@ private struct MarketSentimentSectionView: View {
     }
 }
 
-// MARK: - Evaluation Notes Section (Refined)
+// MARK: - Evaluation Status Section (Enhanced)
+
+private struct EvaluationStatusSectionView: View {
+    @ObservedObject var viewModel: TradingPlanViewModel
+    let plan: TradingPlanResponse
+
+    @State private var isExpanded = true
+
+    private var isEvaluating: Bool {
+        viewModel.updatePhase == .analyzing
+    }
+
+    private var hasAdjustments: Bool {
+        viewModel.hasRecentAdjustments
+    }
+
+    private var statusColor: Color {
+        if isEvaluating {
+            return .blue
+        }
+        switch plan.status.lowercased() {
+        case "active": return Color(hex: "10B981")
+        case "invalidated": return .orange
+        default: return .secondary
+        }
+    }
+
+    private var statusText: String {
+        if isEvaluating {
+            return "Evaluating..."
+        }
+        if hasAdjustments {
+            return "Adjusted"
+        }
+        return plan.status.lowercased() == "active" ? "Valid" : "Invalidated"
+    }
+
+    private var hasContent: Bool {
+        isEvaluating || hasAdjustments || (plan.evaluationNotes != nil && !plan.evaluationNotes!.isEmpty)
+    }
+
+    var body: some View {
+        if hasContent || viewModel.hasActivePosition {
+            VStack(alignment: .leading, spacing: 0) {
+                // Header
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        // Status indicator
+                        if isEvaluating {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .blue))
+                                .scaleEffect(0.7)
+                                .frame(width: 14, height: 14)
+                        } else {
+                            Circle()
+                                .fill(statusColor)
+                                .frame(width: 6, height: 6)
+                        }
+
+                        Text("PLAN STATUS")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .tracking(0.8)
+
+                        Spacer()
+
+                        // Status badge
+                        HStack(spacing: 4) {
+                            if hasAdjustments {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                                    .font(.system(size: 9, weight: .semibold))
+                            }
+                            Text(statusText)
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundColor(statusColor)
+
+                        if !isEvaluating {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(Color(.tertiaryLabel))
+                                .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                        }
+                    }
+                    .padding(16)
+                }
+                .buttonStyle(.plain)
+                .disabled(isEvaluating)
+
+                // Expanded content
+                if isExpanded && !isEvaluating {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Divider()
+                            .padding(.horizontal, 16)
+
+                        // Adjustments section (if any)
+                        if let evaluation = viewModel.lastEvaluation, !evaluation.adjustmentsMade.isEmpty {
+                            AdjustmentsView(
+                                adjustments: evaluation.adjustmentsMade,
+                                previousValues: evaluation.previousValues
+                            )
+                            .padding(.horizontal, 16)
+                        }
+
+                        // Evaluation notes
+                        if let notes = plan.evaluationNotes, !notes.isEmpty {
+                            MarkdownText(notes, size: 14, opacity: 0.85)
+                                .lineSpacing(4)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 16)
+                        }
+
+                        // Last evaluated time
+                        if let lastEval = plan.lastEvaluation {
+                            HStack {
+                                Text("Last evaluated")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Color(.tertiaryLabel))
+                                Spacer()
+                                Text(formatRelativeTime(lastEval))
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 16)
+                        }
+
+                        // Refresh button
+                        Button {
+                            Task { await viewModel.evaluatePlan() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 12, weight: .medium))
+                                Text("Refresh Evaluation")
+                                    .font(.system(size: 13, weight: .medium))
+                            }
+                            .foregroundColor(Color(hex: "10B981"))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color(hex: "10B981").opacity(0.1))
+                            )
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 16)
+                        .disabled(viewModel.isUpdating)
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color(.secondarySystemBackground))
+            )
+        }
+    }
+
+    private func formatRelativeTime(_ dateString: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        guard let date = formatter.date(from: dateString) ?? ISO8601DateFormatter().date(from: dateString) else {
+            return dateString
+        }
+
+        let interval = Date().timeIntervalSince(date)
+
+        if interval < 60 {
+            return "just now"
+        } else if interval < 3600 {
+            let minutes = Int(interval / 60)
+            return "\(minutes)m ago"
+        } else if interval < 86400 {
+            let hours = Int(interval / 3600)
+            return "\(hours)h ago"
+        } else {
+            let days = Int(interval / 86400)
+            return "\(days)d ago"
+        }
+    }
+}
+
+// MARK: - Adjustments View
+
+private struct AdjustmentsView: View {
+    let adjustments: [String]
+    let previousValues: [String: Double]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.orange)
+
+                Text("Adjustments Made")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.primary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(adjustments, id: \.self) { field in
+                    AdjustmentRow(field: field, previousValue: previousValues[field])
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.orange.opacity(0.08))
+        )
+    }
+}
+
+private struct AdjustmentRow: View {
+    let field: String
+    let previousValue: Double?
+
+    private var fieldLabel: String {
+        switch field {
+        case "stop_loss": return "Stop Loss"
+        case "entry_zone_low": return "Entry Low"
+        case "entry_zone_high": return "Entry High"
+        case "target_1": return "Target 1"
+        case "target_2": return "Target 2"
+        case "target_3": return "Target 3"
+        default: return field.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("•")
+                .font(.system(size: 12))
+                .foregroundColor(.orange)
+
+            Text(fieldLabel)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.primary)
+
+            if let prev = previousValue {
+                Text(formatPrice(prev))
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(Color(.tertiaryLabel))
+                    .strikethrough()
+
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 10))
+                    .foregroundColor(Color(.tertiaryLabel))
+
+                Text("updated")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.orange)
+            }
+        }
+    }
+
+    private func formatPrice(_ price: Double) -> String {
+        if price >= 1000 {
+            return String(format: "$%.0f", price)
+        } else if price >= 100 {
+            return String(format: "$%.1f", price)
+        } else {
+            return String(format: "$%.2f", price)
+        }
+    }
+}
+
+// MARK: - Legacy Evaluation Notes Section
 
 private struct EvaluationNotesSectionView: View {
     let notes: String

@@ -64,6 +64,7 @@ struct AgentStreamingView: View {
     @State private var typingStates: [UUID: String] = [:]
     @State private var pulseAnimation = false
     @State private var typewriterTimers: [UUID: Timer] = [:]  // Track timers for cleanup
+    @State private var expandedSteps: Set<UUID> = []  // Track expanded accordion steps
 
     private let accentCyan = Color(red: 0.0, green: 0.87, blue: 0.87)
     private let accentGreen = Color(red: 0.0, green: 0.85, blue: 0.45)
@@ -86,6 +87,9 @@ struct AgentStreamingView: View {
                             stepNumber: index + 1,
                             visibleFindings: visibleFindings[step.id] ?? [],
                             typingText: typingStates[step.id] ?? "",
+                            isExpanded: isStepExpanded(step),
+                            canToggle: step.status == .completed && !step.findings.isEmpty,
+                            onToggle: { toggleStepExpansion(step.id) },
                             accentCyan: accentCyan,
                             accentGreen: accentGreen,
                             pulseAnimation: pulseAnimation
@@ -178,6 +182,34 @@ struct AgentStreamingView: View {
         // Track timer for cleanup
         typewriterTimers[stepId] = timer
     }
+
+    // MARK: - Accordion Helpers
+
+    /// Determines if a step should show its findings expanded
+    /// - Active steps are always expanded (streaming)
+    /// - Completed steps are collapsed by default, but can be manually expanded
+    /// - Pending steps are always collapsed
+    private func isStepExpanded(_ step: AnalysisStep) -> Bool {
+        switch step.status {
+        case .active:
+            return true  // Always show findings for active step
+        case .completed:
+            return expandedSteps.contains(step.id)  // User-controlled
+        case .pending:
+            return false  // Never expanded
+        }
+    }
+
+    /// Toggle expansion state for a completed step
+    private func toggleStepExpansion(_ stepId: UUID) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            if expandedSteps.contains(stepId) {
+                expandedSteps.remove(stepId)
+            } else {
+                expandedSteps.insert(stepId)
+            }
+        }
+    }
 }
 
 // MARK: - Terminal Header
@@ -256,15 +288,23 @@ private struct AnalysisStepRow: View {
     let stepNumber: Int
     let visibleFindings: [String]
     let typingText: String
+    let isExpanded: Bool
+    let canToggle: Bool
+    let onToggle: () -> Void
     let accentCyan: Color
     let accentGreen: Color
     let pulseAnimation: Bool
 
     private let cardBg = Color(red: 0.09, green: 0.10, blue: 0.12)
 
+    /// Whether to show findings section (expanded or has active typing)
+    private var showFindings: Bool {
+        (isExpanded && !visibleFindings.isEmpty) || !typingText.isEmpty
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Step header
+            // Step header (tappable for completed steps)
             HStack(spacing: 12) {
                 // Status indicator
                 ZStack {
@@ -304,15 +344,29 @@ private struct AnalysisStepRow: View {
                             .foregroundStyle(step.status == .pending ? .white.opacity(0.4) : .white)
                     }
 
-                    if let timestamp = step.timestamp, step.status == .completed {
-                        Text(formatDuration(from: timestamp))
-                            .font(.system(size: 10, weight: .regular, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.3))
+                    // Show findings count when collapsed
+                    if step.status == .completed {
+                        HStack(spacing: 6) {
+                            if let timestamp = step.timestamp {
+                                Text(formatDuration(from: timestamp))
+                                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.3))
+                            }
+
+                            if !visibleFindings.isEmpty && !isExpanded {
+                                Text("•")
+                                    .foregroundStyle(.white.opacity(0.2))
+                                Text("\(visibleFindings.count) finding\(visibleFindings.count == 1 ? "" : "s")")
+                                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(accentCyan.opacity(0.6))
+                            }
+                        }
                     }
                 }
 
                 Spacer()
 
+                // Status badge or chevron
                 if step.status == .active {
                     Text("RUNNING")
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -321,12 +375,25 @@ private struct AnalysisStepRow: View {
                         .padding(.vertical, 4)
                         .background(accentCyan.opacity(0.15))
                         .clipShape(Capsule())
+                } else if canToggle {
+                    // Chevron for expandable completed steps
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.4))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isExpanded)
                 }
             }
             .padding(16)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if canToggle {
+                    onToggle()
+                }
+            }
 
-            // Findings section
-            if !visibleFindings.isEmpty || !typingText.isEmpty {
+            // Findings section (animated)
+            if showFindings {
                 VStack(alignment: .leading, spacing: 8) {
                     // Completed findings
                     ForEach(visibleFindings, id: \.self) { finding in
@@ -341,6 +408,10 @@ private struct AnalysisStepRow: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 16)
                 .padding(.leading, 44) // Align with text
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .move(edge: .top)),
+                    removal: .opacity
+                ))
             }
 
             // Connector line
@@ -366,6 +437,7 @@ private struct AnalysisStepRow: View {
                 )
         )
         .animation(.easeOut(duration: 0.3), value: step.status)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isExpanded)
     }
 
     private var statusColor: Color {
