@@ -553,25 +553,32 @@ Return ONLY the JSON object, no other text."""
                     claude_plan = {}
 
                 # Use Claude's analysis or fall back to calculated values
-                thesis = claude_plan.get("thesis", f"{trade_style.capitalize()} trade analysis for {symbol}. ATR: {atr_pct:.1f}%, EMA trend: {ema_trend}.{position_context_str}")
-                final_suitable = claude_plan.get("suitable", suitable)
-                final_confidence = claude_plan.get("confidence", confidence)
-                final_bias = claude_plan.get("bias", bias)
-                final_entry_low = claude_plan.get("entry_zone_low", entry_low)
-                final_entry_high = claude_plan.get("entry_zone_high", entry_high)
-                final_stop = claude_plan.get("stop_loss", stop_loss)
-                final_holding = claude_plan.get("holding_period", holding_periods[trade_style])
+                # Note: Use `or` to handle both missing keys AND null values
+                thesis = claude_plan.get("thesis") or f"{trade_style.capitalize()} trade analysis for {symbol}. ATR: {atr_pct:.1f}%, EMA trend: {ema_trend}.{position_context_str}"
+                final_suitable = claude_plan.get("suitable") if claude_plan.get("suitable") is not None else suitable
+                final_confidence = claude_plan.get("confidence") or confidence
+                final_bias = claude_plan.get("bias") or bias
+                final_entry_low = claude_plan.get("entry_zone_low") or entry_low
+                final_entry_high = claude_plan.get("entry_zone_high") or entry_high
+                final_stop = claude_plan.get("stop_loss") or stop_loss
+                final_holding = claude_plan.get("holding_period") or holding_periods[trade_style]
 
                 # Parse targets from Claude
-                claude_targets = claude_plan.get("targets", [])
-                if claude_targets:
-                    targets = [
-                        PriceTargetWithReasoning(
-                            price=round(t.get("price", current_price * 1.05), 2),
-                            reasoning=t.get("reasoning", "Target level")
-                        )
-                        for t in claude_targets[:3]
-                    ]
+                claude_targets = claude_plan.get("targets") or []
+                if claude_targets and isinstance(claude_targets, list):
+                    parsed_targets = []
+                    for t in claude_targets[:3]:
+                        if isinstance(t, dict):
+                            target_price = t.get("price")
+                            if target_price is not None:
+                                parsed_targets.append(
+                                    PriceTargetWithReasoning(
+                                        price=round(float(target_price), 2),
+                                        reasoning=t.get("reasoning") or "Target level"
+                                    )
+                                )
+                    if parsed_targets:
+                        targets = parsed_targets
 
                 # Merge what_to_watch and risk_warnings
                 claude_watch = claude_plan.get("what_to_watch", [])
@@ -599,23 +606,23 @@ Return ONLY the JSON object, no other text."""
                         confidence_modifier=vision_modifier,
                         summary=vision_result.get("summary", ""),
                     ),
-                    entry_zone_low=round(final_entry_low, 2),
-                    entry_zone_high=round(final_entry_high, 2),
-                    entry_reasoning=claude_plan.get("entry_reasoning", f"Near support at ${final_entry_low:.2f}"),
-                    stop_loss=round(final_stop, 2),
-                    stop_reasoning=claude_plan.get("stop_reasoning", "Below recent support"),
+                    entry_zone_low=round(float(final_entry_low), 2) if final_entry_low else round(current_price * 0.98, 2),
+                    entry_zone_high=round(float(final_entry_high), 2) if final_entry_high else round(current_price * 0.995, 2),
+                    entry_reasoning=claude_plan.get("entry_reasoning") or f"Near support at ${final_entry_low:.2f}" if final_entry_low else "Near current price",
+                    stop_loss=round(float(final_stop), 2) if final_stop else round(current_price * 0.95, 2),
+                    stop_reasoning=claude_plan.get("stop_reasoning") or "Below recent support",
                     targets=targets,
-                    risk_reward=claude_plan.get("risk_reward", 2.0),
+                    risk_reward=float(claude_plan.get("risk_reward") or 2.0),
                     position_size_pct=2.0,
                     holding_period=final_holding,
-                    key_supports=supports,
-                    key_resistances=resistances,
-                    invalidation_criteria=claude_plan.get("invalidation_criteria", f"Close below ${final_stop:.2f}"),
+                    key_supports=supports or [],
+                    key_resistances=resistances or [],
+                    invalidation_criteria=claude_plan.get("invalidation_criteria") or f"Close below ${final_stop:.2f}" if final_stop else "Price closes below stop level",
                     position_aligned=position_aligned,
                     position_recommendation=position_recommendation,
-                    setup_explanation=claude_plan.get("setup_explanation", f"This {trade_style} setup is based on {ema_trend} EMA alignment."),
-                    what_to_watch=what_to_watch,
-                    risk_warnings=risk_warnings,
+                    setup_explanation=claude_plan.get("setup_explanation") or f"This {trade_style} setup is based on {ema_trend} EMA alignment.",
+                    what_to_watch=what_to_watch or ["Monitor price action", "Watch for volume confirmation"],
+                    risk_warnings=risk_warnings or [],
                     atr_percent=atr_pct,
                     technical_summary=f"RSI: {rsi:.1f}, EMA trend: {ema_trend}",
                 )
