@@ -132,15 +132,17 @@ struct SimplifiedPlanView: View {
                     },
                     onAccept: {
                         Task {
-                            await viewModel.acceptPlan()
-                            // Show saved confirmation
-                            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                                showSavedConfirmation = true
-                            }
-                            // Auto-dismiss after 2.5 seconds
-                            try? await Task.sleep(nanoseconds: 2_500_000_000)
-                            withAnimation(.easeOut(duration: 0.3)) {
-                                showSavedConfirmation = false
+                            let success = await viewModel.acceptPlan()
+                            if success {
+                                // Show saved confirmation
+                                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                                    showSavedConfirmation = true
+                                }
+                                // Auto-dismiss after 2.5 seconds
+                                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                                withAnimation(.easeOut(duration: 0.3)) {
+                                    showSavedConfirmation = false
+                                }
                             }
                         }
                     },
@@ -764,6 +766,8 @@ private struct AgentGeneratingView: View {
     let symbol: String
     let steps: [AnalysisStep]
 
+    @State private var expandedSteps: Set<UUID> = []
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -787,11 +791,39 @@ private struct AgentGeneratingView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
                         if step.type != .complete {
-                            AgentStepRow(step: step, isLast: index == steps.count - 2)
+                            AgentStepRow(
+                                step: step,
+                                isLast: index == steps.count - 2,
+                                isExpanded: isStepExpanded(step),
+                                onToggle: { toggleStepExpansion(step.id) }
+                            )
                         }
                     }
                 }
                 .padding(.horizontal, 24)
+            }
+        }
+    }
+
+    /// Determines if a step should show its findings expanded
+    private func isStepExpanded(_ step: AnalysisStep) -> Bool {
+        switch step.status {
+        case .active:
+            return true  // Always show findings for active step
+        case .completed:
+            return expandedSteps.contains(step.id)  // User-controlled
+        case .pending:
+            return false
+        }
+    }
+
+    /// Toggle expansion state for a completed step
+    private func toggleStepExpansion(_ stepId: UUID) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            if expandedSteps.contains(stepId) {
+                expandedSteps.remove(stepId)
+            } else {
+                expandedSteps.insert(stepId)
             }
         }
     }
@@ -802,6 +834,13 @@ private struct AgentGeneratingView: View {
 private struct AgentStepRow: View {
     let step: AnalysisStep
     let isLast: Bool
+    let isExpanded: Bool
+    let onToggle: () -> Void
+
+    /// Whether this step can be tapped to expand/collapse
+    private var canToggle: Bool {
+        step.status == .completed && !step.findings.isEmpty
+    }
 
     private var stepLabel: String {
         switch step.type {
@@ -817,7 +856,8 @@ private struct AgentStepRow: View {
     }
 
     private var stepSummary: String? {
-        guard step.status == .completed, !step.findings.isEmpty else { return nil }
+        // Only show summary when collapsed
+        guard step.status == .completed, !step.findings.isEmpty, !isExpanded else { return nil }
         // Create a short summary from findings
         let summaryParts = step.findings.prefix(2).compactMap { finding -> String? in
             // Extract short key info
@@ -834,9 +874,20 @@ private struct AgentStepRow: View {
         return summaryParts.joined(separator: " · ")
     }
 
+    /// Whether to show the findings section
+    private var showFindings: Bool {
+        if step.status == .active && !step.findings.isEmpty {
+            return true
+        }
+        if step.status == .completed && isExpanded && !step.findings.isEmpty {
+            return true
+        }
+        return false
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Main row
+            // Main row (tappable for completed steps)
             HStack(alignment: .top, spacing: 12) {
                 // Status indicator
                 statusIndicator
@@ -851,17 +902,26 @@ private struct AgentStepRow: View {
 
                         Spacer()
 
-                        // Summary for completed steps
+                        // Summary for completed steps (when collapsed)
                         if let summary = stepSummary {
                             Text(summary)
                                 .font(.system(size: 12, weight: .regular, design: .monospaced))
                                 .foregroundColor(.secondary)
                                 .lineLimit(1)
                         }
+
+                        // Chevron for expandable steps
+                        if canToggle {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(Color(.tertiaryLabel))
+                                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isExpanded)
+                        }
                     }
 
-                    // Expanded findings for active step
-                    if step.status == .active && !step.findings.isEmpty {
+                    // Expanded findings
+                    if showFindings {
                         if step.type == .visionAnalysis {
                             VisionAnalysisCard(findings: step.findings)
                                 .padding(.top, 8)
@@ -873,7 +933,14 @@ private struct AgentStepRow: View {
                 }
             }
             .padding(.vertical, 10)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if canToggle {
+                    onToggle()
+                }
+            }
         }
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isExpanded)
     }
 
     @ViewBuilder
@@ -1479,14 +1546,53 @@ private struct EvaluationStatusSectionView: View {
     }
 
     private func formatRelativeTime(_ dateString: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        // Try multiple date formats
+        let date: Date? = {
+            // ISO8601 with fractional seconds
+            let iso8601Fractional = ISO8601DateFormatter()
+            iso8601Fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let d = iso8601Fractional.date(from: dateString) { return d }
 
-        guard let date = formatter.date(from: dateString) ?? ISO8601DateFormatter().date(from: dateString) else {
-            return dateString
+            // ISO8601 without fractional seconds
+            let iso8601 = ISO8601DateFormatter()
+            iso8601.formatOptions = [.withInternetDateTime]
+            if let d = iso8601.date(from: dateString) { return d }
+
+            // Try DateFormatter with common server formats
+            let dateFormatter = DateFormatter()
+            dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+
+            // Format: 2025-01-15T10:30:00Z
+            dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+            if let d = dateFormatter.date(from: dateString) { return d }
+
+            // Format: 2025-01-15T10:30:00.000Z
+            dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
+            if let d = dateFormatter.date(from: dateString) { return d }
+
+            // Format with timezone offset: 2025-01-15T10:30:00+00:00
+            dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssXXXXX"
+            if let d = dateFormatter.date(from: dateString) { return d }
+
+            return nil
+        }()
+
+        guard let parsedDate = date else {
+            // Fallback: try to show at least something readable
+            // Remove timezone info and 'T' separator if present
+            let cleaned = dateString
+                .replacingOccurrences(of: "T", with: " ")
+                .replacingOccurrences(of: "Z", with: "")
+                .components(separatedBy: ".").first ?? dateString
+            return cleaned.count > 16 ? String(cleaned.prefix(16)) : cleaned
         }
 
-        let interval = Date().timeIntervalSince(date)
+        let interval = Date().timeIntervalSince(parsedDate)
+
+        // Handle future dates (clock skew)
+        if interval < 0 {
+            return "just now"
+        }
 
         if interval < 60 {
             return "just now"
@@ -1496,9 +1602,15 @@ private struct EvaluationStatusSectionView: View {
         } else if interval < 86400 {
             let hours = Int(interval / 3600)
             return "\(hours)h ago"
-        } else {
+        } else if interval < 604800 { // Less than 7 days
             let days = Int(interval / 86400)
             return "\(days)d ago"
+        } else {
+            // Show actual date for older timestamps
+            let displayFormatter = DateFormatter()
+            displayFormatter.dateStyle = .short
+            displayFormatter.timeStyle = .short
+            return displayFormatter.string(from: parsedDate)
         }
     }
 }

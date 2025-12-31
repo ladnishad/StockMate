@@ -910,18 +910,37 @@ final class TradingPlanViewModel: ObservableObject {
     }
 
     /// Accept the current plan - for SimplifiedPlanView
-    func acceptPlan() async {
-        // If we have a session with a draft, approve it
+    /// Returns true if the plan was successfully accepted/saved
+    @discardableResult
+    func acceptPlan() async -> Bool {
+        isUpdating = true
+
+        defer { isUpdating = false }
+
+        // If we have a session with a draft, approve it via API
         if sessionId != nil, draftPlan != nil {
             await approveDraftPlan()
-            // Evaluation will happen later via periodic checks (30 min) or key-level triggers
+            // Check if approval was successful (plan is now set, draftPlan cleared)
+            return plan != nil && draftPlan == nil
+        } else if draftPlan != nil {
+            // Draft exists but no session - promote draft to plan directly
+            // This handles edge cases where session was lost
+            withAnimation {
+                self.plan = self.draftPlan
+                self.draftPlan = nil
+                self.hasActivePosition = true
+                self.lastUpdated = Date()
+            }
+            return true
         } else if plan != nil {
-            // No session - just mark the plan as accepted
+            // Already have an approved plan - just mark as active
             withAnimation {
                 self.hasActivePosition = true
                 self.lastUpdated = Date()
             }
+            return true
         }
+        return false
     }
 
     /// Start over - clear everything and regenerate
