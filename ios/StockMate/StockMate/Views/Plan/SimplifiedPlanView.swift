@@ -4,6 +4,7 @@ import SwiftUI
 
 struct SimplifiedPlanView: View {
     @StateObject private var viewModel: TradingPlanViewModel
+    @ObservedObject private var generationManager = PlanGenerationManager.shared
     @State private var feedbackText: String = ""
     @State private var showSavedConfirmation: Bool = false
     @FocusState private var isInputFocused: Bool
@@ -15,36 +16,68 @@ struct SimplifiedPlanView: View {
         _viewModel = StateObject(wrappedValue: TradingPlanViewModel(symbol: symbol))
     }
 
-    /// The plan to display - either the approved plan or the draft plan
+    /// The plan to display - from manager (if completed), ViewModel, or draft
     private var displayPlan: TradingPlanResponse? {
-        viewModel.plan ?? viewModel.draftPlan
+        // Check if manager has a completed plan for this symbol
+        if generationManager.hasCompletedPlan(for: symbol) {
+            return generationManager.generatedPlan
+        }
+        return viewModel.plan ?? viewModel.draftPlan
+    }
+
+    /// Whether generation is in progress (either ViewModel or manager)
+    private var isGenerating: Bool {
+        viewModel.isLoading || generationManager.hasActiveGeneration(for: symbol)
     }
 
     /// Whether we're in draft mode (session with unapproved plan)
     private var isDraftMode: Bool {
-        viewModel.draftPlan != nil && viewModel.plan == nil
+        // Manager's plan counts as draft until accepted
+        if generationManager.hasCompletedPlan(for: symbol) && viewModel.plan == nil {
+            return true
+        }
+        return viewModel.draftPlan != nil && viewModel.plan == nil
     }
 
     /// Plan is saved when we have an approved plan (not draft)
     private var isPlanSaved: Bool {
-        viewModel.plan != nil && viewModel.draftPlan == nil
+        viewModel.plan != nil && viewModel.draftPlan == nil && !generationManager.hasCompletedPlan(for: symbol)
     }
 
     var body: some View {
         ZStack {
             Color(.systemBackground).ignoresSafeArea()
 
-            if viewModel.isLoading && displayPlan == nil {
-                AgentGeneratingView(symbol: symbol, steps: viewModel.analysisSteps)
+            if isGenerating && displayPlan == nil {
+                // Show generation progress from either ViewModel or manager
+                if generationManager.hasActiveGeneration(for: symbol) {
+                    ManagerGeneratingView(symbol: symbol, manager: generationManager)
+                } else {
+                    AgentGeneratingView(symbol: symbol, steps: viewModel.analysisSteps, viewModel: viewModel)
+                }
             } else if let plan = displayPlan {
                 planContent(plan)
             } else {
                 EmptyPlanView {
-                    Task { await viewModel.startPlanSession() }
+                    // Use the manager for background-safe generation
+                    generationManager.startGeneration(for: symbol)
                 }
             }
         }
         .task { await viewModel.loadPlan() }
+        .onAppear {
+            // If manager has a completed plan, sync it to the ViewModel
+            if let managerPlan = generationManager.generatedPlan,
+               generationManager.hasCompletedPlan(for: symbol) {
+                viewModel.setDraftPlan(managerPlan)
+            }
+        }
+        .onChange(of: generationManager.generatedPlan) { newPlan in
+            // When manager completes, sync to ViewModel
+            if let plan = newPlan, generationManager.activeSymbol?.uppercased() == symbol.uppercased() {
+                viewModel.setDraftPlan(plan)
+            }
+        }
     }
 
     // MARK: - Plan Content
@@ -60,6 +93,11 @@ struct SimplifiedPlanView: View {
                         tradeStyle: plan.tradeStyle ?? "swing",
                         holdingPeriod: plan.holdingPeriod ?? "2-5 days"
                     )
+
+                    // V2: Position Action Card (shown when user has position)
+                    if plan.hasPositionRecommendation {
+                        PositionActionCardView(recommendation: plan.positionRecommendationDisplay)
+                    }
 
                     // Bias Indicator
                     BiasIndicatorView(
@@ -104,6 +142,21 @@ struct SimplifiedPlanView: View {
                         )
                     }
 
+                    // V2: What to Watch Section
+                    if plan.hasWatchItems {
+                        WhatToWatchSectionView(items: plan.whatToWatch)
+                    }
+
+                    // V2: Risk Warnings Section
+                    if plan.hasRiskWarnings {
+                        RiskWarningsSectionView(warnings: plan.riskWarnings)
+                    }
+
+                    // V2: Alternative Analyses Section
+                    if plan.hasAlternatives {
+                        AlternativeAnalysesSectionView(alternatives: plan.alternatives)
+                    }
+
                     // Evaluation Status Section (enhanced)
                     EvaluationStatusSectionView(
                         viewModel: viewModel,
@@ -134,6 +187,9 @@ struct SimplifiedPlanView: View {
                         Task {
                             let success = await viewModel.acceptPlan()
                             if success {
+                                // Clear manager's completed generation state
+                                generationManager.clearCompletedGeneration()
+
                                 // Show saved confirmation
                                 withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                                     showSavedConfirmation = true
@@ -147,7 +203,11 @@ struct SimplifiedPlanView: View {
                         }
                     },
                     onStartOver: {
-                        Task { await viewModel.startOver() }
+                        Task {
+                            // Clear manager state before starting over
+                            generationManager.clearCompletedGeneration()
+                            await viewModel.startOver()
+                        }
                     }
                 )
             } else {
@@ -765,8 +825,10 @@ private struct SavedConfirmationBanner: View {
 private struct AgentGeneratingView: View {
     let symbol: String
     let steps: [AnalysisStep]
+    @ObservedObject var viewModel: TradingPlanViewModel
 
     @State private var expandedSteps: Set<UUID> = []
+    @State private var pulseAnimation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -778,7 +840,7 @@ private struct AgentGeneratingView: View {
 
                 HStack(spacing: 6) {
                     PulsingDot()
-                    Text("Analyzing stock...")
+                    Text(viewModel.isV2Mode ? "Running parallel analysis..." : "Analyzing stock...")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundColor(.secondary)
                 }
@@ -786,21 +848,38 @@ private struct AgentGeneratingView: View {
             .padding(.top, 32)
             .padding(.bottom, 28)
 
-            // Steps list
+            // Content - V2 or V1 mode
             ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
-                        if step.type != .complete {
-                            AgentStepRow(
-                                step: step,
-                                isLast: index == steps.count - 2,
-                                isExpanded: isStepExpanded(step),
-                                onToggle: { toggleStepExpansion(step.id) }
-                            )
+                if viewModel.isV2Mode && !viewModel.subagentProgress.isEmpty {
+                    // V2: Parallel sub-agent view
+                    V2SubAgentsView(
+                        subagents: viewModel.sortedSubagents,
+                        expandedAgents: viewModel.expandedSubagents,
+                        onToggle: { viewModel.toggleSubagentExpansion($0) },
+                        pulseAnimation: pulseAnimation
+                    )
+                    .padding(.horizontal, 20)
+                } else {
+                    // V1: Linear steps list
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
+                            if step.type != .complete {
+                                AgentStepRow(
+                                    step: step,
+                                    isLast: index == steps.count - 2,
+                                    isExpanded: isStepExpanded(step),
+                                    onToggle: { toggleStepExpansion(step.id) }
+                                )
+                            }
                         }
                     }
+                    .padding(.horizontal, 24)
                 }
-                .padding(.horizontal, 24)
+            }
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                pulseAnimation = true
             }
         }
     }
@@ -829,6 +908,450 @@ private struct AgentGeneratingView: View {
     }
 }
 
+// MARK: - V2 Sub-Agents View
+
+private struct V2SubAgentsView: View {
+    let subagents: [SubAgentProgress]
+    let expandedAgents: Set<String>
+    let onToggle: (String) -> Void
+    let pulseAnimation: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Progress header
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+
+                Text("PARALLEL ANALYSIS")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(.secondary)
+                    .tracking(1.0)
+
+                Spacer()
+
+                let completed = subagents.filter { $0.status == .completed }.count
+                Text("\(completed)/\(subagents.count) complete")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+
+            // Sub-agent cards
+            ForEach(subagents) { agent in
+                V2SubAgentCard(
+                    agent: agent,
+                    isExpanded: expandedAgents.contains(agent.agentName),
+                    onToggle: { onToggle(agent.agentName) },
+                    pulseAnimation: pulseAnimation
+                )
+            }
+        }
+    }
+}
+
+// MARK: - V2 Sub-Agent Card (V1-style hierarchical)
+
+private struct V2SubAgentCard: View {
+    let agent: SubAgentProgress
+    let isExpanded: Bool
+    let onToggle: () -> Void
+    let pulseAnimation: Bool
+
+    @State private var expandedSteps: Set<String> = []
+
+    private var statusColor: Color {
+        switch agent.status {
+        case .completed: return Color(hex: "10B981")
+        case .failed: return Color(hex: "EF4444")
+        case .pending: return .secondary
+        default: return agent.accentColor
+        }
+    }
+
+    private var statusText: String {
+        switch agent.status {
+        case .completed: return "DONE"
+        case .failed: return "FAILED"
+        case .pending: return "WAITING"
+        default: return "RUNNING"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header (always visible, tappable)
+            Button(action: onToggle) {
+                HStack(spacing: 12) {
+                    // Status indicator
+                    ZStack {
+                        Circle()
+                            .fill(statusColor.opacity(0.15))
+                            .frame(width: 36, height: 36)
+
+                        if agent.status.isActive {
+                            Circle()
+                                .fill(statusColor.opacity(0.2))
+                                .frame(width: 36, height: 36)
+                                .scaleEffect(pulseAnimation ? 1.3 : 1.0)
+                                .opacity(pulseAnimation ? 0 : 0.5)
+
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: statusColor))
+                                .scaleEffect(0.6)
+                        } else if agent.status == .completed {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(statusColor)
+                        } else if agent.status == .failed {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(statusColor)
+                        } else {
+                            Image(systemName: agent.icon)
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(statusColor.opacity(0.5))
+                        }
+                    }
+
+                    // Agent info
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(agent.displayName)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.primary)
+
+                        Text(agent.currentStep ?? agent.status.displayText)
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    // Status badge
+                    Text(statusText)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(statusColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(statusColor.opacity(0.12))
+                        )
+
+                    // Expand indicator
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Color(.tertiaryLabel))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(14)
+            }
+            .buttonStyle(.plain)
+
+            // Expanded content - V1-style hierarchical steps
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    Divider()
+                        .padding(.horizontal, 14)
+
+                    // V1-style step rows with tree connectors
+                    ForEach(Array(agent.structuredSteps.enumerated()), id: \.element.id) { index, step in
+                        V1StyleStepRow(
+                            step: step,
+                            isLast: index == agent.structuredSteps.count - 1,
+                            isExpanded: expandedSteps.contains(step.id) || step.status == .active,
+                            accentColor: agent.accentColor,
+                            pulseAnimation: pulseAnimation,
+                            onToggle: {
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                    if expandedSteps.contains(step.id) {
+                                        expandedSteps.remove(step.id)
+                                    } else {
+                                        expandedSteps.insert(step.id)
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+                .padding(.bottom, 10)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(
+                            agent.status.isActive ? statusColor.opacity(0.3) :
+                            agent.status == .completed ? Color(hex: "10B981").opacity(0.2) : Color.clear,
+                            lineWidth: 1
+                        )
+                )
+        )
+        .animation(.easeInOut(duration: 0.2), value: isExpanded)
+    }
+}
+
+// MARK: - V1-Style Step Row (within sub-agent)
+
+private struct V1StyleStepRow: View {
+    let step: SubAgentStepProgress
+    let isLast: Bool
+    let isExpanded: Bool
+    let accentColor: Color
+    let pulseAnimation: Bool
+    let onToggle: () -> Void
+
+    private let greenColor = Color(hex: "10B981")
+    private let cyanColor = Color(hex: "00DEDE")
+
+    private var stepStatusColor: Color {
+        switch step.status {
+        case .pending: return .secondary.opacity(0.4)
+        case .active: return accentColor
+        case .completed: return greenColor
+        }
+    }
+
+    /// Whether this step can be tapped to expand
+    private var canToggle: Bool {
+        step.status == .completed && !step.findings.isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Step header row
+            HStack(alignment: .center, spacing: 10) {
+                // Tree connector + status indicator
+                HStack(spacing: 0) {
+                    // Tree line (vertical connector)
+                    VStack(spacing: 0) {
+                        Rectangle()
+                            .fill(step.status == .pending ? Color.clear : stepStatusColor.opacity(0.3))
+                            .frame(width: 2, height: 10)
+
+                        // Status dot
+                        ZStack {
+                            Circle()
+                                .stroke(stepStatusColor, lineWidth: 2)
+                                .frame(width: 16, height: 16)
+
+                            if step.status == .active {
+                                Circle()
+                                    .fill(accentColor.opacity(0.2))
+                                    .frame(width: 16, height: 16)
+                                    .scaleEffect(pulseAnimation ? 1.4 : 1.0)
+                                    .opacity(pulseAnimation ? 0 : 0.5)
+
+                                Circle()
+                                    .fill(accentColor)
+                                    .frame(width: 6, height: 6)
+                            } else if step.status == .completed {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundColor(greenColor)
+                            }
+                        }
+
+                        if !isLast {
+                            Rectangle()
+                                .fill(step.status == .completed ? greenColor.opacity(0.3) : Color.clear)
+                                .frame(width: 2, height: 10)
+                        } else {
+                            Spacer().frame(height: 10)
+                        }
+                    }
+                    .frame(width: 20)
+                }
+
+                // Step icon
+                Image(systemName: step.type.icon)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(stepStatusColor)
+                    .frame(width: 16)
+
+                // Step name
+                Text(step.type.displayName)
+                    .font(.system(size: 12, weight: step.status == .active ? .semibold : .medium))
+                    .foregroundColor(step.status == .pending ? .secondary.opacity(0.5) : .primary)
+
+                Spacer()
+
+                // Findings count / status
+                if step.status == .active {
+                    Text("RUNNING")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(accentColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(accentColor.opacity(0.12))
+                        .clipShape(Capsule())
+                } else if step.status == .completed && !step.findings.isEmpty && !isExpanded {
+                    Text("\(step.findings.count)")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color(.tertiarySystemFill))
+                        .clipShape(Capsule())
+                }
+
+                // Chevron for expandable steps
+                if canToggle {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(Color(.tertiaryLabel))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+            }
+            .padding(.horizontal, 14)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if canToggle {
+                    onToggle()
+                }
+            }
+
+            // Findings (when expanded or active)
+            if (isExpanded || step.status == .active) && !step.findings.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(step.findings, id: \.self) { finding in
+                        HStack(alignment: .top, spacing: 6) {
+                            // Tree connector
+                            Text("└─")
+                                .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                .foregroundColor(accentColor.opacity(0.4))
+
+                            // Finding text with smart coloring
+                            V1FindingText(text: finding, accentColor: accentColor)
+                        }
+                        .padding(.leading, 34)
+                    }
+                }
+                .padding(.top, 4)
+                .padding(.bottom, 6)
+                .padding(.horizontal, 14)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+}
+
+// MARK: - V1-Style Finding Text
+
+private struct V1FindingText: View {
+    let text: String
+    let accentColor: Color
+
+    private let greenColor = Color(hex: "10B981")
+    private let redColor = Color(hex: "EF4444")
+    private let amberColor = Color(hex: "F59E0B")
+
+    var body: some View {
+        if text.contains(":") {
+            let parts = text.split(separator: ":", maxSplits: 1)
+            if parts.count == 2 {
+                HStack(spacing: 4) {
+                    Text(String(parts[0]) + ":")
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundColor(.secondary)
+
+                    Text(String(parts[1]).trimmingCharacters(in: .whitespaces))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(colorForValue(String(parts[1])))
+                }
+            } else {
+                plainText
+            }
+        } else {
+            plainText
+        }
+    }
+
+    private var plainText: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .regular))
+            .foregroundColor(.primary.opacity(0.8))
+    }
+
+    private func colorForValue(_ value: String) -> Color {
+        let lower = value.lowercased()
+        if lower.contains("bullish") || lower.contains("strong") || lower.contains("above") || lower.contains("breakout") {
+            return greenColor
+        } else if lower.contains("bearish") || lower.contains("weak") || lower.contains("below") || lower.contains("breakdown") {
+            return redColor
+        } else if lower.contains("neutral") || lower.contains("mixed") || lower.contains("consolidat") {
+            return amberColor
+        }
+        return accentColor
+    }
+}
+
+// MARK: - Manager Generating View (Background-safe)
+
+/// Generating view that uses PlanGenerationManager for background-safe generation.
+/// Shows the same UI as AgentGeneratingView but reads from the shared manager.
+private struct ManagerGeneratingView: View {
+    let symbol: String
+    @ObservedObject var manager: PlanGenerationManager
+
+    @State private var pulseAnimation = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            VStack(spacing: 8) {
+                Text(symbol)
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundColor(.primary)
+
+                HStack(spacing: 6) {
+                    PulsingDot()
+                    Text("Running parallel analysis...")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.top, 32)
+            .padding(.bottom, 28)
+
+            // Sub-agent progress
+            ScrollView {
+                V2SubAgentsView(
+                    subagents: manager.sortedSubagents,
+                    expandedAgents: manager.expandedSubagents,
+                    onToggle: { manager.toggleSubagentExpansion($0) },
+                    pulseAnimation: pulseAnimation
+                )
+                .padding(.horizontal, 20)
+            }
+
+            // Error display
+            if let error = manager.error {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    Text(error)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding()
+                .background(Color(.secondarySystemBackground))
+                .cornerRadius(10)
+                .padding()
+            }
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                pulseAnimation = true
+            }
+        }
+    }
+}
+
 // MARK: - Agent Step Row
 
 private struct AgentStepRow: View {
@@ -852,6 +1375,11 @@ private struct AgentStepRow: View {
         case .visionAnalysis: return "Vision"
         case .generatingPlan: return "Plan"
         case .complete: return "Complete"
+        // V2 cases
+        case .gatheringCommonData: return "Common data"
+        case .spawningSubagents: return "Sub-agents"
+        case .waitingForSubagents: return "Analyzing"
+        case .selectingBest: return "Selecting"
         }
     }
 
@@ -1829,8 +2357,1142 @@ private struct MarkdownText: View {
     }
 }
 
-// MARK: - Preview
+// MARK: - V2 Position Action Card
 
-#Preview {
+private struct PositionActionCardView: View {
+    let recommendation: String
+
+    private var actionColor: Color {
+        switch recommendation.uppercased() {
+        case "HOLD": return Color(hex: "10B981")  // Green
+        case "ADD": return Color(hex: "3B82F6")   // Blue
+        case "TRIM", "REDUCE": return Color(hex: "F59E0B")  // Amber/Orange
+        case "EXIT": return Color(hex: "EF4444")  // Red
+        default: return .secondary
+        }
+    }
+
+    private var actionIcon: String {
+        switch recommendation.uppercased() {
+        case "HOLD": return "hand.raised.fill"
+        case "ADD": return "plus.circle.fill"
+        case "TRIM", "REDUCE": return "arrow.down.right.circle.fill"
+        case "EXIT": return "xmark.circle.fill"
+        default: return "questionmark.circle.fill"
+        }
+    }
+
+    private var actionSubtitle: String {
+        switch recommendation.uppercased() {
+        case "HOLD": return "Maintain current position"
+        case "ADD": return "Consider adding to position"
+        case "TRIM": return "Consider partial profit-taking"
+        case "REDUCE": return "Consider reducing exposure"
+        case "EXIT": return "Consider closing position"
+        default: return ""
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 16) {
+            // Icon container with glow effect
+            ZStack {
+                Circle()
+                    .fill(actionColor.opacity(0.15))
+                    .frame(width: 56, height: 56)
+
+                Circle()
+                    .fill(actionColor.opacity(0.08))
+                    .frame(width: 72, height: 72)
+                    .blur(radius: 8)
+
+                Image(systemName: actionIcon)
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundColor(actionColor)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("POSITION ACTION")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .tracking(1.2)
+
+                Text(recommendation)
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundColor(actionColor)
+
+                Text(actionSubtitle)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(actionColor.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(actionColor.opacity(0.25), lineWidth: 1)
+                )
+        )
+    }
+}
+
+// MARK: - V2 What to Watch Section
+
+private struct WhatToWatchSectionView: View {
+    let items: [String]
+
+    @State private var isExpanded = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "eye.fill")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(Color(hex: "3B82F6"))
+
+                    Text("WHAT TO WATCH")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .tracking(0.8)
+
+                    Spacer()
+
+                    Text("\(items.count)")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(hex: "3B82F6"))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(Color(hex: "3B82F6").opacity(0.12))
+                        )
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Color(.tertiaryLabel))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(16)
+            }
+            .buttonStyle(.plain)
+
+            // Items
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    Divider()
+                        .padding(.horizontal, 16)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
+                            HStack(alignment: .top, spacing: 12) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color(hex: "3B82F6").opacity(0.12))
+                                        .frame(width: 24, height: 24)
+
+                                    Text("\(idx + 1)")
+                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                        .foregroundColor(Color(hex: "3B82F6"))
+                                }
+
+                                Text(item)
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.primary.opacity(0.85))
+                                    .lineSpacing(3)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                    .padding(16)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+    }
+}
+
+// MARK: - V2 Risk Warnings Section
+
+private struct RiskWarningsSectionView: View {
+    let warnings: [String]
+
+    @State private var isExpanded = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(Color(hex: "F59E0B"))
+
+                    Text("RISK WARNINGS")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .tracking(0.8)
+
+                    Spacer()
+
+                    Text("\(warnings.count)")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(hex: "F59E0B"))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(Color(hex: "F59E0B").opacity(0.12))
+                        )
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Color(.tertiaryLabel))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(16)
+            }
+            .buttonStyle(.plain)
+
+            // Warnings
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    Divider()
+                        .padding(.horizontal, 16)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(warnings.enumerated()), id: \.offset) { _, warning in
+                            HStack(alignment: .top, spacing: 10) {
+                                Circle()
+                                    .fill(Color(hex: "F59E0B"))
+                                    .frame(width: 6, height: 6)
+                                    .padding(.top, 6)
+
+                                Text(warning)
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(Color(hex: "F59E0B").opacity(0.9))
+                                    .lineSpacing(3)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                    .padding(16)
+                    .background(Color(hex: "F59E0B").opacity(0.06))
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color(hex: "F59E0B").opacity(0.2), lineWidth: 1)
+                )
+        )
+    }
+}
+
+// MARK: - V2 Alternative Analyses Section
+
+private struct AlternativeAnalysesSectionView: View {
+    let alternatives: [AlternativePlan]
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+
+                    Text("ALTERNATIVE ANALYSES")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .tracking(0.8)
+
+                    Spacer()
+
+                    Text("\(alternatives.count) styles")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Color(.tertiaryLabel))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(16)
+            }
+            .buttonStyle(.plain)
+
+            // Alternative cards
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    Divider()
+                        .padding(.horizontal, 16)
+
+                    VStack(spacing: 12) {
+                        ForEach(alternatives) { alt in
+                            AlternativeCardView(alternative: alt)
+                        }
+                    }
+                    .padding(16)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+    }
+}
+
+// MARK: - Alternative Card View
+
+private struct AlternativeCardView: View {
+    let alternative: AlternativePlan
+
+    private var biasColor: Color {
+        switch alternative.bias.lowercased() {
+        case "bullish": return Color(hex: "10B981")
+        case "bearish": return Color(hex: "EF4444")
+        default: return .secondary
+        }
+    }
+
+    private var recommendationColor: Color {
+        guard let rec = alternative.positionRecommendation?.lowercased() else { return .secondary }
+        switch rec {
+        case "hold": return Color(hex: "10B981")
+        case "add": return Color(hex: "3B82F6")
+        case "trim", "reduce": return Color(hex: "F59E0B")
+        case "exit": return Color(hex: "EF4444")
+        default: return .secondary
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Header row
+            HStack(spacing: 12) {
+                // Trade style icon
+                ZStack {
+                    Circle()
+                        .fill(Color(.tertiarySystemFill))
+                        .frame(width: 36, height: 36)
+
+                    Image(systemName: alternative.tradeStyleIcon)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(alternative.tradeStyleDisplay)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.primary)
+
+                    Text(alternative.holdingPeriod)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                // Bias & Confidence
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(alternative.bias.uppercased())
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(biasColor)
+
+                    Text("\(alternative.confidence)%")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            // Position recommendation (if exists)
+            if alternative.hasPositionRecommendation {
+                HStack(spacing: 8) {
+                    Text("Recommends:")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+
+                    Text(alternative.positionRecommendationDisplay)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(recommendationColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(recommendationColor.opacity(0.12))
+                        )
+                }
+            }
+
+            // Risk warnings (if any)
+            if !alternative.riskWarnings.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(alternative.riskWarnings.prefix(2).enumerated()), id: \.offset) { _, warning in
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 9))
+                                .foregroundColor(Color(hex: "F59E0B").opacity(0.7))
+
+                            Text(warning)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(Color(hex: "F59E0B").opacity(0.8))
+                                .lineLimit(2)
+                        }
+                    }
+                }
+            }
+
+            // Why not selected
+            if !alternative.whyNotSelected.isEmpty {
+                Text(alternative.whyNotSelected)
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundColor(Color(.tertiaryLabel))
+                    .lineSpacing(2)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(.tertiarySystemBackground))
+        )
+    }
+}
+
+// MARK: - Previews
+
+#Preview("Default") {
     SimplifiedPlanView(symbol: "AAPL")
+        .preferredColorScheme(.dark)
+}
+
+#Preview("V2 Position Action - HOLD") {
+    ScrollView {
+        VStack(spacing: 24) {
+            PositionActionCardView(recommendation: "HOLD")
+            PositionActionCardView(recommendation: "TRIM")
+            PositionActionCardView(recommendation: "REDUCE")
+            PositionActionCardView(recommendation: "EXIT")
+            PositionActionCardView(recommendation: "ADD")
+        }
+        .padding(20)
+    }
+    .background(Color.black)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("V2 What to Watch") {
+    VStack(spacing: 20) {
+        WhatToWatchSectionView(items: [
+            "Volume confirmation on breakout above $275",
+            "Tighten stop to breakeven or better",
+            "Watch for rejection at $280 resistance"
+        ])
+    }
+    .padding(20)
+    .background(Color.black)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("V2 Risk Warnings") {
+    VStack(spacing: 20) {
+        RiskWarningsSectionView(warnings: [
+            "Technicals turning bearish - protect profits",
+            "Analysis bias conflicts with long position",
+            "High volume distribution day observed"
+        ])
+    }
+    .padding(20)
+    .background(Color.black)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("V2 Alternative Analyses") {
+    ScrollView {
+        VStack(spacing: 20) {
+            AlternativeAnalysesSectionView_Preview(alternatives: [
+                PreviewAlternativePlan(
+                    tradeStyle: "day",
+                    bias: "bearish",
+                    suitable: false,
+                    confidence: 45,
+                    holdingPeriod: "1-4 hours",
+                    briefThesis: "Day trade shows bearish intraday momentum with weak volume.",
+                    whyNotSelected: "Conflicts with existing position. No valid setup for this trade style",
+                    riskReward: 1.5,
+                    positionRecommendation: "trim",
+                    riskWarnings: ["Technicals turning bearish - protect profits", "Analysis bias conflicts with long position"]
+                ),
+                PreviewAlternativePlan(
+                    tradeStyle: "swing",
+                    bias: "bearish",
+                    suitable: false,
+                    confidence: 42,
+                    holdingPeriod: "3-7 days",
+                    briefThesis: "Swing trade analysis shows weakening trend structure.",
+                    whyNotSelected: "Lower confidence (42% vs 55%)",
+                    riskReward: 2.0,
+                    positionRecommendation: "reduce",
+                    riskWarnings: ["Double top pattern forming", "EMAs converging bearishly"]
+                )
+            ])
+        }
+        .padding(20)
+    }
+    .background(Color.black)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("V2 Full Plan View") {
+    PreviewFullPlanView()
+}
+
+#Preview("V2 Saved Plan View") {
+    PreviewSavedPlanView()
+}
+
+/// Full plan preview with all sections including action bar
+private struct PreviewFullPlanView: View {
+    @State private var feedbackText = ""
+    @FocusState private var isInputFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 24) {
+                    // Header
+                    PlanHeaderView(
+                        symbol: "ARBK",
+                        tradeStyle: "swing",
+                        holdingPeriod: "N/A - NO TRADE RECOMMENDED"
+                    )
+
+                    // Bias
+                    BiasIndicatorView(bias: "neutral", confidence: 85)
+
+                    // Thesis - detailed like screenshot
+                    ThesisSectionView(text: "ARBK just completed a major court-sanctioned restructuring on December 15, 2025, resulting in massive dilution (existing shareholders went from 10:1 to 2160:1 ADS ratio). Growler Mining now owns approximately 87.5% of the company. The stock dropped 79% after the restructuring was announced. While the company claims enhanced hashrate capacity (1.8 to 2.4 EH/s) and expansion into AI/HPC, the technicals are messy with virtually no support/resistance levels established post-restructuring, and volume is nearly non-existent at 0.04x average. This is a highly speculative restructuring play with extreme risk - not suitable for a technical swing trade.")
+
+                    // Risk/Reward
+                    RiskRewardBadgeView(ratio: 0.0)
+
+                    // Key Levels
+                    KeyLevelsSectionView(
+                        supports: [3.25],
+                        resistances: [4.00, 5.00],
+                        invalidation: "Close below $3.00"
+                    )
+
+                    // Market Sentiment - like screenshot
+                    MarketSentimentSectionView(
+                        newsSummary: "Major restructuring completed in mid-December 2025 transferred 87.5% stake to Growler, causing 79% stock crash. Company pivoting toward AI/HPC alongside crypto mining. New CEO Justin Nolan appointed March 2025. 2024 results showed revenue down 7%, $55.1M net loss, Bitcoin production cut in half due to halving. Company faces class action lawsuits from 2023.",
+                        redditSentiment: "Neutral",
+                        redditBuzz: nil
+                    )
+
+                    // V2: Position Action (when user has position)
+                    PositionActionCardView(recommendation: "HOLD")
+
+                    // V2: What to Watch
+                    WhatToWatchSectionView(items: [
+                        "Volume confirmation on any breakout",
+                        "Watch for support at $3.25",
+                        "Monitor restructuring news flow"
+                    ])
+
+                    // V2: Risk Warnings
+                    RiskWarningsSectionView(warnings: [
+                        "Extreme dilution risk - 2160:1 ADS ratio",
+                        "Post-restructuring volatility expected"
+                    ])
+
+                    // V2: Alternatives
+                    AlternativeAnalysesSectionView_Preview(alternatives: [
+                        PreviewAlternativePlan(
+                            tradeStyle: "day",
+                            bias: "bearish",
+                            suitable: false,
+                            confidence: 45,
+                            holdingPeriod: "1-4 hours",
+                            briefThesis: "Day trade shows no clear intraday setup due to extremely low volume.",
+                            whyNotSelected: "No valid setup - volume too thin",
+                            riskReward: 1.0,
+                            positionRecommendation: nil,
+                            riskWarnings: ["Volume nearly non-existent"]
+                        ),
+                        PreviewAlternativePlan(
+                            tradeStyle: "position",
+                            bias: "neutral",
+                            suitable: false,
+                            confidence: 30,
+                            holdingPeriod: "2-6 weeks",
+                            briefThesis: "Position trade not recommended - too early post-restructuring.",
+                            whyNotSelected: "Lower confidence (30% vs 85%)",
+                            riskReward: 0.5,
+                            positionRecommendation: nil,
+                            riskWarnings: ["No established trend structure"]
+                        )
+                    ])
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 140)
+            }
+
+            // Bottom Action Bar (Draft Mode)
+            VStack(spacing: 12) {
+                Divider()
+
+                // Text input row
+                HStack(spacing: 10) {
+                    TextField("Ask something or suggest changes...", text: $feedbackText, axis: .vertical)
+                        .font(.system(size: 15))
+                        .foregroundColor(.primary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color(.secondarySystemBackground))
+                        )
+                        .focused($isInputFocused)
+                        .lineLimit(1...3)
+                }
+                .padding(.horizontal, 16)
+
+                // Action buttons
+                HStack(spacing: 12) {
+                    // Start Over
+                    Button(action: {}) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(.system(size: 13, weight: .semibold))
+                            Text("Start Over")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color(.secondarySystemBackground))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
+                        )
+                    }
+
+                    // Accept Plan
+                    Button(action: {}) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 16, weight: .bold))
+                            Text("Accept Plan")
+                                .font(.system(size: 15, weight: .bold))
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [Color(hex: "10B981"), Color(hex: "059669")],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                        )
+                        .shadow(color: Color(hex: "10B981").opacity(0.3), radius: 4, x: 0, y: 2)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
+            .background(Color(.systemBackground))
+        }
+        .background(Color.black)
+        .preferredColorScheme(.dark)
+    }
+}
+
+/// Saved plan preview with Regenerate button (like second screenshot)
+private struct PreviewSavedPlanView: View {
+    @State private var feedbackText = ""
+    @FocusState private var isInputFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 24) {
+                    // Header
+                    PlanHeaderView(
+                        symbol: "ARBK",
+                        tradeStyle: "swing",
+                        holdingPeriod: "N/A - NO TRADE RECOMMENDED"
+                    )
+
+                    // Bias
+                    BiasIndicatorView(bias: "neutral", confidence: 85)
+
+                    // Thesis
+                    ThesisSectionView(text: "ARBK just completed a major court-sanctioned restructuring on December 15, 2025, resulting in massive dilution. The technicals are messy with virtually no support/resistance levels established post-restructuring, and volume is nearly non-existent. This is a highly speculative restructuring play with extreme risk.")
+
+                    // Risk/Reward
+                    RiskRewardBadgeView(ratio: 0.0)
+
+                    // Key Levels
+                    KeyLevelsSectionView(
+                        supports: [3.25],
+                        resistances: [4.00, 5.00],
+                        invalidation: "Close below $3.00"
+                    )
+
+                    // Market Sentiment
+                    MarketSentimentSectionView(
+                        newsSummary: "Major restructuring completed in mid-December 2025 transferred 87.5% stake to Growler, causing 79% stock crash. Company pivoting toward AI/HPC alongside crypto mining. New CEO Justin Nolan appointed March 2025. 2024 results showed revenue down 7%, $55.1M net loss, Bitcoin production cut in half due to halving. Company faces class action lawsuits from 2023.",
+                        redditSentiment: "Neutral",
+                        redditBuzz: nil
+                    )
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 100)
+            }
+
+            // Bottom Action Bar (Saved Mode - Regenerate only)
+            VStack(spacing: 12) {
+                Divider()
+
+                // Text input row
+                HStack(spacing: 10) {
+                    TextField("Ask something or suggest changes...", text: $feedbackText, axis: .vertical)
+                        .font(.system(size: 15))
+                        .foregroundColor(.primary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color(.secondarySystemBackground))
+                        )
+                        .focused($isInputFocused)
+                        .lineLimit(1...3)
+                }
+                .padding(.horizontal, 16)
+
+                // Regenerate button only
+                Button(action: {}) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Regenerate Plan")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color(.secondarySystemBackground))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color(.separator).opacity(0.5), lineWidth: 1)
+                    )
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
+            .background(Color(.systemBackground))
+        }
+        .background(Color.black)
+        .preferredColorScheme(.dark)
+    }
+}
+
+// MARK: - Preview Helper
+
+/// Preview-only wrapper for AlternativePlan since it requires Decoder init
+private struct PreviewAlternativePlan: Identifiable {
+    var id: String { tradeStyle }
+    let tradeStyle: String
+    let bias: String
+    let suitable: Bool
+    let confidence: Int
+    let holdingPeriod: String
+    let briefThesis: String
+    let whyNotSelected: String
+    let riskReward: Double?
+    let positionRecommendation: String?
+    let riskWarnings: [String]
+
+    var tradeStyleDisplay: String {
+        switch tradeStyle.lowercased() {
+        case "day": return "Day Trade"
+        case "swing": return "Swing Trade"
+        case "position": return "Position Trade"
+        default: return tradeStyle.capitalized
+        }
+    }
+
+    var tradeStyleIcon: String {
+        switch tradeStyle.lowercased() {
+        case "day": return "bolt.fill"
+        case "swing": return "chart.line.uptrend.xyaxis"
+        case "position": return "calendar"
+        default: return "chart.bar.fill"
+        }
+    }
+
+    var hasPositionRecommendation: Bool {
+        positionRecommendation != nil && !positionRecommendation!.isEmpty
+    }
+
+    var positionRecommendationDisplay: String {
+        guard let rec = positionRecommendation?.lowercased() else { return "" }
+        switch rec {
+        case "hold": return "HOLD"
+        case "trim": return "TRIM"
+        case "reduce": return "REDUCE"
+        case "exit": return "EXIT"
+        case "add": return "ADD"
+        default: return rec.uppercased()
+        }
+    }
+}
+
+// Extend AlternativeAnalysesSectionView to accept preview data
+private struct AlternativeAnalysesSectionView_Preview: View {
+    let alternatives: [PreviewAlternativePlan]
+
+    @State private var isExpanded = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+
+                    Text("ALTERNATIVE ANALYSES")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .tracking(0.8)
+
+                    Spacer()
+
+                    Text("\(alternatives.count) styles")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Color(.tertiaryLabel))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(16)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    Divider()
+                        .padding(.horizontal, 16)
+
+                    VStack(spacing: 12) {
+                        ForEach(alternatives) { alt in
+                            AlternativeCardView_Preview(alternative: alt)
+                        }
+                    }
+                    .padding(16)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+    }
+}
+
+private struct AlternativeCardView_Preview: View {
+    let alternative: PreviewAlternativePlan
+
+    private var biasColor: Color {
+        switch alternative.bias.lowercased() {
+        case "bullish": return Color(hex: "10B981")
+        case "bearish": return Color(hex: "EF4444")
+        default: return .secondary
+        }
+    }
+
+    private var recommendationColor: Color {
+        guard let rec = alternative.positionRecommendation?.lowercased() else { return .secondary }
+        switch rec {
+        case "hold": return Color(hex: "10B981")
+        case "add": return Color(hex: "3B82F6")
+        case "trim", "reduce": return Color(hex: "F59E0B")
+        case "exit": return Color(hex: "EF4444")
+        default: return .secondary
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(Color(.tertiarySystemFill))
+                        .frame(width: 36, height: 36)
+
+                    Image(systemName: alternative.tradeStyleIcon)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(alternative.tradeStyleDisplay)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.primary)
+
+                    Text(alternative.holdingPeriod)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(alternative.bias.uppercased())
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(biasColor)
+
+                    Text("\(alternative.confidence)%")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if alternative.hasPositionRecommendation {
+                HStack(spacing: 8) {
+                    Text("Recommends:")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+
+                    Text(alternative.positionRecommendationDisplay)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(recommendationColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(recommendationColor.opacity(0.12))
+                        )
+                }
+            }
+
+            if !alternative.riskWarnings.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(alternative.riskWarnings.prefix(2).enumerated()), id: \.offset) { _, warning in
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 9))
+                                .foregroundColor(Color(hex: "F59E0B").opacity(0.7))
+
+                            Text(warning)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(Color(hex: "F59E0B").opacity(0.8))
+                                .lineLimit(2)
+                        }
+                    }
+                }
+            }
+
+            if !alternative.whyNotSelected.isEmpty {
+                Text(alternative.whyNotSelected)
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundColor(Color(.tertiaryLabel))
+                    .lineSpacing(2)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(.tertiarySystemBackground))
+        )
+    }
+}
+
+// MARK: - V2 Sub-Agent Card Previews (V1-Style Hierarchical)
+
+#Preview("V2 SubAgent - Running") {
+    ScrollView {
+        VStack(spacing: 16) {
+            V2SubAgentCard(
+                agent: SubAgentProgress(
+                    agentName: "day-trade-analyzer",
+                    displayName: "Day Trade",
+                    status: .analyzingChart,
+                    currentStep: "Vision analysis (5-min chart)",
+                    stepsCompleted: [
+                        "Gathered 5-min bars",
+                        "Calculated EMAs (5, 9, 20)",
+                        "Found support/resistance levels",
+                        "Detected patterns",
+                        "Generated 5-min chart"
+                    ],
+                    findings: [
+                        "Price: $189.45",
+                        "RSI: 58.3 (neutral)",
+                        "MACD: Bullish crossover",
+                        "Support: $187.50",
+                        "Resistance: $192.00",
+                        "Pattern: Opening range breakout",
+                        "Chart: 5-min candlestick rendered"
+                    ],
+                    elapsedMs: 2500,
+                    errorMessage: nil
+                ),
+                isExpanded: true,
+                onToggle: {},
+                pulseAnimation: true
+            )
+
+            V2SubAgentCard(
+                agent: SubAgentProgress(
+                    agentName: "swing-trade-analyzer",
+                    displayName: "Swing Trade",
+                    status: .generatingChart,
+                    currentStep: "Generating daily chart",
+                    stepsCompleted: [
+                        "Gathered daily bars",
+                        "Calculated EMAs (9, 21, 50)",
+                        "Calculated support levels"
+                    ],
+                    findings: [
+                        "Price: $189.45",
+                        "RSI: 52.1 (neutral)",
+                        "Support: $185.00"
+                    ],
+                    elapsedMs: 1800,
+                    errorMessage: nil
+                ),
+                isExpanded: true,
+                onToggle: {},
+                pulseAnimation: true
+            )
+
+            V2SubAgentCard(
+                agent: SubAgentProgress(
+                    agentName: "position-trade-analyzer",
+                    displayName: "Position Trade",
+                    status: .gatheringData,
+                    currentStep: "Gathering weekly bars",
+                    stepsCompleted: [],
+                    findings: [],
+                    elapsedMs: 800,
+                    errorMessage: nil
+                ),
+                isExpanded: true,
+                onToggle: {},
+                pulseAnimation: true
+            )
+        }
+        .padding(20)
+    }
+    .background(Color(.systemBackground))
+}
+
+#Preview("V2 SubAgent - Complete") {
+    ScrollView {
+        VStack(spacing: 16) {
+            V2SubAgentCard(
+                agent: SubAgentProgress(
+                    agentName: "swing-trade-analyzer",
+                    displayName: "Swing Trade",
+                    status: .completed,
+                    currentStep: nil,
+                    stepsCompleted: [
+                        "Gathered daily bars",
+                        "Calculated EMAs (9, 21, 50)",
+                        "Found support/resistance levels",
+                        "Detected bull flag pattern",
+                        "Generated daily chart",
+                        "Vision analysis complete",
+                        "Generated trading plan"
+                    ],
+                    findings: [
+                        "Price: $189.45",
+                        "RSI: 52.1 (neutral momentum)",
+                        "MACD: Bullish crossover forming",
+                        "EMA: Price above 9, 21, testing 50",
+                        "Support: $185.00, $180.50",
+                        "Resistance: $192.00, $198.50",
+                        "Pattern: Bull flag forming",
+                        "Chart: Daily candlestick rendered (1050x700)",
+                        "Trend: Clean uptrend with consolidation",
+                        "Visual: Support holding well",
+                        "Bias: Bullish",
+                        "Confidence: 78%",
+                        "Entry: $188.50 - $190.00",
+                        "Target 1: $195.00",
+                        "Stop: $184.00"
+                    ],
+                    elapsedMs: 4200,
+                    errorMessage: nil
+                ),
+                isExpanded: true,
+                onToggle: {},
+                pulseAnimation: false
+            )
+        }
+        .padding(20)
+    }
+    .background(Color(.systemBackground))
+}
+
+#Preview("V2 Generating View") {
+    let manager = PlanGenerationManager.shared
+
+    return ManagerGeneratingView(symbol: "AAPL", manager: manager)
+        .onAppear {
+            // Simulate some progress
+            manager.startGeneration(for: "AAPL")
+        }
 }

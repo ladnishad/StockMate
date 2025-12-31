@@ -3,6 +3,7 @@ import SwiftUI
 // MARK: - Analysis Step Model
 
 enum AnalysisStepType: String, CaseIterable {
+    // V1 steps (existing)
     case gatheringData = "gathering_data"
     case technicalIndicators = "technical_indicators"
     case supportResistance = "support_resistance"
@@ -11,6 +12,12 @@ enum AnalysisStepType: String, CaseIterable {
     case visionAnalysis = "vision_analysis"
     case generatingPlan = "generating_plan"
     case complete = "complete"
+
+    // V2 steps (sub-agent orchestration)
+    case gatheringCommonData = "gathering_common_data"
+    case spawningSubagents = "spawning_subagents"
+    case waitingForSubagents = "waiting_for_subagents"
+    case selectingBest = "selecting_best"
 
     var displayTitle: String {
         switch self {
@@ -22,6 +29,11 @@ enum AnalysisStepType: String, CaseIterable {
         case .visionAnalysis: return "Analyzing chart with Vision"
         case .generatingPlan: return "Generating trading plan"
         case .complete: return "Analysis complete"
+        // V2 titles
+        case .gatheringCommonData: return "Gathering common data"
+        case .spawningSubagents: return "Spawning trade analyzers"
+        case .waitingForSubagents: return "Analyzing in parallel"
+        case .selectingBest: return "Selecting best plan"
         }
     }
 
@@ -35,6 +47,11 @@ enum AnalysisStepType: String, CaseIterable {
         case .visionAnalysis: return "eye"
         case .generatingPlan: return "doc.text"
         case .complete: return "checkmark.seal.fill"
+        // V2 icons
+        case .gatheringCommonData: return "antenna.radiowaves.left.and.right"
+        case .spawningSubagents: return "arrow.triangle.branch"
+        case .waitingForSubagents: return "arrow.triangle.merge"
+        case .selectingBest: return "star.fill"
         }
     }
 }
@@ -50,6 +67,495 @@ struct AnalysisStep: Identifiable, Equatable {
         case pending
         case active
         case completed
+    }
+}
+
+// MARK: - V2 Sub-Agent Models
+
+/// Status for individual sub-agents in the v2 parallel flow
+enum SubAgentStatus: String, Codable {
+    case pending
+    case running
+    case gatheringData = "gathering_data"
+    case calculatingTechnicals = "calculating_technicals"
+    case generatingChart = "generating_chart"
+    case analyzingChart = "analyzing_chart"
+    case generatingPlan = "generating_plan"
+    case completed
+    case failed
+
+    var displayText: String {
+        switch self {
+        case .pending: return "Waiting"
+        case .running: return "Starting"
+        case .gatheringData: return "Gathering data"
+        case .calculatingTechnicals: return "Calculating indicators"
+        case .generatingChart: return "Generating chart"
+        case .analyzingChart: return "Vision analysis"
+        case .generatingPlan: return "Creating plan"
+        case .completed: return "Complete"
+        case .failed: return "Failed"
+        }
+    }
+
+    var isActive: Bool {
+        switch self {
+        case .pending, .completed, .failed: return false
+        default: return true
+        }
+    }
+}
+
+// MARK: - Sub-Agent Step Types (V1-style hierarchical)
+
+/// Step types for V1-style hierarchical display within each sub-agent
+enum SubAgentStepType: String, CaseIterable, Codable {
+    case data = "data"
+    case technicals = "technicals"
+    case levels = "levels"
+    case patterns = "patterns"
+    case chart = "chart"
+    case vision = "vision"
+    case plan = "plan"
+
+    var displayName: String {
+        switch self {
+        case .data: return "Market Data"
+        case .technicals: return "Technicals"
+        case .levels: return "Key Levels"
+        case .patterns: return "Patterns"
+        case .chart: return "Chart"
+        case .vision: return "Vision"
+        case .plan: return "Plan"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .data: return "antenna.radiowaves.left.and.right"
+        case .technicals: return "function"
+        case .levels: return "arrow.up.arrow.down"
+        case .patterns: return "chart.xyaxis.line"
+        case .chart: return "chart.bar.xaxis"
+        case .vision: return "eye"
+        case .plan: return "doc.text"
+        }
+    }
+
+    /// Order index for sorting
+    var order: Int {
+        switch self {
+        case .data: return 0
+        case .technicals: return 1
+        case .levels: return 2
+        case .patterns: return 3
+        case .chart: return 4
+        case .vision: return 5
+        case .plan: return 6
+        }
+    }
+}
+
+/// Progress for a single step within a sub-agent (V1-style)
+struct SubAgentStepProgress: Identifiable, Equatable {
+    let id: String
+    let type: SubAgentStepType
+    var status: AnalysisStep.StepStatus
+    var findings: [String]
+    var timestamp: Date?
+
+    init(type: SubAgentStepType, status: AnalysisStep.StepStatus = .pending, findings: [String] = [], timestamp: Date? = nil) {
+        self.id = type.rawValue
+        self.type = type
+        self.status = status
+        self.findings = findings
+        self.timestamp = timestamp
+    }
+}
+
+/// Progress for a single sub-agent
+struct SubAgentProgress: Identifiable, Equatable, Codable {
+    var id: String { agentName }
+    let agentName: String
+    let displayName: String
+    var status: SubAgentStatus
+    var currentStep: String?
+    var stepsCompleted: [String]
+    var findings: [String]
+    var elapsedMs: Int
+    var errorMessage: String?
+
+    /// V1-style structured steps (derived from stepsCompleted/findings)
+    var structuredSteps: [SubAgentStepProgress] {
+        parseStructuredSteps()
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case agentName = "agent_name"
+        case displayName = "display_name"
+        case status
+        case currentStep = "current_step"
+        case stepsCompleted = "steps_completed"
+        case findings
+        case elapsedMs = "elapsed_ms"
+        case errorMessage = "error_message"
+    }
+
+    /// Memberwise initializer for creating instances programmatically
+    init(
+        agentName: String,
+        displayName: String,
+        status: SubAgentStatus,
+        currentStep: String?,
+        stepsCompleted: [String],
+        findings: [String],
+        elapsedMs: Int,
+        errorMessage: String?
+    ) {
+        self.agentName = agentName
+        self.displayName = displayName
+        self.status = status
+        self.currentStep = currentStep
+        self.stepsCompleted = stepsCompleted
+        self.findings = findings
+        self.elapsedMs = elapsedMs
+        self.errorMessage = errorMessage
+    }
+
+    var icon: String {
+        switch agentName {
+        case "day-trade-analyzer": return "clock"
+        case "swing-trade-analyzer": return "chart.line.uptrend.xyaxis"
+        case "position-trade-analyzer": return "chart.bar.fill"
+        default: return "cpu"
+        }
+    }
+
+    var accentColor: Color {
+        switch agentName {
+        case "day-trade-analyzer": return Color(red: 1.0, green: 0.6, blue: 0.0)  // Orange
+        case "swing-trade-analyzer": return Color(red: 0.4, green: 0.7, blue: 1.0)  // Blue
+        case "position-trade-analyzer": return Color(red: 0.7, green: 0.5, blue: 1.0)  // Purple
+        default: return Color.white
+        }
+    }
+
+    // MARK: - Parse Structured Steps
+
+    /// Parses flat stepsCompleted/findings into V1-style hierarchical steps
+    private func parseStructuredSteps() -> [SubAgentStepProgress] {
+        var steps: [SubAgentStepProgress] = []
+
+        // Determine which steps are completed based on status and currentStep
+        let completedTypes = determineCompletedStepTypes()
+        let activeType = determineActiveStepType()
+
+        for stepType in SubAgentStepType.allCases {
+            var stepStatus: AnalysisStep.StepStatus = .pending
+            var stepFindings: [String] = []
+
+            if completedTypes.contains(stepType) {
+                stepStatus = .completed
+                stepFindings = findingsForStep(stepType)
+            } else if stepType == activeType {
+                stepStatus = .active
+                stepFindings = findingsForStep(stepType)
+            }
+
+            // Only include steps that have started or are relevant
+            if stepStatus != .pending || shouldShowPendingStep(stepType, activeType: activeType) {
+                steps.append(SubAgentStepProgress(
+                    type: stepType,
+                    status: stepStatus,
+                    findings: stepFindings
+                ))
+            }
+        }
+
+        return steps.sorted { $0.type.order < $1.type.order }
+    }
+
+    /// Determines which step types are completed based on current progress
+    private func determineCompletedStepTypes() -> Set<SubAgentStepType> {
+        var completed: Set<SubAgentStepType> = []
+
+        // Check status-based completion
+        switch status {
+        case .completed:
+            // All steps completed
+            return Set(SubAgentStepType.allCases)
+        case .generatingPlan:
+            completed = [.data, .technicals, .levels, .patterns, .chart, .vision]
+        case .analyzingChart:
+            completed = [.data, .technicals, .levels, .patterns, .chart]
+        case .generatingChart:
+            completed = [.data, .technicals, .levels, .patterns]
+        case .calculatingTechnicals:
+            completed = [.data]
+        case .gatheringData:
+            completed = []
+        default:
+            break
+        }
+
+        // Also check stepsCompleted strings for more granular completion
+        for step in stepsCompleted {
+            let lower = step.lowercased()
+            if lower.contains("bar") || lower.contains("data") || lower.contains("price") {
+                completed.insert(.data)
+            }
+            if lower.contains("ema") || lower.contains("rsi") || lower.contains("macd") || lower.contains("indicator") || lower.contains("technical") {
+                completed.insert(.technicals)
+            }
+            if lower.contains("level") || lower.contains("support") || lower.contains("resistance") {
+                completed.insert(.levels)
+            }
+            if lower.contains("pattern") {
+                completed.insert(.patterns)
+            }
+            if lower.contains("chart") && !lower.contains("vision") && !lower.contains("analy") {
+                completed.insert(.chart)
+            }
+            if lower.contains("vision") || lower.contains("image") {
+                completed.insert(.vision)
+            }
+            if lower.contains("plan") || lower.contains("recommendation") {
+                completed.insert(.plan)
+            }
+        }
+
+        return completed
+    }
+
+    /// Determines the currently active step type
+    private func determineActiveStepType() -> SubAgentStepType? {
+        switch status {
+        case .gatheringData, .running:
+            return .data
+        case .calculatingTechnicals:
+            return .technicals
+        case .generatingChart:
+            return .chart
+        case .analyzingChart:
+            return .vision
+        case .generatingPlan:
+            return .plan
+        default:
+            // Check currentStep string
+            if let current = currentStep?.lowercased() {
+                if current.contains("bar") || current.contains("data") || current.contains("price") {
+                    return .data
+                }
+                if current.contains("ema") || current.contains("indicator") || current.contains("technical") {
+                    return .technicals
+                }
+                if current.contains("level") || current.contains("support") {
+                    return .levels
+                }
+                if current.contains("pattern") {
+                    return .patterns
+                }
+                if current.contains("chart") && !current.contains("vision") {
+                    return .chart
+                }
+                if current.contains("vision") || current.contains("image") || current.contains("analy") {
+                    return .vision
+                }
+                if current.contains("plan") {
+                    return .plan
+                }
+            }
+            return nil
+        }
+    }
+
+    /// Gets findings relevant to a specific step type
+    private func findingsForStep(_ stepType: SubAgentStepType) -> [String] {
+        return findings.filter { finding in
+            let lower = finding.lowercased()
+            switch stepType {
+            case .data:
+                return lower.contains("price") || lower.contains("bid") || lower.contains("ask") ||
+                       lower.contains("volume") || lower.contains("bar")
+            case .technicals:
+                return lower.contains("rsi") || lower.contains("macd") || lower.contains("ema") ||
+                       lower.contains("indicator") || lower.contains("momentum")
+            case .levels:
+                return lower.contains("support") || lower.contains("resistance") || lower.contains("level")
+            case .patterns:
+                return lower.contains("pattern") || lower.contains("flag") || lower.contains("triangle") ||
+                       lower.contains("breakout") || lower.contains("wedge")
+            case .chart:
+                return lower.contains("chart") || lower.contains("render") || lower.contains("candlestick")
+            case .vision:
+                return lower.contains("vision") || lower.contains("trend") || lower.contains("visual") ||
+                       lower.contains("analysis")
+            case .plan:
+                return lower.contains("bias") || lower.contains("confidence") || lower.contains("entry") ||
+                       lower.contains("target") || lower.contains("stop") || lower.contains("recommendation")
+            }
+        }
+    }
+
+    /// Determines if a pending step should be shown (shows next few pending steps)
+    private func shouldShowPendingStep(_ stepType: SubAgentStepType, activeType: SubAgentStepType?) -> Bool {
+        guard let active = activeType else {
+            // If no active step, show first 3 pending steps
+            return stepType.order < 3
+        }
+        // Show pending steps that come after the active one (up to 2 ahead)
+        return stepType.order > active.order && stepType.order <= active.order + 2
+    }
+}
+
+// MARK: - Sub-Agent Progress Row (V2)
+
+struct SubAgentProgressRow: View {
+    let agent: SubAgentProgress
+    let pulseAnimation: Bool
+
+    private let cardBg = Color(red: 0.09, green: 0.10, blue: 0.12)
+    private let accentGreen = Color(red: 0.0, green: 0.85, blue: 0.45)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Header with agent name and status
+            HStack(spacing: 10) {
+                // Agent icon
+                ZStack {
+                    Circle()
+                        .fill(agent.accentColor.opacity(0.15))
+                        .frame(width: 36, height: 36)
+
+                    if agent.status.isActive {
+                        Circle()
+                            .fill(agent.accentColor.opacity(0.2))
+                            .frame(width: 36, height: 36)
+                            .scaleEffect(pulseAnimation ? 1.3 : 1.0)
+                            .opacity(pulseAnimation ? 0 : 0.5)
+
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: agent.accentColor))
+                            .scaleEffect(0.6)
+                    } else if agent.status == .completed {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(accentGreen)
+                    } else if agent.status == .failed {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.red)
+                    } else {
+                        Image(systemName: agent.icon)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(agent.accentColor.opacity(0.5))
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(agent.displayName)
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.white)
+
+                    Text(agent.currentStep ?? agent.status.displayText)
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                // Status badge
+                if agent.status.isActive {
+                    Text("RUNNING")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundStyle(agent.accentColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(agent.accentColor.opacity(0.15))
+                        .clipShape(Capsule())
+                } else if agent.status == .completed {
+                    Text("DONE")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundStyle(accentGreen)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(accentGreen.opacity(0.15))
+                        .clipShape(Capsule())
+                }
+            }
+
+            // Findings (when completed)
+            if agent.status == .completed && !agent.findings.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(agent.findings, id: \.self) { finding in
+                        HStack(spacing: 6) {
+                            Text("→")
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundStyle(agent.accentColor.opacity(0.6))
+
+                            Text(finding)
+                                .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
+                    }
+                }
+                .padding(.leading, 46)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(agent.status.isActive ? cardBg : cardBg.opacity(0.5))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(
+                            agent.status.isActive ? agent.accentColor.opacity(0.3) :
+                            agent.status == .completed ? accentGreen.opacity(0.2) : Color.clear,
+                            lineWidth: 1
+                        )
+                )
+        )
+    }
+}
+
+// MARK: - Parallel Sub-Agents Container (V2)
+
+struct ParallelSubAgentsView: View {
+    let subagents: [SubAgentProgress]
+    let pulseAnimation: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Header
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
+
+                Text("Parallel Analysis")
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.6))
+
+                Spacer()
+
+                let completed = subagents.filter { $0.status == .completed }.count
+                Text("\(completed)/\(subagents.count)")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.4))
+            }
+            .padding(.horizontal, 4)
+
+            // Sub-agent rows
+            ForEach(subagents) { agent in
+                SubAgentProgressRow(agent: agent, pulseAnimation: pulseAnimation)
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.02))
+        )
     }
 }
 
@@ -611,4 +1117,98 @@ private struct CompletionBanner: View {
         ]),
         isComplete: .constant(true)
     )
+}
+
+// MARK: - V2 Sub-Agent Previews
+
+#Preview("V2 Parallel Sub-Agents - Running") {
+    let terminalBg = Color(red: 0.06, green: 0.07, blue: 0.09)
+
+    return ScrollView {
+        VStack(spacing: 20) {
+            ParallelSubAgentsView(
+                subagents: [
+                    SubAgentProgress(
+                        agentName: "day-trade-analyzer",
+                        displayName: "Day Trade",
+                        status: .analyzingChart,
+                        currentStep: "Vision analysis (5-min chart)",
+                        stepsCompleted: ["Gathered 5-min bars", "Calculated EMAs", "Generated chart"],
+                        findings: [],
+                        elapsedMs: 2500,
+                        errorMessage: nil
+                    ),
+                    SubAgentProgress(
+                        agentName: "swing-trade-analyzer",
+                        displayName: "Swing Trade",
+                        status: .generatingChart,
+                        currentStep: "Generating daily chart",
+                        stepsCompleted: ["Gathered daily bars", "Calculated EMAs"],
+                        findings: [],
+                        elapsedMs: 1800,
+                        errorMessage: nil
+                    ),
+                    SubAgentProgress(
+                        agentName: "position-trade-analyzer",
+                        displayName: "Position Trade",
+                        status: .gatheringData,
+                        currentStep: "Gathering weekly bars",
+                        stepsCompleted: [],
+                        findings: [],
+                        elapsedMs: 800,
+                        errorMessage: nil
+                    ),
+                ],
+                pulseAnimation: true
+            )
+        }
+        .padding(20)
+    }
+    .background(terminalBg)
+}
+
+#Preview("V2 Parallel Sub-Agents - Complete") {
+    let terminalBg = Color(red: 0.06, green: 0.07, blue: 0.09)
+
+    return ScrollView {
+        VStack(spacing: 20) {
+            ParallelSubAgentsView(
+                subagents: [
+                    SubAgentProgress(
+                        agentName: "day-trade-analyzer",
+                        displayName: "Day Trade",
+                        status: .completed,
+                        currentStep: nil,
+                        stepsCompleted: ["All steps"],
+                        findings: ["Bullish", "65% confidence", "ATR: 3.2%"],
+                        elapsedMs: 4200,
+                        errorMessage: nil
+                    ),
+                    SubAgentProgress(
+                        agentName: "swing-trade-analyzer",
+                        displayName: "Swing Trade",
+                        status: .completed,
+                        currentStep: nil,
+                        stepsCompleted: ["All steps"],
+                        findings: ["Bullish", "78% confidence", "Bull flag forming"],
+                        elapsedMs: 3800,
+                        errorMessage: nil
+                    ),
+                    SubAgentProgress(
+                        agentName: "position-trade-analyzer",
+                        displayName: "Position Trade",
+                        status: .completed,
+                        currentStep: nil,
+                        stepsCompleted: ["All steps"],
+                        findings: ["Neutral", "No clear weekly trend"],
+                        elapsedMs: 5100,
+                        errorMessage: nil
+                    ),
+                ],
+                pulseAnimation: false
+            )
+        }
+        .padding(20)
+    }
+    .background(terminalBg)
 }

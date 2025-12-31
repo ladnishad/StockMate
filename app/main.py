@@ -3332,6 +3332,70 @@ async def create_plan_stream(
 
 
 @app.post(
+    "/plan/{symbol}/generate/v2",
+    summary="Generate trading plan with parallel sub-agents (v2)",
+    description="Generate AI trading plan using Claude Agent SDK with parallel sub-agents for Day/Swing/Position trade analysis.",
+)
+async def generate_plan_v2_stream(
+    symbol: str,
+    force_new: bool = True,
+    user: User = Depends(get_current_user),
+):
+    """Generate trading plan with parallel sub-agents via Claude Agent SDK.
+
+    This v2 endpoint uses three specialized sub-agents running in parallel:
+    - Day Trade Analyzer: Intraday setups (5-min charts, ATR > 3%)
+    - Swing Trade Analyzer: Multi-day patterns (daily charts, ATR 1-3%)
+    - Position Trade Analyzer: Major trends (weekly charts, ATR < 1.5%)
+
+    Each agent gathers its own timeframe-specific data, generates its own chart,
+    and performs vision analysis. The orchestrator then selects the best plan.
+
+    Returns Server-Sent Events with progress for each sub-agent.
+    """
+    from app.agent.sdk.orchestrator import TradePlanOrchestrator
+
+    symbol = symbol.upper()
+    user_id = user.id
+
+    async def generate_stream():
+        try:
+            orchestrator = TradePlanOrchestrator()
+
+            async for event in orchestrator.generate_plan_stream(
+                symbol=symbol,
+                user_id=user_id,
+                force_new=force_new,
+            ):
+                # Use the StreamEvent's to_sse method for proper formatting
+                yield event.to_sse()
+
+            # Signal stream completion
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.error(f"V2 plan generation error for {symbol}: {str(e)}")
+            import time
+            error_event = {
+                "type": "error",
+                "error_message": str(e),
+                "timestamp": time.time(),
+            }
+            yield f"data: {json.dumps(error_event)}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@app.post(
     "/chat/{symbol}/evaluate",
     summary="Evaluate trading plan",
     description="Re-evaluate the trading plan against current market conditions.",

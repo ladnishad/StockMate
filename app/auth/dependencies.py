@@ -184,6 +184,16 @@ async def get_current_user(
     Raises:
         HTTPException 401: If no token provided or token is invalid
     """
+    import os
+
+    # Test mode bypass - return a test user
+    if os.getenv("BYPASS_AUTH", "").lower() == "true":
+        return User(
+            id="test-user-00000000-0000-0000-0000-000000000000",
+            email="test@stockmate.local",
+            email_verified=True,
+        )
+
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

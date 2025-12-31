@@ -28,6 +28,11 @@ final class TradingPlanViewModel: ObservableObject {
     @Published var analysisSteps: [AnalysisStep] = []
     @Published var isAnalysisComplete: Bool = false
 
+    // V2: Sub-agent progress (parallel trade style analyzers)
+    @Published var subagentProgress: [String: SubAgentProgress] = [:]
+    @Published var expandedSubagents: Set<String> = []
+    @Published var isV2Mode: Bool = false  // True when using parallel sub-agents
+
     // For live update animation
     @Published private(set) var updatePhase: UpdatePhase = .idle
 
@@ -532,6 +537,15 @@ final class TradingPlanViewModel: ObservableObject {
     var hasActiveSession: Bool { sessionId != nil && (sessionStatus == "draft" || sessionStatus == "refining") }
     var isDraftMode: Bool { sessionStatus == "draft" || sessionStatus == "refining" }
 
+    /// Set draft plan from external source (e.g., PlanGenerationManager)
+    func setDraftPlan(_ plan: TradingPlanResponse) {
+        withAnimation {
+            self.draftPlan = plan
+            self.sessionStatus = "draft"
+            self.isAnalysisComplete = true
+        }
+    }
+
     /// Start an interactive planning session
     func startPlanSession() async {
         guard !isLoading else { return }
@@ -564,7 +578,18 @@ final class TradingPlanViewModel: ObservableObject {
                 case "phase":
                     await handlePhaseEvent(event.phase)
 
-                case "plan_complete", "plan":
+                // V2: Sub-agent progress events
+                case "subagent_progress":
+                    if let subagentsData = event.subagents {
+                        await handleSubagentProgress(subagentsData)
+                    }
+
+                case "subagent_complete":
+                    if let agentName = event.agentName {
+                        await handleSubagentComplete(agentName, findings: event.agentFindings ?? [])
+                    }
+
+                case "plan_complete", "plan", "final_result":
                     print("[PlanSession] Received plan event")
                     if let newPlan = event.plan {
                         receivedPlan = true
@@ -573,6 +598,8 @@ final class TradingPlanViewModel: ObservableObject {
                             self.sessionStatus = "draft"
                             self.updatePhase = .complete
                             self.isAnalysisComplete = true
+                            // Mark all sub-agents as complete
+                            self.markAllSubagentsComplete()
                         }
                     } else {
                         print("[PlanSession] Plan event had nil plan!")
@@ -952,9 +979,116 @@ final class TradingPlanViewModel: ObservableObject {
         withAnimation {
             self.plan = nil
             self.error = nil
+            self.subagentProgress = [:]
+            self.isV2Mode = false
         }
 
         // Start fresh plan generation
         await startPlanSession()
+    }
+
+    // MARK: - V2 Sub-Agent Methods
+
+    /// Toggle expansion state for a sub-agent
+    func toggleSubagentExpansion(_ agentName: String) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if expandedSubagents.contains(agentName) {
+                expandedSubagents.remove(agentName)
+            } else {
+                expandedSubagents.insert(agentName)
+            }
+        }
+    }
+
+    /// Handle sub-agent progress update from stream
+    private func handleSubagentProgress(_ data: [String: APIService.SubAgentProgressData]) async {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            self.isV2Mode = true
+
+            for (agentName, progressData) in data {
+                // Convert API data to UI model
+                let progress = SubAgentProgress(
+                    agentName: progressData.agentName,
+                    displayName: progressData.displayName,
+                    status: SubAgentStatus(rawValue: progressData.status) ?? .pending,
+                    currentStep: progressData.currentStep,
+                    stepsCompleted: progressData.stepsCompleted,
+                    findings: progressData.findings,
+                    elapsedMs: progressData.elapsedMs,
+                    errorMessage: progressData.errorMessage
+                )
+                self.subagentProgress[agentName] = progress
+            }
+        }
+    }
+
+    /// Handle sub-agent completion event
+    private func handleSubagentComplete(_ agentName: String, findings: [String]) async {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if var progress = self.subagentProgress[agentName] {
+                progress.status = .completed
+                progress.findings = findings
+                self.subagentProgress[agentName] = progress
+            }
+        }
+    }
+
+    /// Mark all sub-agents as complete (called when final plan arrives)
+    private func markAllSubagentsComplete() {
+        for agentName in subagentProgress.keys {
+            if var progress = subagentProgress[agentName] {
+                if progress.status != .completed && progress.status != .failed {
+                    progress.status = .completed
+                    subagentProgress[agentName] = progress
+                }
+            }
+        }
+    }
+
+    /// Initialize V2 sub-agents with pending state
+    func initializeV2Subagents() {
+        let agents = ["day-trade-analyzer", "swing-trade-analyzer", "position-trade-analyzer"]
+        let displayNames = [
+            "day-trade-analyzer": "Day Trade",
+            "swing-trade-analyzer": "Swing Trade",
+            "position-trade-analyzer": "Position Trade"
+        ]
+
+        withAnimation {
+            self.isV2Mode = true
+            self.subagentProgress = [:]
+
+            for agentName in agents {
+                self.subagentProgress[agentName] = SubAgentProgress(
+                    agentName: agentName,
+                    displayName: displayNames[agentName] ?? agentName,
+                    status: .pending,
+                    currentStep: nil,
+                    stepsCompleted: [],
+                    findings: [],
+                    elapsedMs: 0,
+                    errorMessage: nil
+                )
+            }
+
+            // Auto-expand all agents initially
+            self.expandedSubagents = Set(agents)
+        }
+    }
+
+    /// Get sub-agents sorted by order (Day, Swing, Position)
+    var sortedSubagents: [SubAgentProgress] {
+        let order = ["day-trade-analyzer", "swing-trade-analyzer", "position-trade-analyzer"]
+        return order.compactMap { subagentProgress[$0] }
+    }
+
+    /// Check if any sub-agent is still running
+    var hasRunningSubagents: Bool {
+        subagentProgress.values.contains { $0.status.isActive }
+    }
+
+    /// Get count of completed sub-agents
+    var completedSubagentCount: Int {
+        subagentProgress.values.filter { $0.status == .completed }.count
     }
 }
