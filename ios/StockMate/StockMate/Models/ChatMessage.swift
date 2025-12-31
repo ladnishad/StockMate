@@ -242,7 +242,7 @@ struct EvaluationResponse: Codable {
 }
 
 /// Trading plan from the planning agent
-struct TradingPlanResponse: Codable {
+struct TradingPlanResponse: Codable, Equatable {
     let symbol: String
     let bias: String
     let thesis: String
@@ -275,6 +275,12 @@ struct TradingPlanResponse: Codable {
     let redditSentiment: String?  // bullish, bearish, neutral, mixed, none
     let redditBuzz: String?  // Summary of Reddit discussion
 
+    // V2 Position Management fields
+    let positionRecommendation: String?  // "hold", "trim", "reduce", "exit", or null
+    let whatToWatch: [String]  // Actionable items
+    let riskWarnings: [String]  // Risk warnings
+    let alternatives: [AlternativePlan]  // Alternative trade styles
+
     enum CodingKeys: String, CodingKey {
         case symbol, bias, thesis, status, confidence
         case entryZoneLow = "entry_zone_low"
@@ -299,6 +305,46 @@ struct TradingPlanResponse: Codable {
         case newsSummary = "news_summary"
         case redditSentiment = "reddit_sentiment"
         case redditBuzz = "reddit_buzz"
+        case positionRecommendation = "position_recommendation"
+        case whatToWatch = "what_to_watch"
+        case riskWarnings = "risk_warnings"
+        case alternatives
+    }
+
+    // Default initializer for optional arrays
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        symbol = try container.decode(String.self, forKey: .symbol)
+        bias = try container.decode(String.self, forKey: .bias)
+        thesis = try container.decode(String.self, forKey: .thesis)
+        entryZoneLow = try container.decodeIfPresent(Double.self, forKey: .entryZoneLow)
+        entryZoneHigh = try container.decodeIfPresent(Double.self, forKey: .entryZoneHigh)
+        stopLoss = try container.decodeIfPresent(Double.self, forKey: .stopLoss)
+        stopReasoning = try container.decodeIfPresent(String.self, forKey: .stopReasoning) ?? ""
+        target1 = try container.decodeIfPresent(Double.self, forKey: .target1)
+        target2 = try container.decodeIfPresent(Double.self, forKey: .target2)
+        target3 = try container.decodeIfPresent(Double.self, forKey: .target3)
+        targetReasoning = try container.decodeIfPresent(String.self, forKey: .targetReasoning) ?? ""
+        riskReward = try container.decodeIfPresent(Double.self, forKey: .riskReward)
+        keySupports = try container.decodeIfPresent([Double].self, forKey: .keySupports) ?? []
+        keyResistances = try container.decodeIfPresent([Double].self, forKey: .keyResistances) ?? []
+        invalidationCriteria = try container.decodeIfPresent(String.self, forKey: .invalidationCriteria) ?? ""
+        technicalSummary = try container.decodeIfPresent(String.self, forKey: .technicalSummary) ?? ""
+        status = try container.decodeIfPresent(String.self, forKey: .status) ?? "active"
+        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+        lastEvaluation = try container.decodeIfPresent(String.self, forKey: .lastEvaluation)
+        evaluationNotes = try container.decodeIfPresent(String.self, forKey: .evaluationNotes)
+        tradeStyle = try container.decodeIfPresent(String.self, forKey: .tradeStyle)
+        tradeStyleReasoning = try container.decodeIfPresent(String.self, forKey: .tradeStyleReasoning)
+        holdingPeriod = try container.decodeIfPresent(String.self, forKey: .holdingPeriod)
+        confidence = try container.decodeIfPresent(Int.self, forKey: .confidence)
+        newsSummary = try container.decodeIfPresent(String.self, forKey: .newsSummary)
+        redditSentiment = try container.decodeIfPresent(String.self, forKey: .redditSentiment)
+        redditBuzz = try container.decodeIfPresent(String.self, forKey: .redditBuzz)
+        positionRecommendation = try container.decodeIfPresent(String.self, forKey: .positionRecommendation)
+        whatToWatch = try container.decodeIfPresent([String].self, forKey: .whatToWatch) ?? []
+        riskWarnings = try container.decodeIfPresent([String].self, forKey: .riskWarnings) ?? []
+        alternatives = try container.decodeIfPresent([AlternativePlan].self, forKey: .alternatives) ?? []
     }
 
     var isBullish: Bool { bias.lowercased() == "bullish" }
@@ -351,6 +397,121 @@ struct TradingPlanResponse: Codable {
         case "neutral": return "gray"
         case "mixed": return "orange"
         default: return "gray"
+        }
+    }
+
+    // V2 Position recommendation helpers
+    var hasPositionRecommendation: Bool {
+        positionRecommendation != nil && !positionRecommendation!.isEmpty
+    }
+
+    var positionRecommendationDisplay: String {
+        guard let rec = positionRecommendation?.lowercased() else { return "" }
+        switch rec {
+        case "hold": return "HOLD"
+        case "trim": return "TRIM"
+        case "reduce": return "REDUCE"
+        case "exit": return "EXIT"
+        case "add": return "ADD"
+        default: return rec.uppercased()
+        }
+    }
+
+    var hasWatchItems: Bool {
+        !whatToWatch.isEmpty
+    }
+
+    var hasRiskWarnings: Bool {
+        !riskWarnings.isEmpty
+    }
+
+    var hasAlternatives: Bool {
+        !alternatives.isEmpty
+    }
+}
+
+// MARK: - Alternative Plan (V2)
+
+/// Alternative trade style analysis from the v2 sub-agent system
+struct AlternativePlan: Codable, Identifiable, Equatable {
+    var id: String { tradeStyle }
+
+    let tradeStyle: String  // "day", "swing", "position"
+    let bias: String  // "bullish", "bearish", "neutral"
+    let suitable: Bool
+    let confidence: Int
+    let holdingPeriod: String
+    let briefThesis: String
+    let whyNotSelected: String
+    let riskReward: Double?
+    let positionRecommendation: String?
+    let riskWarnings: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case tradeStyle = "trade_style"
+        case bias, suitable, confidence
+        case holdingPeriod = "holding_period"
+        case briefThesis = "brief_thesis"
+        case whyNotSelected = "why_not_selected"
+        case riskReward = "risk_reward"
+        case positionRecommendation = "position_recommendation"
+        case riskWarnings = "risk_warnings"
+    }
+
+    // Default initializer for optional arrays
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tradeStyle = try container.decode(String.self, forKey: .tradeStyle)
+        bias = try container.decode(String.self, forKey: .bias)
+        suitable = try container.decodeIfPresent(Bool.self, forKey: .suitable) ?? false
+        confidence = try container.decodeIfPresent(Int.self, forKey: .confidence) ?? 0
+        holdingPeriod = try container.decodeIfPresent(String.self, forKey: .holdingPeriod) ?? ""
+        briefThesis = try container.decodeIfPresent(String.self, forKey: .briefThesis) ?? ""
+        whyNotSelected = try container.decodeIfPresent(String.self, forKey: .whyNotSelected) ?? ""
+        riskReward = try container.decodeIfPresent(Double.self, forKey: .riskReward)
+        positionRecommendation = try container.decodeIfPresent(String.self, forKey: .positionRecommendation)
+        riskWarnings = try container.decodeIfPresent([String].self, forKey: .riskWarnings) ?? []
+    }
+
+    var tradeStyleDisplay: String {
+        switch tradeStyle.lowercased() {
+        case "day": return "Day Trade"
+        case "swing": return "Swing Trade"
+        case "position": return "Position Trade"
+        default: return tradeStyle.capitalized
+        }
+    }
+
+    var tradeStyleIcon: String {
+        switch tradeStyle.lowercased() {
+        case "day": return "bolt.fill"
+        case "swing": return "chart.line.uptrend.xyaxis"
+        case "position": return "calendar"
+        default: return "chart.bar.fill"
+        }
+    }
+
+    var biasColor: String {
+        switch bias.lowercased() {
+        case "bullish": return "green"
+        case "bearish": return "red"
+        default: return "gray"
+        }
+    }
+
+    var hasPositionRecommendation: Bool {
+        positionRecommendation != nil && !positionRecommendation!.isEmpty
+    }
+
+    var positionRecommendationDisplay: String {
+        guard let rec = positionRecommendation?.lowercased() else { return "" }
+        switch rec {
+        case "hold": return "HOLD"
+        case "trim": return "TRIM"
+        case "reduce": return "REDUCE"
+        case "exit": return "EXIT"
+        case "add": return "ADD"
+        default: return rec.uppercased()
         }
     }
 }

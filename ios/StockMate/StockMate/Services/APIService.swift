@@ -406,10 +406,102 @@ actor APIService {
         let findings: [String]?
         let timestamp: Double?
 
+        // V2: Orchestrator step events (type == "orchestrator_step")
+        let stepStatus: String?
+        let stepFindings: [String]?
+
+        // V2: Sub-agent progress (type == "subagent_progress")
+        let subagents: [String: SubAgentProgressData]?
+
+        // V2: Sub-agent completion (type == "subagent_complete")
+        let agentName: String?
+        let agentFindings: [String]?
+
+        // V2: Final result metadata
+        let selectedStyle: String?
+        let selectionReasoning: String?
+        let alternatives: [[String: AnyCodable]]?
+
+        // V2: Error event (type == "error")
+        let errorMessage: String?
+
         enum CodingKeys: String, CodingKey {
             case type, phase, content, plan, message
             case stepType = "step_type"
             case status, findings, timestamp
+            case stepStatus = "step_status"
+            case stepFindings = "step_findings"
+            case subagents
+            case agentName = "agent_name"
+            case agentFindings = "agent_findings"
+            case selectedStyle = "selected_style"
+            case selectionReasoning = "selection_reasoning"
+            case alternatives
+            case errorMessage = "error_message"
+        }
+
+        /// Get the error message from either V1 (message) or V2 (error_message) format
+        var effectiveErrorMessage: String? {
+            errorMessage ?? message
+        }
+    }
+
+    /// Sub-agent progress data from the streaming API
+    struct SubAgentProgressData: Decodable {
+        let agentName: String
+        let displayName: String
+        let status: String
+        let currentStep: String?
+        let stepsCompleted: [String]
+        let findings: [String]
+        let elapsedMs: Int
+        let errorMessage: String?
+
+        enum CodingKeys: String, CodingKey {
+            case agentName = "agent_name"
+            case displayName = "display_name"
+            case status
+            case currentStep = "current_step"
+            case stepsCompleted = "steps_completed"
+            case findings
+            case elapsedMs = "elapsed_ms"
+            case errorMessage = "error_message"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            agentName = try container.decode(String.self, forKey: .agentName)
+            displayName = try container.decodeIfPresent(String.self, forKey: .displayName) ?? agentName
+            status = try container.decode(String.self, forKey: .status)
+            currentStep = try container.decodeIfPresent(String.self, forKey: .currentStep)
+            stepsCompleted = try container.decodeIfPresent([String].self, forKey: .stepsCompleted) ?? []
+            findings = try container.decodeIfPresent([String].self, forKey: .findings) ?? []
+            elapsedMs = try container.decodeIfPresent(Int.self, forKey: .elapsedMs) ?? 0
+            errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
+        }
+    }
+
+    /// Helper for decoding arbitrary JSON values
+    struct AnyCodable: Decodable {
+        let value: Any
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let string = try? container.decode(String.self) {
+                value = string
+            } else if let int = try? container.decode(Int.self) {
+                value = int
+            } else if let double = try? container.decode(Double.self) {
+                value = double
+            } else if let bool = try? container.decode(Bool.self) {
+                value = bool
+            } else if let array = try? container.decode([AnyCodable].self) {
+                value = array.map { $0.value }
+            } else if let dict = try? container.decode([String: AnyCodable].self) {
+                value = dict.mapValues { $0.value }
+            } else {
+                value = NSNull()
+            }
         }
     }
 
