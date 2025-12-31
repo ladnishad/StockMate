@@ -25,6 +25,7 @@ from app.agent.sdk.tools import (
     get_current_price,
     get_position_status,
     get_market_context,
+    get_news_sentiment,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,9 +67,10 @@ class TradePlanOrchestrator:
         price_task = asyncio.create_task(get_current_price(symbol))
         position_task = asyncio.create_task(get_position_status(symbol, user_id))
         market_task = asyncio.create_task(get_market_context())
+        news_task = asyncio.create_task(get_news_sentiment(symbol))
 
-        price_data, position_data, market_data = await asyncio.gather(
-            price_task, position_task, market_task
+        price_data, position_data, market_data, news_data = await asyncio.gather(
+            price_task, position_task, market_task, news_task
         )
 
         # Build context
@@ -86,6 +88,10 @@ class TradePlanOrchestrator:
             market_direction=market_data.get("market_direction", "mixed"),
             bullish_indices=market_data.get("bullish_indices", 0),
             timestamp=datetime.utcnow().isoformat(),
+            # News data
+            news_sentiment=news_data.get("sentiment"),
+            news_summary=news_data.get("summary"),
+            recent_headlines=news_data.get("headlines", []),
         )
 
         self.context = context
@@ -119,9 +125,11 @@ class TradePlanOrchestrator:
             StreamEvent objects for each progress update
         """
         self._start_time = time.time()
+        logger.info(f"[Orchestrator] Starting plan generation for {symbol}")
 
         try:
             # Step 1: Gather common data
+            logger.info(f"[Orchestrator] Step 1/4: Gathering common data for {symbol}")
             yield StreamEvent.orchestrator_step(
                 OrchestratorStepType.GATHERING_COMMON_DATA,
                 "active",
@@ -141,13 +149,19 @@ class TradePlanOrchestrator:
             else:
                 findings.append("Position: None")
 
+            # Add news sentiment
+            if context.news_sentiment:
+                findings.append(f"News: {context.news_sentiment.capitalize()}")
+
             yield StreamEvent.orchestrator_step(
                 OrchestratorStepType.GATHERING_COMMON_DATA,
                 "completed",
                 findings,
             )
+            logger.info(f"[Orchestrator] Common data gathered: {', '.join(findings)}")
 
             # Step 2: Spawn sub-agents
+            logger.info(f"[Orchestrator] Step 2/4: Spawning parallel sub-agents for {symbol}")
             yield StreamEvent.orchestrator_step(
                 OrchestratorStepType.SPAWNING_SUBAGENTS,
                 "active",
@@ -162,15 +176,17 @@ class TradePlanOrchestrator:
                 yield event
 
             # Step 3: Synthesize results
+            logger.info(f"[Orchestrator] Step 3/4: Selecting best plan for {symbol}")
             yield StreamEvent.orchestrator_step(
                 OrchestratorStepType.SELECTING_BEST,
                 "active",
             )
 
-            final_response = self._synthesize_results(symbol, context)
+            final_response = await self._synthesize_results(symbol, context)
 
             # Final result
             elapsed_ms = int((time.time() - self._start_time) * 1000)
+            logger.info(f"[Orchestrator] Selected: {final_response.selected_style.upper()} trade ({final_response.selected_plan.confidence}% confidence)")
             final_response.total_analysis_time_ms = elapsed_ms
 
             yield StreamEvent.final_result(
@@ -184,9 +200,10 @@ class TradePlanOrchestrator:
                 OrchestratorStepType.COMPLETE,
                 "completed",
             )
+            logger.info(f"[Orchestrator] Step 4/4: Plan generation complete for {symbol} ({elapsed_ms}ms)")
 
         except Exception as e:
-            logger.error(f"Orchestrator error for {symbol}: {e}")
+            logger.error(f"[Orchestrator] Error for {symbol}: {e}")
             yield StreamEvent.error(str(e))
 
     async def _run_subagents_parallel(
@@ -263,6 +280,7 @@ class TradePlanOrchestrator:
             )
 
             trade_style = agent_name.replace("-trade-analyzer", "")
+            logger.info(f"[{agent_name}] Starting analysis")
 
             # Update progress
             self.subagent_progress[agent_name].status = SubAgentStatus.GATHERING_DATA
@@ -588,6 +606,7 @@ Return ONLY the JSON object, no other text."""
                 if claude_warnings:
                     risk_warnings = list(set(risk_warnings + claude_warnings))
 
+                logger.info(f"[{agent_name}] Completed: {final_bias} bias, {final_confidence}% confidence")
                 return SubAgentReport(
                     trade_style=trade_style,
                     symbol=symbol,
@@ -628,7 +647,7 @@ Return ONLY the JSON object, no other text."""
                 )
 
             except Exception as e:
-                logger.error(f"Error running {agent_name}: {e}")
+                logger.error(f"[{agent_name}] Error: {e}")
                 self.subagent_progress[agent_name].status = SubAgentStatus.FAILED
                 self.subagent_progress[agent_name].error_message = str(e)
                 # Return mock report on error
@@ -810,12 +829,15 @@ Return ONLY the JSON object, no other text."""
 
         return events
 
-    def _synthesize_results(
+    async def _synthesize_results(
         self,
         symbol: str,
         context: DataContext,
     ) -> FinalPlanResponse:
         """Synthesize results from all sub-agents and select the best plan.
+
+        This method now calls Claude to create a comprehensive synthesis
+        after selecting the best plan programmatically.
 
         Selection criteria (in order):
         1. Position alignment (never recommend opposite direction)
@@ -913,6 +935,148 @@ Return ONLY the JSON object, no other text."""
                 reasoning_parts.append(f"{best_report.risk_reward:.1f}:1 risk/reward")
         else:
             reasoning_parts.append("No valid setups found - passing on trade")
+
+        # ============================================================
+        # FINAL SYNTHESIS: Call Claude to create comprehensive plan
+        # ============================================================
+        try:
+            from anthropic import AsyncAnthropic
+            from app.config import get_settings
+            import json
+
+            settings = get_settings()
+            client = AsyncAnthropic(api_key=settings.claude_api_key)
+
+            # Build summary of all analyses
+            analyses_summary = []
+            for report in sorted_reports:
+                analyses_summary.append(f"""
+## {report.trade_style.upper()} TRADE ANALYSIS:
+- Suitable: {report.suitable}
+- Confidence: {report.confidence}%
+- Bias: {report.bias}
+- Thesis: {report.thesis}
+- Entry: ${report.entry_zone_low:.2f} - ${report.entry_zone_high:.2f}
+- Stop: ${report.stop_loss:.2f}
+- Targets: {', '.join([f'${t.price:.2f}' for t in (report.targets or [])])}
+- R:R: {report.risk_reward:.1f}:1
+- What to Watch: {', '.join(report.what_to_watch or [])}
+- Risk Warnings: {', '.join(report.risk_warnings or [])}
+""")
+
+            position_context = ""
+            if context.has_position and context.position_entry:
+                pnl_pct = ((context.current_price - context.position_entry) / context.position_entry) * 100
+                position_context = f"""
+## EXISTING POSITION:
+- Direction: {context.position_direction.upper()}
+- Entry: ${context.position_entry:.2f}
+- Current P&L: {pnl_pct:+.1f}%
+"""
+
+            # Build news context
+            news_context = ""
+            if context.news_sentiment or context.recent_headlines:
+                news_context = f"""
+## NEWS & SENTIMENT:
+- Sentiment: {context.news_sentiment or 'Unknown'}
+- Summary: {context.news_summary or 'No recent news'}
+"""
+                if context.recent_headlines:
+                    news_context += "- Recent Headlines:\n"
+                    for headline in context.recent_headlines[:3]:
+                        news_context += f"  * {headline}\n"
+
+            synthesis_prompt = f"""You are a professional trading advisor synthesizing analyses from 3 specialized agents.
+
+## STOCK: {symbol}
+## CURRENT PRICE: ${context.current_price:.2f}
+## MARKET DIRECTION: {context.market_direction}
+{position_context}
+{news_context}
+
+## ALL ANALYSES:
+{''.join(analyses_summary)}
+
+## SELECTED: {best_report.trade_style.upper()} TRADE
+
+Create a comprehensive trading plan synthesis. Respond with JSON:
+{{
+    "thesis": "A detailed 3-4 sentence thesis explaining the selected trade setup, why this timeframe was chosen over others, and what makes this setup compelling. Be SPECIFIC about the technical pattern, key price levels, and any news/catalysts. If there's an existing position, explicitly address whether to add, hold, trim, or exit.",
+    "selection_reasoning": "2-3 sentences explaining why {best_report.trade_style} was selected over the alternatives, comparing confidence levels and setup quality.",
+    "targets": [
+        {{"price": <number>, "reasoning": "Why this is a valid target level based on resistance/technicals"}},
+        {{"price": <number>, "reasoning": "Second target reasoning"}},
+        {{"price": <number>, "reasoning": "Third target reasoning (if applicable)"}}
+    ],
+    "what_to_watch": ["5-7 specific, actionable items to monitor - include exact price levels like 'Break above $XXX triggers acceleration', volume thresholds, time-based triggers, and any relevant news catalysts"],
+    "risk_warnings": ["3-5 specific risks - technical invalidation levels, market risks, news/earnings risks, position-specific warnings"],
+    "entry_reasoning": "Why this specific entry zone makes sense based on support levels and the technical setup",
+    "stop_reasoning": "Why this stop level is appropriate - reference specific support/ATR/pattern invalidation",
+    "news_impact": "Brief assessment of how recent news/sentiment affects this trade thesis (1-2 sentences)"
+}}
+
+Return ONLY valid JSON."""
+
+            synthesis_response = await client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1500,
+                messages=[{"role": "user", "content": synthesis_prompt}],
+            )
+
+            synthesis_text = synthesis_response.content[0].text.strip()
+            # Remove markdown code blocks if present
+            if synthesis_text.startswith("```"):
+                synthesis_text = synthesis_text.split("```")[1]
+                if synthesis_text.startswith("json"):
+                    synthesis_text = synthesis_text[4:]
+                synthesis_text = synthesis_text.strip()
+
+            synthesis = json.loads(synthesis_text)
+
+            # Update best_report with synthesized content
+            if synthesis.get("thesis"):
+                best_report.thesis = synthesis["thesis"]
+            if synthesis.get("what_to_watch"):
+                best_report.what_to_watch = synthesis["what_to_watch"]
+            if synthesis.get("risk_warnings"):
+                best_report.risk_warnings = synthesis["risk_warnings"]
+            if synthesis.get("entry_reasoning"):
+                best_report.entry_reasoning = synthesis["entry_reasoning"]
+            if synthesis.get("stop_reasoning"):
+                best_report.stop_reasoning = synthesis["stop_reasoning"]
+            if synthesis.get("selection_reasoning"):
+                reasoning_parts = [synthesis["selection_reasoning"]]
+
+            # Parse synthesized targets
+            from app.agent.schemas.subagent_report import PriceTargetWithReasoning
+            synth_targets = synthesis.get("targets", [])
+            if synth_targets and isinstance(synth_targets, list):
+                parsed_targets = []
+                for t in synth_targets[:3]:
+                    if isinstance(t, dict) and t.get("price") is not None:
+                        try:
+                            parsed_targets.append(
+                                PriceTargetWithReasoning(
+                                    price=round(float(t["price"]), 2),
+                                    reasoning=t.get("reasoning") or "Target level"
+                                )
+                            )
+                        except (ValueError, TypeError):
+                            pass
+                if parsed_targets:
+                    best_report.targets = parsed_targets
+
+            # Add news impact to thesis if provided
+            if synthesis.get("news_impact"):
+                # Append news context to thesis
+                best_report.thesis = f"{best_report.thesis} {synthesis['news_impact']}"
+
+            logger.info(f"[Orchestrator] Synthesis complete for {symbol}")
+
+        except Exception as e:
+            logger.warning(f"[Orchestrator] Synthesis call failed, using agent output: {e}")
+            # Continue with the best_report as-is
 
         return FinalPlanResponse(
             selected_plan=best_report,

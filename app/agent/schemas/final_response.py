@@ -205,6 +205,20 @@ class DataContext(BaseModel):
     # Timestamp
     timestamp: str = Field(description="ISO timestamp when context was gathered.")
 
+    # News/Sentiment (shared)
+    news_sentiment: Optional[str] = Field(
+        default=None,
+        description="Overall news sentiment: 'bullish', 'bearish', 'neutral'."
+    )
+    news_summary: Optional[str] = Field(
+        default=None,
+        description="Brief summary of recent news and catalysts."
+    )
+    recent_headlines: Optional[List[str]] = Field(
+        default=None,
+        description="Recent news headlines about the stock."
+    )
+
     def to_prompt_context(self) -> str:
         """Format context for inclusion in sub-agent prompts."""
         lines = [
@@ -224,5 +238,15 @@ class DataContext(BaseModel):
             lines.append("DO NOT SUGGEST OPPOSITE DIRECTION TRADES.")
         else:
             lines.append("\nNo existing position.")
+
+        # News context
+        if self.news_sentiment or self.news_summary:
+            lines.append(f"\nNews Sentiment: {self.news_sentiment or 'Unknown'}")
+            if self.news_summary:
+                lines.append(f"News Summary: {self.news_summary}")
+            if self.recent_headlines:
+                lines.append("Recent Headlines:")
+                for headline in self.recent_headlines[:3]:
+                    lines.append(f"  - {headline}")
 
         return "\n".join(lines)

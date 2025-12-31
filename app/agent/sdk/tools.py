@@ -726,3 +726,56 @@ async def get_current_price(symbol: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error getting price for {symbol}: {e}")
         return {"symbol": symbol.upper(), "error": str(e)}
+
+
+async def get_news_sentiment(
+    symbol: str,
+    days_back: int = 7,
+) -> Dict[str, Any]:
+    """Get news sentiment and recent headlines for a stock.
+
+    Args:
+        symbol: Stock ticker symbol
+        days_back: Number of days of news to fetch
+
+    Returns:
+        Dictionary with sentiment, headlines, and summary
+    """
+    from app.tools.market_data import fetch_news_sentiment
+
+    try:
+        news_data = fetch_news_sentiment(symbol.upper(), days_back=days_back)
+
+        # Extract headlines
+        headlines = []
+        for item in news_data.get("recent_headlines", [])[:5]:
+            if isinstance(item, dict):
+                headlines.append(item.get("title", ""))
+            elif isinstance(item, str):
+                headlines.append(item)
+
+        # Build summary
+        summary_parts = []
+        if news_data.get("article_count", 0) > 0:
+            summary_parts.append(f"{news_data['article_count']} articles analyzed")
+        if news_data.get("news_volume_trend"):
+            summary_parts.append(f"News volume: {news_data['news_volume_trend']}")
+
+        return {
+            "symbol": symbol.upper(),
+            "sentiment": news_data.get("sentiment_label", "neutral"),
+            "sentiment_score": news_data.get("sentiment_score", 0),
+            "article_count": news_data.get("article_count", 0),
+            "headlines": headlines,
+            "summary": ". ".join(summary_parts) if summary_parts else "No recent news",
+        }
+    except Exception as e:
+        logger.warning(f"Error getting news for {symbol}: {e}")
+        return {
+            "symbol": symbol.upper(),
+            "sentiment": "neutral",
+            "sentiment_score": 0,
+            "article_count": 0,
+            "headlines": [],
+            "summary": "News unavailable",
+        }
