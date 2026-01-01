@@ -1001,6 +1001,16 @@ final class TradingPlanViewModel: ObservableObject {
         await startPlanSession()
     }
 
+    /// Set an approved plan from V2 generation manager
+    func setApprovedPlan(_ approvedPlan: TradingPlanResponse) {
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+            self.plan = approvedPlan
+            self.draftPlan = nil
+            self.lastUpdated = Date()
+            self.hasActivePosition = true
+        }
+    }
+
     // MARK: - V2 Sub-Agent Methods
 
     /// Toggle expansion state for a sub-agent

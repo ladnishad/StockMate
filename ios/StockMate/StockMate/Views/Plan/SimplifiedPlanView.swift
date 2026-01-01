@@ -256,7 +256,7 @@ struct SimplifiedPlanView: View {
                             if generationManager.hasCompletedPlan(for: symbol) && generationManager.analysisId != nil {
                                 // V2 flow: Use manager's approval endpoint
                                 if let approvedPlan = await generationManager.approveAnalysis() {
-                                    viewModel.plan = approvedPlan
+                                    viewModel.setApprovedPlan(approvedPlan)
                                     success = true
                                 }
                             } else {
