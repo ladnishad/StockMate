@@ -3650,14 +3650,34 @@ async def approve_plan_analysis(
 
     logger.info(f"Approved V2 analysis {analysis_id} -> trading plan {plan_id} for {symbol}")
 
+    # Return full plan data in camelCase for iOS TradingPlanResponse
+    from datetime import datetime, timezone
     return {
-        "success": True,
-        "analysis_id": analysis_id,
-        "trading_plan_id": plan_id,
         "symbol": symbol,
-        "trade_style": trading_plan.trade_style,
         "bias": trading_plan.bias,
-        "message": f"Trading plan created for {symbol}"
+        "thesis": trading_plan.thesis,
+        "entryZoneLow": trading_plan.entry_zone_low,
+        "entryZoneHigh": trading_plan.entry_zone_high,
+        "stopLoss": trading_plan.stop_loss,
+        "stopReasoning": trading_plan.stop_reasoning,
+        "target1": trading_plan.target_1,
+        "target2": trading_plan.target_2,
+        "target3": trading_plan.target_3,
+        "targetReasoning": trading_plan.target_reasoning,
+        "riskReward": trading_plan.risk_reward,
+        "keySupports": trading_plan.key_supports or [],
+        "keyResistances": trading_plan.key_resistances or [],
+        "invalidationCriteria": trading_plan.invalidation_criteria,
+        "technicalSummary": trading_plan.technical_summary,
+        "status": trading_plan.status,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "tradeStyle": trading_plan.trade_style,
+        "tradeStyleReasoning": trading_plan.trade_style_reasoning,
+        "holdingPeriod": trading_plan.holding_period,
+        "confidence": trading_plan.confidence,
+        "newsSummary": trading_plan.news_summary,
+        "whatToWatch": selected_plan.get("what_to_watch", []),
+        "riskWarnings": selected_plan.get("risk_warnings", []),
     }
 
 

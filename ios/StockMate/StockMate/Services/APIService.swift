@@ -732,8 +732,16 @@ actor APIService {
 
         let (data, response) = try await session.data(for: request)
 
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIServiceError.invalidResponse
+        }
+
+        // Handle 401 - token expired, try refresh
+        if httpResponse.statusCode == 401 {
+            return try await handleUnauthorizedAndRetry(request: request, decoder: JSONDecoder())
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
             throw APIServiceError.invalidResponse
         }
 
