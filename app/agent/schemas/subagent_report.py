@@ -177,6 +177,12 @@ class SubAgentReport(BaseModel):
         description="If user has position: 'hold', 'add', 'trim', 'exit', or None if no position."
     )
 
+    # Selection Status (set when this report is an alternative, not the selected plan)
+    why_not_selected: Optional[str] = Field(
+        default=None,
+        description="If this report is an alternative (not selected), explains why another plan was chosen."
+    )
+
     # Educational Content
     setup_explanation: str = Field(
         default="",

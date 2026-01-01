@@ -250,7 +250,20 @@ struct SimplifiedPlanView: View {
                     },
                     onAccept: {
                         Task {
-                            let success = await viewModel.acceptPlan()
+                            var success = false
+
+                            // Check if this is a V2 plan from the generation manager
+                            if generationManager.hasCompletedPlan(for: symbol) && generationManager.analysisId != nil {
+                                // V2 flow: Use manager's approval endpoint
+                                if let approvedPlan = await generationManager.approveAnalysis() {
+                                    viewModel.plan = approvedPlan
+                                    success = true
+                                }
+                            } else {
+                                // V1/session flow: Use viewModel's approval
+                                success = await viewModel.acceptPlan()
+                            }
+
                             if success {
                                 // Clear manager's completed generation state
                                 generationManager.clearCompletedGeneration()

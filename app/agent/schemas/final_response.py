@@ -94,10 +94,10 @@ class FinalPlanResponse(BaseModel):
         description="Why this plan was selected: 'highest confidence', 'best R:R', 'aligns with position', etc."
     )
 
-    # Alternatives (available on request)
-    alternatives: List[AlternativePlan] = Field(
+    # Alternatives (full SubAgentReports for other trade styles)
+    alternatives: List[SubAgentReport] = Field(
         default_factory=list,
-        description="Summary of other plans that weren't selected. User can request details."
+        description="Full reports from other trade styles that weren't selected."
     )
 
     # Metadata
@@ -146,7 +146,7 @@ class FinalPlanResponse(BaseModel):
         description="Whether position trade analysis completed successfully."
     )
 
-    def get_alternative_by_style(self, style: TradeStyleLiteral) -> Optional[AlternativePlan]:
+    def get_alternative_by_style(self, style: TradeStyleLiteral) -> Optional[SubAgentReport]:
         """Get alternative plan by trade style."""
         for alt in self.alternatives:
             if alt.trade_style == style:

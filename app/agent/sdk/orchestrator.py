@@ -13,7 +13,7 @@ import time
 from typing import Dict, Any, AsyncGenerator, Optional, List
 from datetime import datetime
 
-from app.agent.schemas.final_response import FinalPlanResponse, AlternativePlan, DataContext
+from app.agent.schemas.final_response import FinalPlanResponse, DataContext
 from app.agent.schemas.subagent_report import SubAgentReport
 from app.agent.schemas.streaming import (
     StreamEvent,
@@ -189,9 +189,30 @@ class TradePlanOrchestrator:
             logger.info(f"[Orchestrator] Selected: {final_response.selected_style.upper()} trade ({final_response.selected_plan.confidence}% confidence)")
             final_response.total_analysis_time_ms = elapsed_ms
 
+            # Transform plan to include flat target fields for iOS compatibility
+            plan_dict = final_response.selected_plan.model_dump()
+            targets = plan_dict.get("targets", [])
+            plan_dict["target_1"] = targets[0]["price"] if len(targets) > 0 and targets[0].get("price") else None
+            plan_dict["target_2"] = targets[1]["price"] if len(targets) > 1 and targets[1].get("price") else None
+            plan_dict["target_3"] = targets[2]["price"] if len(targets) > 2 and targets[2].get("price") else None
+            plan_dict["target_reasoning"] = "; ".join([t.get("reasoning", "") for t in targets[:3] if t.get("reasoning")])
+
+            # Transform alternatives with flat target fields and iOS compatibility
+            alternative_dicts = []
+            for alt in final_response.alternatives:
+                alt_dict = alt.model_dump()
+                alt_targets = alt_dict.get("targets", [])
+                alt_dict["target_1"] = alt_targets[0]["price"] if len(alt_targets) > 0 and alt_targets[0].get("price") else None
+                alt_dict["target_2"] = alt_targets[1]["price"] if len(alt_targets) > 1 and alt_targets[1].get("price") else None
+                alt_dict["target_3"] = alt_targets[2]["price"] if len(alt_targets) > 2 and alt_targets[2].get("price") else None
+                alt_dict["target_reasoning"] = "; ".join([t.get("reasoning", "") for t in alt_targets[:3] if t.get("reasoning")])
+                # iOS compatibility: add brief_thesis as alias for thesis
+                alt_dict["brief_thesis"] = alt_dict.get("thesis", "")
+                alternative_dicts.append(alt_dict)
+
             yield StreamEvent.final_result(
-                plan=final_response.selected_plan.model_dump(),
-                alternatives=[alt.model_dump() for alt in final_response.alternatives],
+                plan=plan_dict,
+                alternatives=alternative_dicts,
                 selected_style=final_response.selected_style,
                 selection_reasoning=final_response.selection_reasoning,
             )
@@ -923,7 +944,7 @@ Return ONLY the JSON object, no other text."""
         # Select best
         best_report = sorted_reports[0]
 
-        # Create alternatives from remaining
+        # Keep full reports for alternatives (not truncated AlternativePlan)
         alternatives = []
         for report in sorted_reports[1:]:
             # Determine why not selected
@@ -939,7 +960,9 @@ Return ONLY the JSON object, no other text."""
 
             why_not = ". ".join(why_parts) if why_parts else "Another style better fits current conditions"
 
-            alternatives.append(AlternativePlan.from_report(report, why_not))
+            # Set why_not_selected on the full report and keep it
+            report.why_not_selected = why_not
+            alternatives.append(report)
 
         # Build selection reasoning
         reasoning_parts = []

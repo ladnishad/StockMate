@@ -441,11 +441,27 @@ struct AlternativePlan: Codable, Identifiable, Equatable {
     let suitable: Bool
     let confidence: Int
     let holdingPeriod: String
-    let briefThesis: String
+    let briefThesis: String  // Full thesis text (was truncated, now full)
     let whyNotSelected: String
     let riskReward: Double?
     let positionRecommendation: String?
     let riskWarnings: [String]
+
+    // Additional fields from full SubAgentReport (V2)
+    let thesis: String?  // Full thesis (same as briefThesis now)
+    let entryZoneLow: Double?
+    let entryZoneHigh: Double?
+    let entryReasoning: String?
+    let stopLoss: Double?
+    let stopReasoning: String?
+    let target1: Double?
+    let target2: Double?
+    let target3: Double?
+    let targetReasoning: String?
+    let whatToWatch: [String]?
+    let setupExplanation: String?
+    let invalidationCriteria: String?
+    let technicalSummary: String?
 
     enum CodingKeys: String, CodingKey {
         case tradeStyle = "trade_style"
@@ -456,6 +472,21 @@ struct AlternativePlan: Codable, Identifiable, Equatable {
         case riskReward = "risk_reward"
         case positionRecommendation = "position_recommendation"
         case riskWarnings = "risk_warnings"
+        // V2 full report fields
+        case thesis
+        case entryZoneLow = "entry_zone_low"
+        case entryZoneHigh = "entry_zone_high"
+        case entryReasoning = "entry_reasoning"
+        case stopLoss = "stop_loss"
+        case stopReasoning = "stop_reasoning"
+        case target1 = "target_1"
+        case target2 = "target_2"
+        case target3 = "target_3"
+        case targetReasoning = "target_reasoning"
+        case whatToWatch = "what_to_watch"
+        case setupExplanation = "setup_explanation"
+        case invalidationCriteria = "invalidation_criteria"
+        case technicalSummary = "technical_summary"
     }
 
     // Default initializer for optional arrays
@@ -466,11 +497,34 @@ struct AlternativePlan: Codable, Identifiable, Equatable {
         suitable = try container.decodeIfPresent(Bool.self, forKey: .suitable) ?? false
         confidence = try container.decodeIfPresent(Int.self, forKey: .confidence) ?? 0
         holdingPeriod = try container.decodeIfPresent(String.self, forKey: .holdingPeriod) ?? ""
-        briefThesis = try container.decodeIfPresent(String.self, forKey: .briefThesis) ?? ""
+        // Try thesis first (full), fall back to brief_thesis
+        let fullThesis = try container.decodeIfPresent(String.self, forKey: .thesis)
+        let brief = try container.decodeIfPresent(String.self, forKey: .briefThesis)
+        briefThesis = fullThesis ?? brief ?? ""
+        thesis = fullThesis
         whyNotSelected = try container.decodeIfPresent(String.self, forKey: .whyNotSelected) ?? ""
         riskReward = try container.decodeIfPresent(Double.self, forKey: .riskReward)
         positionRecommendation = try container.decodeIfPresent(String.self, forKey: .positionRecommendation)
         riskWarnings = try container.decodeIfPresent([String].self, forKey: .riskWarnings) ?? []
+        // V2 full report fields
+        entryZoneLow = try container.decodeIfPresent(Double.self, forKey: .entryZoneLow)
+        entryZoneHigh = try container.decodeIfPresent(Double.self, forKey: .entryZoneHigh)
+        entryReasoning = try container.decodeIfPresent(String.self, forKey: .entryReasoning)
+        stopLoss = try container.decodeIfPresent(Double.self, forKey: .stopLoss)
+        stopReasoning = try container.decodeIfPresent(String.self, forKey: .stopReasoning)
+        target1 = try container.decodeIfPresent(Double.self, forKey: .target1)
+        target2 = try container.decodeIfPresent(Double.self, forKey: .target2)
+        target3 = try container.decodeIfPresent(Double.self, forKey: .target3)
+        targetReasoning = try container.decodeIfPresent(String.self, forKey: .targetReasoning)
+        whatToWatch = try container.decodeIfPresent([String].self, forKey: .whatToWatch)
+        setupExplanation = try container.decodeIfPresent(String.self, forKey: .setupExplanation)
+        invalidationCriteria = try container.decodeIfPresent(String.self, forKey: .invalidationCriteria)
+        technicalSummary = try container.decodeIfPresent(String.self, forKey: .technicalSummary)
+    }
+
+    /// Whether this alternative has full report data (V2)
+    var hasFullReport: Bool {
+        entryZoneLow != nil || entryZoneHigh != nil || stopLoss != nil || target1 != nil
     }
 
     var tradeStyleDisplay: String {
