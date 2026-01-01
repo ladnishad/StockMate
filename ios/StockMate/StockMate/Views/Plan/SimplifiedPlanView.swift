@@ -7,6 +7,7 @@ struct SimplifiedPlanView: View {
     @ObservedObject private var generationManager = PlanGenerationManager.shared
     @State private var feedbackText: String = ""
     @State private var showSavedConfirmation: Bool = false
+    @State private var showPlanDetail: Bool = false  // Controls whether to show plan detail view
     @FocusState private var isInputFocused: Bool
 
     let symbol: String
@@ -44,6 +45,17 @@ struct SimplifiedPlanView: View {
         viewModel.plan != nil && viewModel.draftPlan == nil && !generationManager.hasCompletedPlan(for: symbol)
     }
 
+    /// Whether analysis just completed and we should show the completion UI
+    private var showAnalysisComplete: Bool {
+        // Show completion UI when manager has completed plan but user hasn't clicked "View Plan" yet
+        generationManager.hasCompletedPlan(for: symbol) && !showPlanDetail && !isGenerating
+    }
+
+    /// Whether to show back button in plan detail view (only for newly generated plans, not saved ones)
+    private var canGoBackToAnalysis: Bool {
+        showPlanDetail && generationManager.hasCompletedPlan(for: symbol) && viewModel.plan == nil
+    }
+
     var body: some View {
         ZStack {
             Color(.systemBackground).ignoresSafeArea()
@@ -55,11 +67,30 @@ struct SimplifiedPlanView: View {
                 } else {
                     AgentGeneratingView(symbol: symbol, steps: viewModel.analysisSteps, viewModel: viewModel)
                 }
-            } else if let plan = displayPlan {
+            } else if showAnalysisComplete, let plan = displayPlan {
+                // Analysis just completed - show completion UI with "View Selected Plan" button
+                AnalysisCompleteView(
+                    symbol: symbol,
+                    plan: plan,
+                    manager: generationManager,
+                    onViewPlan: {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                            showPlanDetail = true
+                        }
+                    },
+                    onStartOver: {
+                        showPlanDetail = false
+                        generationManager.clearCompletedGeneration()
+                        generationManager.startGeneration(for: symbol)
+                    }
+                )
+            } else if let plan = displayPlan, (showPlanDetail || viewModel.plan != nil) {
+                // User clicked "View Plan" or has an existing saved plan
                 planContent(plan)
-            } else {
+            } else if displayPlan == nil {
                 EmptyPlanView {
                     // Use the manager for background-safe generation
+                    showPlanDetail = false
                     generationManager.startGeneration(for: symbol)
                 }
             }
@@ -71,11 +102,21 @@ struct SimplifiedPlanView: View {
                generationManager.hasCompletedPlan(for: symbol) {
                 viewModel.setDraftPlan(managerPlan)
             }
+            // If we already have a saved plan, show detail directly
+            if viewModel.plan != nil {
+                showPlanDetail = true
+            }
         }
         .onChange(of: generationManager.generatedPlan) { newPlan in
             // When manager completes, sync to ViewModel
             if let plan = newPlan, generationManager.activeSymbol?.uppercased() == symbol.uppercased() {
                 viewModel.setDraftPlan(plan)
+            }
+        }
+        .onChange(of: viewModel.plan) { newPlan in
+            // If we load an existing saved plan, show detail directly
+            if newPlan != nil {
+                showPlanDetail = true
             }
         }
     }
@@ -85,6 +126,30 @@ struct SimplifiedPlanView: View {
     @ViewBuilder
     private func planContent(_ plan: TradingPlanResponse) -> some View {
         VStack(spacing: 0) {
+            // Back button row (only shown when navigating from analysis complete view)
+            if canGoBackToAnalysis {
+                HStack {
+                    Button(action: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            showPlanDetail = false
+                        }
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 14, weight: .semibold))
+                            Text("Analysis")
+                                .font(.system(size: 15, weight: .medium))
+                        }
+                        .foregroundColor(Color(hex: "10B981"))
+                    }
+
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+            }
+
             ScrollView {
                 VStack(spacing: 24) {
                     // Header
@@ -856,7 +921,11 @@ private struct AgentGeneratingView: View {
                         orchestratorSteps: viewModel.orchestratorSteps,
                         subagents: viewModel.sortedSubagents,
                         expandedAgents: viewModel.expandedSubagents,
+                        isAnalyzersSectionExpanded: viewModel.isAnalyzersSectionExpanded,
+                        allSubagentsComplete: viewModel.allSubagentsComplete,
+                        completedCount: viewModel.completedSubagentCount,
                         onToggle: { viewModel.toggleSubagentExpansion($0) },
+                        onToggleAnalyzersSection: { viewModel.toggleAnalyzersSection() },
                         pulseAnimation: pulseAnimation
                     )
                     .padding(.horizontal, 20)
@@ -915,50 +984,175 @@ private struct V2SubAgentsView: View {
     let orchestratorSteps: [OrchestratorStep]
     let subagents: [SubAgentProgress]
     let expandedAgents: Set<String>
+    let isAnalyzersSectionExpanded: Bool
+    let allSubagentsComplete: Bool
+    let completedCount: Int
     let onToggle: (String) -> Void
+    let onToggleAnalyzersSection: () -> Void
     let pulseAnimation: Bool
+    var plan: TradingPlanResponse? = nil  // Optional - for showing individual agent plan details
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Orchestrator steps (shown first)
-            if !orchestratorSteps.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(orchestratorSteps) { step in
-                        OrchestratorStepRow(step: step, pulseAnimation: pulseAnimation)
-                    }
+            ForEach(orchestratorSteps) { step in
+                if step.stepType == "spawning_subagents" {
+                    // Special expandable section for Starting Analyzers with sub-agents nested inside
+                    ExpandableAnalyzersSectionRow(
+                        step: step,
+                        subagents: subagents,
+                        expandedAgents: expandedAgents,
+                        isExpanded: isAnalyzersSectionExpanded,
+                        allComplete: allSubagentsComplete,
+                        completedCount: completedCount,
+                        onToggleSection: onToggleAnalyzersSection,
+                        onToggleAgent: onToggle,
+                        pulseAnimation: pulseAnimation,
+                        plan: plan
+                    )
+                } else {
+                    // Regular orchestrator step row
+                    OrchestratorStepRow(step: step, pulseAnimation: pulseAnimation)
                 }
-                .padding(.bottom, 8)
-            }
-
-            // Progress header for sub-agents
-            HStack(spacing: 10) {
-                Image(systemName: "arrow.triangle.branch")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.secondary)
-
-                Text("PARALLEL ANALYSIS")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(.secondary)
-                    .tracking(1.0)
-
-                Spacer()
-
-                let completed = subagents.filter { $0.status == .completed }.count
-                Text("\(completed)/\(subagents.count) complete")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
-            }
-
-            // Sub-agent cards
-            ForEach(subagents) { agent in
-                V2SubAgentCard(
-                    agent: agent,
-                    isExpanded: expandedAgents.contains(agent.agentName),
-                    onToggle: { onToggle(agent.agentName) },
-                    pulseAnimation: pulseAnimation
-                )
             }
         }
+    }
+}
+
+// MARK: - Expandable Analyzers Section Row
+
+private struct ExpandableAnalyzersSectionRow: View {
+    let step: OrchestratorStep
+    let subagents: [SubAgentProgress]
+    let expandedAgents: Set<String>
+    let isExpanded: Bool
+    let allComplete: Bool
+    let completedCount: Int
+    let onToggleSection: () -> Void
+    let onToggleAgent: (String) -> Void
+    let pulseAnimation: Bool
+    var plan: TradingPlanResponse? = nil  // Optional - for showing individual agent plan details
+
+    private var statusColor: Color {
+        allComplete ? Color(hex: "10B981") : Color(hex: "3B82F6")
+    }
+
+    private var displayName: String {
+        allComplete ? "Analysis Complete" : "Running Analyzers"
+    }
+
+    private var statusText: String {
+        if allComplete {
+            return "DONE"
+        } else if step.status == .active {
+            return "\(completedCount)/\(subagents.count)"
+        } else {
+            return "PENDING"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header row (tappable to expand/collapse)
+            Button(action: onToggleSection) {
+                HStack(spacing: 12) {
+                    // Status indicator
+                    ZStack {
+                        Circle()
+                            .fill(statusColor.opacity(0.15))
+                            .frame(width: 32, height: 32)
+
+                        if step.status == .active && !allComplete {
+                            Circle()
+                                .fill(statusColor.opacity(0.2))
+                                .frame(width: 32, height: 32)
+                                .scaleEffect(pulseAnimation ? 1.3 : 1.0)
+                                .opacity(pulseAnimation ? 0 : 0.5)
+
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: statusColor))
+                                .scaleEffect(0.55)
+                        } else if allComplete {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(statusColor)
+                        } else {
+                            Image(systemName: "arrow.triangle.branch")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(statusColor)
+                        }
+                    }
+
+                    // Section info
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(displayName)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.primary)
+
+                        Text(allComplete ? "All analyzers finished" : "Day, Swing, Position")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    // Status badge
+                    Text(statusText)
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(statusColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(statusColor.opacity(0.12))
+                        )
+
+                    // Expand indicator
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(Color(.tertiaryLabel))
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(.vertical, 12)
+                .padding(.horizontal, 14)
+            }
+            .buttonStyle(.plain)
+
+            // Expanded content - sub-agent cards
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 10) {
+                    Divider()
+                        .padding(.horizontal, 14)
+
+                    // Sub-agent cards
+                    ForEach(subagents) { agent in
+                        V2SubAgentCard(
+                            agent: agent,
+                            isExpanded: expandedAgents.contains(agent.agentName),
+                            onToggle: { onToggleAgent(agent.agentName) },
+                            pulseAnimation: pulseAnimation,
+                            plan: plan
+                        )
+                        .padding(.horizontal, 10)
+                    }
+                }
+                .padding(.bottom, 12)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(
+                            step.status == .active && !allComplete ? statusColor.opacity(0.3) :
+                            allComplete ? Color(hex: "10B981").opacity(0.2) : Color.clear,
+                            lineWidth: 1
+                        )
+                )
+        )
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isExpanded)
+        .animation(.easeInOut(duration: 0.2), value: allComplete)
     }
 }
 
@@ -1033,6 +1227,325 @@ private struct OrchestratorStepRow: View {
     }
 }
 
+// MARK: - Agent Plan Detail Sheet
+
+private struct AgentPlanDetailSheet: View {
+    let agent: SubAgentProgress
+    let plan: TradingPlanResponse
+    @Environment(\.dismiss) private var dismiss
+
+    /// Check if this agent is the selected one (matches the main plan's trade style)
+    private var isSelectedAgent: Bool {
+        guard let selectedStyle = plan.tradeStyle?.lowercased() else { return false }
+        switch agent.agentName {
+        case "day-trade-analyzer": return selectedStyle == "day"
+        case "swing-trade-analyzer": return selectedStyle == "swing"
+        case "position-trade-analyzer": return selectedStyle == "position"
+        default: return false
+        }
+    }
+
+    /// Get the alternative plan for this agent (if not selected)
+    private var alternativePlan: AlternativePlan? {
+        let style: String
+        switch agent.agentName {
+        case "day-trade-analyzer": style = "day"
+        case "swing-trade-analyzer": style = "swing"
+        case "position-trade-analyzer": style = "position"
+        default: return nil
+        }
+        return plan.alternatives.first { $0.tradeStyle.lowercased() == style }
+    }
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // Header
+                    HStack {
+                        // Agent icon
+                        ZStack {
+                            Circle()
+                                .fill(agent.accentColor.opacity(0.15))
+                                .frame(width: 48, height: 48)
+
+                            Image(systemName: agent.icon)
+                                .font(.system(size: 20, weight: .medium))
+                                .foregroundColor(agent.accentColor)
+                        }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(agent.displayName)
+                                .font(.system(size: 20, weight: .bold))
+
+                            if isSelectedAgent {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "star.fill")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(Color(hex: "F59E0B"))
+                                    Text("SELECTED PLAN")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(Color(hex: "F59E0B"))
+                                }
+                            } else {
+                                Text("Alternative Analysis")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        Spacer()
+                    }
+                    .padding(.bottom, 8)
+
+                    if isSelectedAgent {
+                        // Show full selected plan details
+                        selectedPlanContent
+                    } else if let alt = alternativePlan {
+                        // Show alternative plan summary
+                        alternativePlanContent(alt)
+                    } else {
+                        // Fallback - show findings from agent progress
+                        findingsContent
+                    }
+                }
+                .padding(20)
+            }
+            .background(Color(.systemBackground))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(Color(hex: "10B981"))
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var selectedPlanContent: some View {
+        // Bias and confidence
+        HStack(spacing: 12) {
+            Text(plan.bias.uppercased())
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(plan.isBullish ? Color(hex: "10B981") : Color(hex: "EF4444"))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule()
+                        .fill((plan.isBullish ? Color(hex: "10B981") : Color(hex: "EF4444")).opacity(0.15))
+                )
+
+            if let confidence = plan.confidence {
+                Text("\(confidence)% Confidence")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+        }
+
+        // Thesis
+        VStack(alignment: .leading, spacing: 8) {
+            Text("THESIS")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.secondary)
+                .tracking(1.0)
+
+            Text(plan.thesis)
+                .font(.system(size: 14, weight: .regular))
+                .foregroundColor(.primary)
+        }
+
+        // Entry/Exit levels
+        VStack(alignment: .leading, spacing: 12) {
+            Text("PRICE LEVELS")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.secondary)
+                .tracking(1.0)
+
+            VStack(spacing: 8) {
+                if let low = plan.entryZoneLow, let high = plan.entryZoneHigh {
+                    priceLevelRow("Entry Zone", value: "$\(formatPrice(low)) - $\(formatPrice(high))", color: agent.accentColor)
+                }
+                if let stop = plan.stopLoss {
+                    priceLevelRow("Stop Loss", value: "$\(formatPrice(stop))", color: Color(hex: "EF4444"))
+                }
+                if let t1 = plan.target1 {
+                    priceLevelRow("Target 1", value: "$\(formatPrice(t1))", color: Color(hex: "10B981"))
+                }
+                if let t2 = plan.target2 {
+                    priceLevelRow("Target 2", value: "$\(formatPrice(t2))", color: Color(hex: "10B981"))
+                }
+                if let t3 = plan.target3 {
+                    priceLevelRow("Target 3", value: "$\(formatPrice(t3))", color: Color(hex: "10B981"))
+                }
+            }
+        }
+
+        // Risk warnings
+        if !plan.riskWarnings.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("RISK WARNINGS")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.secondary)
+                    .tracking(1.0)
+
+                ForEach(plan.riskWarnings, id: \.self) { warning in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color(hex: "F59E0B"))
+                        Text(warning)
+                            .font(.system(size: 13))
+                            .foregroundColor(.primary)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func alternativePlanContent(_ alt: AlternativePlan) -> some View {
+        // Bias and suitability
+        HStack(spacing: 12) {
+            Text(alt.bias.uppercased())
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(alt.bias.lowercased() == "bullish" ? Color(hex: "10B981") : Color(hex: "EF4444"))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule()
+                        .fill((alt.bias.lowercased() == "bullish" ? Color(hex: "10B981") : Color(hex: "EF4444")).opacity(0.15))
+                )
+
+            if !alt.suitable {
+                Text("NOT SUITABLE")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(Color(hex: "F59E0B"))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color(hex: "F59E0B").opacity(0.12))
+                    .clipShape(Capsule())
+            }
+
+            Spacer()
+
+            Text("\(alt.confidence)%")
+                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                .foregroundColor(.secondary)
+        }
+
+        // Brief thesis
+        VStack(alignment: .leading, spacing: 8) {
+            Text("ANALYSIS")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.secondary)
+                .tracking(1.0)
+
+            Text(alt.briefThesis)
+                .font(.system(size: 14, weight: .regular))
+                .foregroundColor(.primary)
+        }
+
+        // Why not selected
+        if !alt.whyNotSelected.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("WHY NOT SELECTED")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.secondary)
+                    .tracking(1.0)
+
+                Text(alt.whyNotSelected)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(.secondary)
+            }
+        }
+
+        // Risk warnings
+        if !alt.riskWarnings.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("RISK WARNINGS")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.secondary)
+                    .tracking(1.0)
+
+                ForEach(alt.riskWarnings, id: \.self) { warning in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color(hex: "F59E0B"))
+                        Text(warning)
+                            .font(.system(size: 13))
+                            .foregroundColor(.primary)
+                    }
+                }
+            }
+        }
+
+        // Holding period
+        if !alt.holdingPeriod.isEmpty {
+            HStack {
+                Image(systemName: "clock")
+                    .foregroundColor(.secondary)
+                Text("Holding Period: \(alt.holdingPeriod)")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var findingsContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("FINDINGS")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.secondary)
+                .tracking(1.0)
+
+            ForEach(agent.findings, id: \.self) { finding in
+                HStack(alignment: .top, spacing: 8) {
+                    Circle()
+                        .fill(agent.accentColor)
+                        .frame(width: 6, height: 6)
+                        .padding(.top, 6)
+                    Text(finding)
+                        .font(.system(size: 13))
+                        .foregroundColor(.primary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func priceLevelRow(_ label: String, value: String, color: Color) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(value)
+                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                .foregroundColor(color)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(color.opacity(0.08))
+        .cornerRadius(8)
+    }
+
+    private func formatPrice(_ value: Double) -> String {
+        if value >= 1000 {
+            return String(format: "%.0f", value)
+        } else if value >= 100 {
+            return String(format: "%.1f", value)
+        } else {
+            return String(format: "%.2f", value)
+        }
+    }
+}
+
 // MARK: - V2 Sub-Agent Card (V1-style hierarchical)
 
 private struct V2SubAgentCard: View {
@@ -1040,8 +1553,10 @@ private struct V2SubAgentCard: View {
     let isExpanded: Bool
     let onToggle: () -> Void
     let pulseAnimation: Bool
+    var plan: TradingPlanResponse? = nil  // Optional - for showing individual agent plan details
 
     @State private var expandedSteps: Set<String> = []
+    @State private var showAgentPlanSheet: Bool = false
 
     private var statusColor: Color {
         switch agent.status {
@@ -1138,7 +1653,7 @@ private struct V2SubAgentCard: View {
                     Divider()
                         .padding(.horizontal, 14)
 
-                    // V1-style step rows with tree connectors
+                    // V1-style step rows with tree connectors - progressive reveal
                     ForEach(Array(agent.structuredSteps.enumerated()), id: \.element.id) { index, step in
                         V1StyleStepRow(
                             step: step,
@@ -1154,9 +1669,15 @@ private struct V2SubAgentCard: View {
                                         expandedSteps.insert(step.id)
                                     }
                                 }
-                            }
+                            },
+                            onShowPlan: plan != nil ? { showAgentPlanSheet = true } : nil
                         )
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .top)).animation(.spring(response: 0.4, dampingFraction: 0.8)),
+                            removal: .opacity.animation(.easeOut(duration: 0.2))
+                        ))
                     }
+                    .animation(.spring(response: 0.4, dampingFraction: 0.8), value: agent.structuredSteps.count)
                 }
                 .padding(.bottom, 10)
                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -1175,6 +1696,11 @@ private struct V2SubAgentCard: View {
                 )
         )
         .animation(.easeInOut(duration: 0.2), value: isExpanded)
+        .sheet(isPresented: $showAgentPlanSheet) {
+            if let plan = plan {
+                AgentPlanDetailSheet(agent: agent, plan: plan)
+            }
+        }
     }
 }
 
@@ -1187,6 +1713,7 @@ private struct V1StyleStepRow: View {
     let accentColor: Color
     let pulseAnimation: Bool
     let onToggle: () -> Void
+    var onShowPlan: (() -> Void)? = nil  // Optional action for "Plan" step
 
     private let greenColor = Color(hex: "10B981")
     private let cyanColor = Color(hex: "00DEDE")
@@ -1282,8 +1809,16 @@ private struct V1StyleStepRow: View {
                         .clipShape(Capsule())
                 }
 
-                // Chevron for expandable steps
-                if canToggle {
+                // Chevron for expandable steps or "View" badge for Plan step
+                if step.type == .plan && step.status == .completed && onShowPlan != nil {
+                    Text("VIEW")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(greenColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(greenColor.opacity(0.12))
+                        .clipShape(Capsule())
+                } else if canToggle {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(Color(.tertiaryLabel))
@@ -1293,7 +1828,10 @@ private struct V1StyleStepRow: View {
             .padding(.horizontal, 14)
             .contentShape(Rectangle())
             .onTapGesture {
-                if canToggle {
+                // Special handling for Plan step - show plan detail sheet
+                if step.type == .plan && step.status == .completed, let showPlan = onShowPlan {
+                    showPlan()
+                } else if canToggle {
                     onToggle()
                 }
             }
@@ -1407,7 +1945,11 @@ private struct ManagerGeneratingView: View {
                     orchestratorSteps: manager.orchestratorSteps,
                     subagents: manager.sortedSubagents,
                     expandedAgents: manager.expandedSubagents,
+                    isAnalyzersSectionExpanded: manager.isAnalyzersSectionExpanded,
+                    allSubagentsComplete: manager.allSubagentsComplete,
+                    completedCount: manager.completedSubagentsCount,
                     onToggle: { manager.toggleSubagentExpansion($0) },
+                    onToggleAnalyzersSection: { manager.toggleAnalyzersSection() },
                     pulseAnimation: pulseAnimation
                 )
                 .padding(.horizontal, 20)
@@ -1719,6 +2261,173 @@ enum GenerationPhase: String, CaseIterable {
         case .gathering: return 0
         case .analyzing: return 1
         case .generating: return 2
+        }
+    }
+}
+
+// MARK: - Analysis Complete View
+
+private struct AnalysisCompleteView: View {
+    let symbol: String
+    let plan: TradingPlanResponse
+    @ObservedObject var manager: PlanGenerationManager
+    let onViewPlan: () -> Void
+    let onStartOver: () -> Void
+
+    @State private var showConfetti = false
+
+    private var tradeStyleColor: Color {
+        switch plan.tradeStyle?.lowercased() ?? "swing" {
+        case "day": return Color(red: 1.0, green: 0.6, blue: 0.0)  // Orange
+        case "swing": return Color(red: 0.4, green: 0.7, blue: 1.0)  // Blue
+        case "position": return Color(red: 0.7, green: 0.5, blue: 1.0)  // Purple
+        default: return Color(hex: "10B981")
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            VStack(spacing: 8) {
+                Text(symbol)
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .foregroundColor(.primary)
+
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(Color(hex: "10B981"))
+                    Text("Analysis Complete")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.top, 32)
+            .padding(.bottom, 24)
+
+            // Completed orchestrator steps summary
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Summary of completed analysis
+                    V2SubAgentsView(
+                        orchestratorSteps: manager.orchestratorSteps,
+                        subagents: manager.sortedSubagents,
+                        expandedAgents: manager.expandedSubagents,
+                        isAnalyzersSectionExpanded: manager.isAnalyzersSectionExpanded,
+                        allSubagentsComplete: manager.allSubagentsComplete,
+                        completedCount: manager.completedSubagentsCount,
+                        onToggle: { manager.toggleSubagentExpansion($0) },
+                        onToggleAnalyzersSection: { manager.toggleAnalyzersSection() },
+                        pulseAnimation: false,
+                        plan: plan
+                    )
+
+                    // Selected plan summary card
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Image(systemName: "star.fill")
+                                .foregroundColor(Color(hex: "F59E0B"))
+                            Text("SELECTED PLAN")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.secondary)
+                                .tracking(1.0)
+                            Spacer()
+                        }
+
+                        HStack(spacing: 12) {
+                            // Trade style badge
+                            Text((plan.tradeStyle ?? "Swing").uppercased())
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(tradeStyleColor)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(
+                                    Capsule()
+                                        .fill(tradeStyleColor.opacity(0.15))
+                                )
+
+                            // Bias indicator
+                            Text(plan.bias.uppercased())
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(plan.bias.lowercased() == "bullish" ? Color(hex: "10B981") : Color(hex: "EF4444"))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(
+                                    Capsule()
+                                        .fill((plan.bias.lowercased() == "bullish" ? Color(hex: "10B981") : Color(hex: "EF4444")).opacity(0.15))
+                                )
+
+                            Spacer()
+
+                            // Confidence
+                            if let confidence = plan.confidence {
+                                Text("\(confidence)%")
+                                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(.primary)
+                            }
+                        }
+
+                        // Brief thesis preview
+                        Text(plan.thesis)
+                            .font(.system(size: 13, weight: .regular))
+                            .foregroundColor(.secondary)
+                            .lineLimit(3)
+                    }
+                    .padding(16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color(.secondarySystemBackground))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(tradeStyleColor.opacity(0.3), lineWidth: 1)
+                            )
+                    )
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 120)
+            }
+
+            Spacer()
+
+            // Bottom action buttons
+            VStack(spacing: 12) {
+                Button(action: onViewPlan) {
+                    HStack(spacing: 8) {
+                        Text("View Selected Plan")
+                            .font(.system(size: 16, weight: .semibold))
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(
+                        Capsule()
+                            .fill(Color(hex: "10B981"))
+                    )
+                }
+
+                Button(action: onStartOver) {
+                    Text("Start Over")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 32)
+            .background(
+                LinearGradient(
+                    colors: [Color(.systemBackground).opacity(0), Color(.systemBackground)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 60)
+                .offset(y: -60)
+            )
+        }
+        .onAppear {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.7).delay(0.2)) {
+                showConfetti = true
+            }
         }
     }
 }

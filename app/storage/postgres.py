@@ -226,6 +226,63 @@ async def init_postgres_tables():
             ON plan_sessions (user_id, symbol)
         """)
 
+        # Plan analyses table (V2 multi-agent analysis results)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS plan_analyses (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                analysis_version TEXT DEFAULT 'v2',
+                status TEXT DEFAULT 'draft',
+
+                selected_style TEXT,
+                selection_reasoning TEXT,
+
+                analysis_data JSONB NOT NULL,
+
+                day_trade_report JSONB,
+                swing_trade_report JSONB,
+                position_trade_report JSONB,
+
+                market_context JSONB,
+                news_context JSONB,
+
+                analysis_duration_ms INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+
+                linked_trading_plan_id TEXT
+            )
+        """)
+
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_plan_analyses_user_symbol
+            ON plan_analyses (user_id, symbol)
+        """)
+
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_plan_analyses_status
+            ON plan_analyses (user_id, status)
+        """)
+
+        # Add V2 columns to trading_plans if they don't exist
+        # PostgreSQL doesn't have IF NOT EXISTS for ADD COLUMN, so we check first
+        try:
+            await conn.execute("""
+                ALTER TABLE trading_plans
+                ADD COLUMN IF NOT EXISTS plan_version TEXT DEFAULT 'v1'
+            """)
+        except Exception:
+            pass  # Column may already exist
+
+        try:
+            await conn.execute("""
+                ALTER TABLE trading_plans
+                ADD COLUMN IF NOT EXISTS source_analysis_id TEXT
+            """)
+        except Exception:
+            pass  # Column may already exist
+
         logger.info("PostgreSQL tables initialized")
 
 

@@ -397,14 +397,14 @@ struct SubAgentProgress: Identifiable, Equatable, Codable {
         }
     }
 
-    /// Determines if a pending step should be shown (shows next few pending steps)
+    /// Determines if a pending step should be shown (shows only the next pending step for progressive reveal)
     private func shouldShowPendingStep(_ stepType: SubAgentStepType, activeType: SubAgentStepType?) -> Bool {
         guard let active = activeType else {
-            // If no active step, show first 3 pending steps
-            return stepType.order < 3
+            // If no active step, show only the first pending step
+            return stepType.order == 0
         }
-        // Show pending steps that come after the active one (up to 2 ahead)
-        return stepType.order > active.order && stepType.order <= active.order + 2
+        // Only show the immediately next pending step (1 ahead) for progressive reveal
+        return stepType.order == active.order + 1
     }
 }
 

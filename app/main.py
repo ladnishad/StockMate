@@ -3351,9 +3351,14 @@ async def generate_plan_v2_stream(
     Each agent gathers its own timeframe-specific data, generates its own chart,
     and performs vision analysis. The orchestrator then selects the best plan.
 
+    The analysis is auto-saved as draft when complete. Use the approval endpoint
+    to convert to an active trading plan.
+
     Returns Server-Sent Events with progress for each sub-agent.
     """
     from app.agent.sdk.orchestrator import TradePlanOrchestrator
+    from app.storage.plan_analysis_store import get_plan_analysis_store, PlanAnalysis
+    from app.agent.schemas.streaming import StreamEvent
 
     symbol = symbol.upper()
     user_id = user.id
@@ -3361,12 +3366,85 @@ async def generate_plan_v2_stream(
     async def generate_stream():
         try:
             orchestrator = TradePlanOrchestrator()
+            analysis_store = get_plan_analysis_store()
+            saved_analysis_id = None
 
             async for event in orchestrator.generate_plan_stream(
                 symbol=symbol,
                 user_id=user_id,
                 force_new=force_new,
             ):
+                # Intercept final_result to save the analysis
+                if event.type == "final_result" and event.plan:
+                    try:
+                        # Extract sub-agent reports from the plan data
+                        day_report = None
+                        swing_report = None
+                        position_report = None
+
+                        # The alternatives contain the other trade style reports
+                        if event.alternatives:
+                            for alt in event.alternatives:
+                                style = alt.get("trade_style")
+                                if style == "day":
+                                    day_report = alt
+                                elif style == "swing":
+                                    swing_report = alt
+                                elif style == "position":
+                                    position_report = alt
+
+                        # The selected plan is the main report
+                        selected_style = event.selected_style or event.plan.get("trade_style")
+                        if selected_style == "day":
+                            day_report = event.plan
+                        elif selected_style == "swing":
+                            swing_report = event.plan
+                        elif selected_style == "position":
+                            position_report = event.plan
+
+                        # Create analysis record
+                        analysis = PlanAnalysis.create(
+                            user_id=user_id,
+                            symbol=symbol,
+                            selected_style=selected_style,
+                            selection_reasoning=event.selection_reasoning or "",
+                            analysis_data={
+                                "selected_plan": event.plan,
+                                "alternatives": event.alternatives or [],
+                                "selection_reasoning": event.selection_reasoning,
+                            },
+                            day_trade_report=day_report,
+                            swing_trade_report=swing_report,
+                            position_trade_report=position_report,
+                            market_context=event.plan.get("market_context") if event.plan else None,
+                            news_context=event.plan.get("news_context") if event.plan else None,
+                        )
+
+                        # Archive any previous draft analyses for this symbol
+                        await analysis_store.archive_previous_analyses(user_id, symbol, analysis.id)
+
+                        # Save the new analysis
+                        await analysis_store.save_analysis(analysis)
+                        saved_analysis_id = analysis.id
+                        logger.info(f"Saved V2 analysis {analysis.id} for {symbol}")
+
+                        # Yield modified event with analysis_id
+                        modified_event = StreamEvent.final_result(
+                            plan=event.plan,
+                            alternatives=event.alternatives or [],
+                            selected_style=event.selected_style,
+                            selection_reasoning=event.selection_reasoning,
+                            analysis_id=saved_analysis_id,
+                        )
+                        yield modified_event.to_sse()
+                        continue
+
+                    except Exception as save_error:
+                        logger.error(f"Failed to save V2 analysis for {symbol}: {save_error}")
+                        # Still yield the original event even if save fails
+                        yield event.to_sse()
+                        continue
+
                 # Use the StreamEvent's to_sse method for proper formatting
                 yield event.to_sse()
 
@@ -3393,6 +3471,194 @@ async def generate_plan_v2_stream(
             "X-Accel-Buffering": "no",
         }
     )
+
+
+@app.get(
+    "/plan/{symbol}/analysis/{analysis_id}",
+    summary="Get V2 analysis by ID",
+    description="Retrieve a saved V2 analysis including all sub-agent reports.",
+)
+async def get_plan_analysis(
+    symbol: str,
+    analysis_id: str,
+    user: User = Depends(get_current_user),
+):
+    """Get a specific V2 analysis by ID."""
+    from app.storage.plan_analysis_store import get_plan_analysis_store
+
+    analysis_store = get_plan_analysis_store()
+    analysis = await analysis_store.get_analysis(analysis_id)
+
+    if not analysis:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis {analysis_id} not found"
+        )
+
+    if analysis.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this analysis"
+        )
+
+    return {
+        "id": analysis.id,
+        "symbol": analysis.symbol,
+        "status": analysis.status,
+        "selected_style": analysis.selected_style,
+        "selection_reasoning": analysis.selection_reasoning,
+        "analysis_data": analysis.analysis_data,
+        "day_trade_report": analysis.day_trade_report,
+        "swing_trade_report": analysis.swing_trade_report,
+        "position_trade_report": analysis.position_trade_report,
+        "market_context": analysis.market_context,
+        "news_context": analysis.news_context,
+        "created_at": analysis.created_at,
+        "linked_trading_plan_id": analysis.linked_trading_plan_id,
+    }
+
+
+@app.get(
+    "/plan/{symbol}/analyses",
+    summary="List V2 analyses for symbol",
+    description="Get history of V2 analyses for a symbol.",
+)
+async def list_plan_analyses(
+    symbol: str,
+    limit: int = 10,
+    user: User = Depends(get_current_user),
+):
+    """List V2 analyses for a symbol."""
+    from app.storage.plan_analysis_store import get_plan_analysis_store
+
+    analysis_store = get_plan_analysis_store()
+    analyses = await analysis_store.get_analyses_for_symbol(user.id, symbol.upper(), limit)
+
+    return {
+        "symbol": symbol.upper(),
+        "count": len(analyses),
+        "analyses": [
+            {
+                "id": a.id,
+                "status": a.status,
+                "selected_style": a.selected_style,
+                "created_at": a.created_at,
+                "linked_trading_plan_id": a.linked_trading_plan_id,
+            }
+            for a in analyses
+        ]
+    }
+
+
+@app.post(
+    "/plan/{symbol}/analysis/{analysis_id}/approve",
+    summary="Approve V2 analysis and create trading plan",
+    description="Convert a draft V2 analysis into an active trading plan.",
+)
+async def approve_plan_analysis(
+    symbol: str,
+    analysis_id: str,
+    user: User = Depends(get_current_user),
+):
+    """Approve a V2 analysis and create a trading plan from it.
+
+    This converts the selected plan from the analysis into an active
+    TradingPlan that can be tracked.
+    """
+    from app.storage.plan_analysis_store import get_plan_analysis_store
+    from app.storage.plan_store import get_plan_store, TradingPlan
+    import uuid
+
+    user_id = user.id
+    symbol = symbol.upper()
+
+    # Get the analysis
+    analysis_store = get_plan_analysis_store()
+    analysis = await analysis_store.get_analysis(analysis_id)
+
+    if not analysis:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis {analysis_id} not found"
+        )
+
+    if analysis.user_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to approve this analysis"
+        )
+
+    if analysis.status == "accepted":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Analysis has already been approved"
+        )
+
+    # Get the selected plan from analysis_data
+    selected_plan = analysis.analysis_data.get("selected_plan", {})
+    if not selected_plan:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No selected plan found in analysis"
+        )
+
+    # Create TradingPlan from the selected plan
+    plan_store = get_plan_store()
+    plan_id = str(uuid.uuid4())
+
+    # Extract targets
+    targets = selected_plan.get("targets", [])
+    target_1 = targets[0].get("price") if len(targets) > 0 else None
+    target_2 = targets[1].get("price") if len(targets) > 1 else None
+    target_3 = targets[2].get("price") if len(targets) > 2 else None
+    target_reasoning = ", ".join([t.get("reasoning", "") for t in targets[:3]]) if targets else ""
+
+    trading_plan = TradingPlan(
+        id=plan_id,
+        user_id=user_id,
+        symbol=symbol,
+        status="active",
+        bias=selected_plan.get("bias", "neutral"),
+        thesis=selected_plan.get("thesis", ""),
+        entry_zone_low=selected_plan.get("entry_zone_low"),
+        entry_zone_high=selected_plan.get("entry_zone_high"),
+        stop_loss=selected_plan.get("stop_loss"),
+        stop_reasoning=selected_plan.get("stop_reasoning", ""),
+        target_1=target_1,
+        target_2=target_2,
+        target_3=target_3,
+        target_reasoning=target_reasoning,
+        risk_reward=selected_plan.get("risk_reward"),
+        position_size_pct=selected_plan.get("position_size_pct"),
+        key_supports=selected_plan.get("key_supports", []),
+        key_resistances=selected_plan.get("key_resistances", []),
+        invalidation_criteria=selected_plan.get("invalidation_criteria", ""),
+        trade_style=selected_plan.get("trade_style", analysis.selected_style or "swing"),
+        trade_style_reasoning=analysis.selection_reasoning or "",
+        holding_period=selected_plan.get("holding_period", ""),
+        confidence=selected_plan.get("confidence", 0),
+        price_at_creation=selected_plan.get("current_price"),
+        technical_summary=selected_plan.get("technical_summary", ""),
+        news_summary=selected_plan.get("news_summary", ""),
+    )
+
+    # Save the trading plan
+    await plan_store.save_plan(trading_plan)
+
+    # Mark analysis as accepted and link to trading plan
+    await analysis_store.accept_analysis(analysis_id, plan_id)
+
+    logger.info(f"Approved V2 analysis {analysis_id} -> trading plan {plan_id} for {symbol}")
+
+    return {
+        "success": True,
+        "analysis_id": analysis_id,
+        "trading_plan_id": plan_id,
+        "symbol": symbol,
+        "trade_style": trading_plan.trade_style,
+        "bias": trading_plan.bias,
+        "message": f"Trading plan created for {symbol}"
+    }
 
 
 @app.post(

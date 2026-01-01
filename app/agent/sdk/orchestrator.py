@@ -262,7 +262,22 @@ class TradePlanOrchestrator:
         client = AsyncAnthropic(api_key=settings.claude_api_key)
 
         position_context = context.to_prompt_context() if context else "No context available."
-        agents_def = get_all_subagent_definitions(position_context)
+
+        # Build news context string from gathered data
+        news_context = "No recent news available."
+        if context:
+            news_parts = []
+            if context.news_sentiment:
+                news_parts.append(f"Sentiment: {context.news_sentiment}")
+            if context.news_summary:
+                news_parts.append(f"Summary: {context.news_summary}")
+            if context.recent_headlines:
+                headlines_str = ", ".join(context.recent_headlines[:3])
+                news_parts.append(f"Headlines: {headlines_str}")
+            if news_parts:
+                news_context = " | ".join(news_parts)
+
+        agents_def = get_all_subagent_definitions(position_context, news_context)
 
         # Update status to running for all agents
         for agent_name in self.subagent_progress:
@@ -1062,10 +1077,40 @@ Return ONLY valid JSON."""
                                     reasoning=t.get("reasoning") or "Target level"
                                 )
                             )
-                        except (ValueError, TypeError):
-                            pass
+                        except (ValueError, TypeError) as te:
+                            logger.warning(f"[Orchestrator] Failed to parse target {t}: {te}")
                 if parsed_targets:
                     best_report.targets = parsed_targets
+                    logger.info(f"[Orchestrator] Set {len(parsed_targets)} targets from synthesis")
+                else:
+                    logger.warning(f"[Orchestrator] Synthesis returned no valid targets")
+
+            # Fallback: ensure we have targets even if synthesis failed
+            if not best_report.targets or len(best_report.targets) == 0:
+                logger.warning(f"[Orchestrator] No targets from synthesis, attempting fallback")
+                # Try to generate targets from entry zone and risk/reward
+                if best_report.entry_zone_high and best_report.stop_loss and context.current_price:
+                    entry = best_report.entry_zone_high
+                    stop = best_report.stop_loss
+                    risk = abs(entry - stop)
+
+                    if best_report.bias == "bullish":
+                        # Bullish targets: above entry
+                        t1 = round(entry + (risk * 1.5), 2)
+                        t2 = round(entry + (risk * 2.5), 2)
+                        t3 = round(entry + (risk * 4.0), 2)
+                    else:
+                        # Bearish targets: below entry
+                        t1 = round(entry - (risk * 1.5), 2)
+                        t2 = round(entry - (risk * 2.5), 2)
+                        t3 = round(entry - (risk * 4.0), 2)
+
+                    best_report.targets = [
+                        PriceTargetWithReasoning(price=t1, reasoning="1.5R target based on risk/reward"),
+                        PriceTargetWithReasoning(price=t2, reasoning="2.5R target for partial profits"),
+                        PriceTargetWithReasoning(price=t3, reasoning="4R extended target"),
+                    ]
+                    logger.info(f"[Orchestrator] Generated fallback targets: {t1}, {t2}, {t3}")
 
             # Add news impact to thesis if provided
             if synthesis.get("news_impact"):

@@ -47,7 +47,10 @@ SUBAGENT_TOOLS = [
 ]
 
 
-def create_day_trade_agent(position_context: str) -> AgentDefinition:
+def create_day_trade_agent(
+    position_context: str,
+    news_context: str = "No recent news available.",
+) -> AgentDefinition:
     """Create the Day Trade Analyzer agent definition.
 
     This agent specializes in intraday setups with:
@@ -58,19 +61,23 @@ def create_day_trade_agent(position_context: str) -> AgentDefinition:
 
     Args:
         position_context: Formatted position context string
+        news_context: News and sentiment context string
 
     Returns:
         AgentDefinition for day trading analysis
     """
     return AgentDefinition(
         description="Day trading specialist for intraday setups. Analyzes 5-min charts, VWAP levels, and opening range breakouts. Best for stocks with ATR > 3%.",
-        prompt=build_day_trade_prompt("", position_context),  # Symbol injected at runtime
+        prompt=build_day_trade_prompt("", position_context, news_context),  # Symbol injected at runtime
         tools=SUBAGENT_TOOLS,
         model="sonnet",
     )
 
 
-def create_swing_trade_agent(position_context: str) -> AgentDefinition:
+def create_swing_trade_agent(
+    position_context: str,
+    news_context: str = "No recent news available.",
+) -> AgentDefinition:
     """Create the Swing Trade Analyzer agent definition.
 
     This agent specializes in multi-day setups with:
@@ -81,19 +88,23 @@ def create_swing_trade_agent(position_context: str) -> AgentDefinition:
 
     Args:
         position_context: Formatted position context string
+        news_context: News and sentiment context string
 
     Returns:
         AgentDefinition for swing trading analysis
     """
     return AgentDefinition(
         description="Swing trading specialist for multi-day patterns. Analyzes daily charts, bull flags, triangles, and base breakouts. Best for stocks with ATR 1-3%.",
-        prompt=build_swing_trade_prompt("", position_context),  # Symbol injected at runtime
+        prompt=build_swing_trade_prompt("", position_context, news_context),  # Symbol injected at runtime
         tools=SUBAGENT_TOOLS,
         model="sonnet",
     )
 
 
-def create_position_trade_agent(position_context: str) -> AgentDefinition:
+def create_position_trade_agent(
+    position_context: str,
+    news_context: str = "No recent news available.",
+) -> AgentDefinition:
     """Create the Position Trade Analyzer agent definition.
 
     This agent specializes in major trend setups with:
@@ -104,13 +115,14 @@ def create_position_trade_agent(position_context: str) -> AgentDefinition:
 
     Args:
         position_context: Formatted position context string
+        news_context: News and sentiment context string
 
     Returns:
         AgentDefinition for position trading analysis
     """
     return AgentDefinition(
         description="Position trading specialist for major trend plays. Analyzes weekly charts, major breakouts, and long-term trend continuation. Best for stocks with ATR < 1.5%.",
-        prompt=build_position_trade_prompt("", position_context),  # Symbol injected at runtime
+        prompt=build_position_trade_prompt("", position_context, news_context),  # Symbol injected at runtime
         tools=SUBAGENT_TOOLS,
         model="sonnet",
     )
@@ -125,16 +137,18 @@ POSITION_TRADE_AGENT = create_position_trade_agent("No existing position.")
 
 def get_all_subagent_definitions(
     position_context: str = "No existing position.",
+    news_context: str = "No recent news available.",
 ) -> Dict[str, AgentDefinition]:
-    """Get all sub-agent definitions with the given position context.
+    """Get all sub-agent definitions with the given position and news context.
 
     This function creates fresh agent definitions with the proper position
-    context injected into their system prompts. Used by the orchestrator
-    to spawn sub-agents with position awareness.
+    and news context injected into their system prompts. Used by the orchestrator
+    to spawn sub-agents with position and market awareness.
 
     Args:
         position_context: Formatted position context string describing
             the user's current position (if any)
+        news_context: News and sentiment context string
 
     Returns:
         Dictionary mapping agent names to their definitions:
@@ -143,21 +157,23 @@ def get_all_subagent_definitions(
         - "position-trade-analyzer": Position trading specialist
     """
     return {
-        "day-trade-analyzer": create_day_trade_agent(position_context),
-        "swing-trade-analyzer": create_swing_trade_agent(position_context),
-        "position-trade-analyzer": create_position_trade_agent(position_context),
+        "day-trade-analyzer": create_day_trade_agent(position_context, news_context),
+        "swing-trade-analyzer": create_swing_trade_agent(position_context, news_context),
+        "position-trade-analyzer": create_position_trade_agent(position_context, news_context),
     }
 
 
 def get_agent_by_style(
     trade_style: str,
     position_context: str = "No existing position.",
+    news_context: str = "No recent news available.",
 ) -> AgentDefinition:
     """Get a single agent definition by trade style.
 
     Args:
         trade_style: One of "day", "swing", or "position"
         position_context: Formatted position context string
+        news_context: News and sentiment context string
 
     Returns:
         AgentDefinition for the specified trade style
@@ -177,4 +193,4 @@ def get_agent_by_style(
             f"Must be one of: {', '.join(style_map.keys())}"
         )
 
-    return style_map[trade_style](position_context)
+    return style_map[trade_style](position_context, news_context)

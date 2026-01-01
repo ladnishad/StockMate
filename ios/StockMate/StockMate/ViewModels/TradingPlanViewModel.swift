@@ -33,6 +33,7 @@ final class TradingPlanViewModel: ObservableObject {
     @Published var expandedSubagents: Set<String> = []
     @Published var isV2Mode: Bool = false  // True when using parallel sub-agents
     @Published var orchestratorSteps: [OrchestratorStep] = []  // Orchestrator-level steps
+    @Published var isAnalyzersSectionExpanded: Bool = true  // Whether the analyzers section is expanded
 
     // For live update animation
     @Published private(set) var updatePhase: UpdatePhase = .idle
@@ -992,6 +993,8 @@ final class TradingPlanViewModel: ObservableObject {
             self.error = nil
             self.subagentProgress = [:]
             self.isV2Mode = false
+            self.isAnalyzersSectionExpanded = true
+            self.orchestratorSteps = []
         }
 
         // Start fresh plan generation
@@ -1122,5 +1125,19 @@ final class TradingPlanViewModel: ObservableObject {
     /// Get count of completed sub-agents
     var completedSubagentCount: Int {
         subagentProgress.values.filter { $0.status == .completed }.count
+    }
+
+    /// Check if all sub-agents have completed
+    var allSubagentsComplete: Bool {
+        let sorted = sortedSubagents
+        guard !sorted.isEmpty else { return false }
+        return sorted.allSatisfy { $0.status == .completed || $0.status == .failed }
+    }
+
+    /// Toggle the "Starting Analyzers" section expansion
+    func toggleAnalyzersSection() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            isAnalyzersSectionExpanded.toggle()
+        }
     }
 }

@@ -19,10 +19,14 @@ final class PlanGenerationManager: ObservableObject {
     @Published private(set) var subagentProgress: [String: SubAgentProgress] = [:]
     @Published var expandedSubagents: Set<String> = []
     @Published private(set) var generatedPlan: TradingPlanResponse?
+    @Published private(set) var analysisId: String?  // V2: ID for approving the analysis
     @Published private(set) var error: String?
 
     /// Orchestrator-level progress (shown before sub-agents)
     @Published private(set) var orchestratorSteps: [OrchestratorStep] = []
+
+    /// Whether the "Starting Analyzers" section is expanded to show sub-agents
+    @Published var isAnalyzersSectionExpanded: Bool = true
 
     /// For reconnecting views
     @Published private(set) var lastUpdated: Date?
@@ -54,8 +58,10 @@ final class PlanGenerationManager: ObservableObject {
         isGenerating = true
         error = nil
         generatedPlan = nil
+        analysisId = nil
         subagentProgress = [:]
         orchestratorSteps = []
+        isAnalyzersSectionExpanded = true
 
         // Initialize sub-agents with pending state
         initializeSubagents()
@@ -74,6 +80,7 @@ final class PlanGenerationManager: ObservableObject {
         // Clear partial state to avoid stale data
         activeSymbol = nil
         generatedPlan = nil
+        analysisId = nil
         subagentProgress = [:]
         orchestratorSteps = []
         error = nil
@@ -84,9 +91,34 @@ final class PlanGenerationManager: ObservableObject {
         guard !isGenerating else { return }
         activeSymbol = nil
         generatedPlan = nil
+        analysisId = nil
         subagentProgress = [:]
         orchestratorSteps = []
         error = nil
+    }
+
+    /// Approve the analysis and create a trading plan from it
+    /// Returns the approved plan on success, nil on failure
+    func approveAnalysis() async -> TradingPlanResponse? {
+        guard let symbol = activeSymbol,
+              let analysisId = analysisId else {
+            error = "No analysis to approve"
+            return nil
+        }
+
+        do {
+            let approvedPlan = try await APIService.shared.approveV2Analysis(
+                symbol: symbol,
+                analysisId: analysisId
+            )
+            withAnimation {
+                self.generatedPlan = approvedPlan
+            }
+            return approvedPlan
+        } catch {
+            self.error = "Failed to approve plan: \(error.localizedDescription)"
+            return nil
+        }
     }
 
     /// Toggle sub-agent expansion
@@ -100,10 +132,29 @@ final class PlanGenerationManager: ObservableObject {
         }
     }
 
+    /// Toggle the "Starting Analyzers" section expansion
+    func toggleAnalyzersSection() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            isAnalyzersSectionExpanded.toggle()
+        }
+    }
+
     /// Get sorted sub-agents
     var sortedSubagents: [SubAgentProgress] {
         let order = ["day-trade-analyzer", "swing-trade-analyzer", "position-trade-analyzer"]
         return order.compactMap { subagentProgress[$0] }
+    }
+
+    /// Check if all sub-agents have completed
+    var allSubagentsComplete: Bool {
+        let sorted = sortedSubagents
+        guard !sorted.isEmpty else { return false }
+        return sorted.allSatisfy { $0.status == .completed || $0.status == .failed }
+    }
+
+    /// Count of completed sub-agents
+    var completedSubagentsCount: Int {
+        sortedSubagents.filter { $0.status == .completed }.count
     }
 
     // MARK: - Private Methods
@@ -197,6 +248,7 @@ final class PlanGenerationManager: ObservableObject {
             if let newPlan = event.plan {
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                     self.generatedPlan = newPlan
+                    self.analysisId = event.analysisId  // Store for later approval
                     self.lastUpdated = Date()
                     self.markAllSubagentsComplete()
                 }

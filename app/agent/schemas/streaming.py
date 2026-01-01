@@ -130,6 +130,10 @@ class StreamEvent(BaseModel):
     )
 
     # Final result
+    analysis_id: Optional[str] = Field(
+        default=None,
+        description="For final_result: unique ID of the saved analysis."
+    )
     plan: Optional[Dict[str, Any]] = Field(
         default=None,
         description="For final_result: the selected plan as dict."
@@ -208,6 +212,7 @@ class StreamEvent(BaseModel):
         alternatives: List[Dict[str, Any]],
         selected_style: str,
         selection_reasoning: str,
+        analysis_id: str = None,
         timestamp: float = None,
     ) -> "StreamEvent":
         """Create a final result event."""
@@ -215,6 +220,7 @@ class StreamEvent(BaseModel):
         return cls(
             type="final_result",
             timestamp=timestamp or time.time(),
+            analysis_id=analysis_id,
             plan=plan,
             alternatives=alternatives,
             selected_style=selected_style,

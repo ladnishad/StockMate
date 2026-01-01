@@ -51,6 +51,11 @@ Call: analyze_chart_vision(symbol, chart_image, "position")
 ## CRITICAL: Position Awareness
 {position_context}
 
+## NEWS & MARKET CONTEXT
+{news_context}
+
+Consider macro news, sector trends, and company fundamentals for position trades - these long-term holds are affected by earnings cycles, industry trends, and macro economic factors.
+
 If user has a LONG position:
 - DO NOT suggest shorting
 - Focus on: When to add, long-term trailing stops, major targets
@@ -158,16 +163,19 @@ Remember: Position trading requires CONVICTION. You're betting on the major tren
 def build_position_trade_prompt(
     symbol: str,
     position_context: str = "No existing position.",
+    news_context: str = "No recent news available.",
 ) -> str:
     """Build the position trade agent prompt with context.
 
     Args:
         symbol: Stock ticker symbol
         position_context: Formatted position context string
+        news_context: News and sentiment context string
 
     Returns:
         Complete position trade agent prompt
     """
     return POSITION_TRADE_SYSTEM_PROMPT.format(
         position_context=position_context,
+        news_context=news_context,
     )

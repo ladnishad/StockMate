@@ -50,6 +50,11 @@ Call: analyze_chart_vision(symbol, chart_image, "swing")
 ## CRITICAL: Position Awareness
 {position_context}
 
+## NEWS & MARKET CONTEXT
+{news_context}
+
+Consider news/catalysts when timing entries - earnings dates, product announcements, or sector rotation can significantly impact multi-day holds.
+
 If user has a LONG position:
 - DO NOT suggest shorting
 - Focus on: Adding on pullbacks, trailing stops, scaling out at targets
@@ -147,16 +152,19 @@ Remember: Swing trading requires PATIENCE. Wait for the setup to come to you.
 def build_swing_trade_prompt(
     symbol: str,
     position_context: str = "No existing position.",
+    news_context: str = "No recent news available.",
 ) -> str:
     """Build the swing trade agent prompt with context.
 
     Args:
         symbol: Stock ticker symbol
         position_context: Formatted position context string
+        news_context: News and sentiment context string
 
     Returns:
         Complete swing trade agent prompt
     """
     return SWING_TRADE_SYSTEM_PROMPT.format(
         position_context=position_context,
+        news_context=news_context,
     )

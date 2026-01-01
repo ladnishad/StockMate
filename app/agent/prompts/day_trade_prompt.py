@@ -50,6 +50,11 @@ Call: analyze_chart_vision(symbol, chart_image, "day")
 ## CRITICAL: Position Awareness
 {position_context}
 
+## NEWS & MARKET CONTEXT
+{news_context}
+
+Consider news/catalysts when assessing risk - upcoming earnings, FDA decisions, or high-impact news can make day trading more volatile and unpredictable.
+
 If user has a LONG position:
 - DO NOT suggest shorting
 - Focus on: trailing stops, profit-taking levels, optimal exit timing
@@ -133,16 +138,19 @@ Remember: Day trading requires PRECISION. If the setup isn't clean, pass on it.
 def build_day_trade_prompt(
     symbol: str,
     position_context: str = "No existing position.",
+    news_context: str = "No recent news available.",
 ) -> str:
     """Build the day trade agent prompt with context.
 
     Args:
         symbol: Stock ticker symbol
         position_context: Formatted position context string
+        news_context: News and sentiment context string
 
     Returns:
         Complete day trade agent prompt
     """
     return DAY_TRADE_SYSTEM_PROMPT.format(
         position_context=position_context,
+        news_context=news_context,
     )

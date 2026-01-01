@@ -421,6 +421,7 @@ actor APIService {
         let selectedStyle: String?
         let selectionReasoning: String?
         let alternatives: [[String: AnyCodable]]?
+        let analysisId: String?  // ID of the saved analysis (for approval)
 
         // V2: Error event (type == "error")
         let errorMessage: String?
@@ -437,6 +438,7 @@ actor APIService {
             case selectedStyle = "selected_style"
             case selectionReasoning = "selection_reasoning"
             case alternatives
+            case analysisId = "analysis_id"
             case errorMessage = "error_message"
         }
 
@@ -695,6 +697,29 @@ actor APIService {
     /// Approve the draft plan
     func approvePlanSession(symbol: String, sessionId: String) async throws -> TradingPlanResponse {
         let url = URL(string: "\(baseURL)/plan/\(symbol.uppercased())/session/\(sessionId)/approve")!
+
+        struct EmptyBody: Encodable {}
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
+        request.httpBody = try JSONEncoder().encode(EmptyBody())
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIServiceError.invalidResponse
+        }
+
+        return try JSONDecoder().decode(TradingPlanResponse.self, from: data)
+    }
+
+    /// Approve a V2 analysis and create a trading plan from it
+    func approveV2Analysis(symbol: String, analysisId: String) async throws -> TradingPlanResponse {
+        let url = URL(string: "\(baseURL)/plan/\(symbol.uppercased())/analysis/\(analysisId)/approve")!
 
         struct EmptyBody: Encodable {}
 
