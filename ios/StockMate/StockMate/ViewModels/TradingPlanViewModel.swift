@@ -150,6 +150,10 @@ final class TradingPlanViewModel: ObservableObject {
         do {
             plan = try await APIService.shared.getTradingPlan(symbol: symbol)
             lastUpdated = Date()
+            // If we loaded a saved plan, mark as active so evaluation section shows
+            if plan != nil {
+                hasActivePosition = true
+            }
         } catch {
             // Plan might not exist yet - that's okay
             if let apiError = error as? APIServiceError {

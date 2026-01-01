@@ -2759,8 +2759,9 @@ private struct EvaluationStatusSectionView: View {
     }
 
     var body: some View {
-        if hasContent || viewModel.hasActivePosition {
-            VStack(alignment: .leading, spacing: 0) {
+        // Always show evaluation section when there's a saved plan
+        // (this view is only instantiated when plan exists)
+        VStack(alignment: .leading, spacing: 0) {
                 // Header
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -2876,7 +2877,6 @@ private struct EvaluationStatusSectionView: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(Color(.secondarySystemBackground))
             )
-        }
     }
 
     private func formatRelativeTime(_ dateString: String) -> String {
