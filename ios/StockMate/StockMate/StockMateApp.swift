@@ -10,6 +10,7 @@ import SwiftUI
 @main
 struct StockMateApp: App {
     @StateObject private var authManager = AuthenticationManager.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         configureAppearance()
@@ -28,6 +29,14 @@ struct StockMateApp: App {
             }
             .task {
                 await authManager.checkSession()
+            }
+            .onChange(of: scenePhase) { oldPhase, newPhase in
+                // Re-check session when app returns from background
+                if newPhase == .active && oldPhase == .background {
+                    Task {
+                        await authManager.checkSession()
+                    }
+                }
             }
         }
     }

@@ -48,7 +48,11 @@ actor APIService {
 
     private let baseURL = "https://stockmate-fggr.onrender.com"
     private let session: URLSession
-    private let keychain = KeychainHelper.shared
+
+    /// Access keychain lazily to avoid I/O on main thread during init
+    private var keychain: KeychainHelper {
+        KeychainHelper.shared
+    }
 
     /// Get the current authenticated user's ID, or fallback to "default" if not authenticated
     private var currentUserId: String {
@@ -70,36 +74,59 @@ actor APIService {
         }
     }
 
-    /// Flag to prevent multiple simultaneous refresh attempts
-    private static var isRefreshing = false
-    private static var refreshTask: Task<Void, Error>?
+    // MARK: - Token Refresh Coordination
+
+    /// Actor-isolated state for token refresh coordination
+    /// Using instance properties instead of static to leverage actor isolation
+    private var isRefreshing = false
+    private var refreshTask: Task<Void, Error>?
+    private var pendingRefreshContinuations: [CheckedContinuation<Void, Error>] = []
+
+    /// Coordinate token refresh to avoid race conditions
+    /// Multiple concurrent 401 responses will wait for a single refresh operation
+    private func coordinatedRefresh() async throws {
+        if isRefreshing {
+            // Another refresh is in progress - wait for it
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                pendingRefreshContinuations.append(continuation)
+            }
+            return
+        }
+
+        // Start the refresh
+        isRefreshing = true
+
+        do {
+            try await AuthenticationManager.shared.refreshAccessToken()
+
+            // Resume all waiting requests
+            let continuations = pendingRefreshContinuations
+            pendingRefreshContinuations = []
+            isRefreshing = false
+
+            for continuation in continuations {
+                continuation.resume()
+            }
+        } catch {
+            // Resume all waiting requests with error
+            let continuations = pendingRefreshContinuations
+            pendingRefreshContinuations = []
+            isRefreshing = false
+
+            for continuation in continuations {
+                continuation.resume(throwing: error)
+            }
+            throw error
+        }
+    }
 
     /// Attempt to refresh token and retry the request on 401 error
     private func handleUnauthorizedAndRetry<T: Decodable>(
         request: URLRequest,
         decoder: JSONDecoder
     ) async throws -> T {
-        // Avoid multiple simultaneous refresh attempts
-        if Self.isRefreshing, let task = Self.refreshTask {
-            // Wait for ongoing refresh to complete
-            try await task.value
-        } else {
-            Self.isRefreshing = true
-            Self.refreshTask = Task {
-                try await AuthenticationManager.shared.refreshAccessToken()
-            }
-
-            do {
-                try await Self.refreshTask?.value
-            } catch {
-                Self.isRefreshing = false
-                Self.refreshTask = nil
-                throw error
-            }
-
-            Self.isRefreshing = false
-            Self.refreshTask = nil
-        }
+        // Coordinate refresh to avoid race conditions
+        try await coordinatedRefresh()
 
         // Retry the request with new token
         var retryRequest = request
@@ -109,6 +136,12 @@ actor APIService {
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw APIServiceError.invalidResponse
+        }
+
+        // If we still get 401 after refresh, the refresh token is also invalid
+        if httpResponse.statusCode == 401 {
+            // Don't retry again - logout will be handled by AuthenticationManager
+            throw APIServiceError.httpError(401)
         }
 
         guard (200...299).contains(httpResponse.statusCode) else {
