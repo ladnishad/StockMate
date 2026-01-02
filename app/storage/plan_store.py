@@ -6,7 +6,7 @@ Supports both SQLite (development) and PostgreSQL (production).
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field, asdict
 
@@ -29,7 +29,8 @@ class TradingPlan:
 
     # Plan details
     bias: str = ""  # bullish, bearish, neutral
-    thesis: str = ""  # Why this trade makes sense
+    thesis: str = ""  # Why this trade makes sense (can be updated during evaluation)
+    original_thesis: str = ""  # Preserved from plan creation, never changes
     entry_zone_low: Optional[float] = None
     entry_zone_high: Optional[float] = None
     stop_loss: Optional[float] = None
@@ -114,6 +115,7 @@ class PlanStore:
 
                     bias TEXT,
                     thesis TEXT,
+                    original_thesis TEXT DEFAULT '',
                     entry_zone_low REAL,
                     entry_zone_high REAL,
                     stop_loss REAL,
@@ -213,6 +215,51 @@ class PlanStore:
                     plans.append(TradingPlan.from_row(row))
         return plans
 
+    async def get_all_active_plans(self) -> List[TradingPlan]:
+        """Get all active trading plans across all users."""
+        await self._ensure_table()
+
+        plans = []
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM trading_plans WHERE status = 'active' ORDER BY updated_at DESC"
+            ) as cursor:
+                async for row in cursor:
+                    plans.append(TradingPlan.from_row(row))
+        return plans
+
+    async def get_plans_due_for_evaluation(self, minutes_threshold: int = 15) -> List[TradingPlan]:
+        """Get all active plans across all users that are due for evaluation.
+
+        A plan is due if:
+        - It has a last_evaluation timestamp older than minutes_threshold, OR
+        - It has no last_evaluation and created_at is older than minutes_threshold
+        """
+        await self._ensure_table()
+
+        cutoff = (datetime.utcnow() - timedelta(minutes=minutes_threshold)).isoformat()
+
+        plans = []
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """SELECT * FROM trading_plans
+                   WHERE status = 'active'
+                   AND (
+                       (last_evaluation IS NULL OR last_evaluation = '')
+                       AND created_at < ?
+                       OR
+                       (last_evaluation IS NOT NULL AND last_evaluation != ''
+                        AND last_evaluation < ?)
+                   )
+                   ORDER BY COALESCE(NULLIF(last_evaluation, ''), created_at) ASC""",
+                (cutoff, cutoff)
+            ) as cursor:
+                async for row in cursor:
+                    plans.append(TradingPlan.from_row(row))
+        return plans
+
     async def update_evaluation(
         self,
         user_id: str,
@@ -245,6 +292,7 @@ class PlanStore:
         # Apply any adjustments to plan values
         if adjustments:
             allowed_fields = {
+                "thesis",  # Can update thesis during evaluation
                 "stop_loss", "target_1", "target_2", "target_3",
                 "entry_zone_low", "entry_zone_high", "risk_reward",
                 "stop_reasoning", "target_reasoning", "invalidation_criteria",
@@ -373,6 +421,55 @@ class DatabasePlanStore:
                     plans.append(TradingPlan(**data))
         return plans
 
+    async def get_all_active_plans(self) -> List[TradingPlan]:
+        """Get all active trading plans across all users from Postgres."""
+        from app.storage.postgres import get_connection
+
+        plans = []
+        async with get_connection() as conn:
+            rows = await conn.fetch(
+                """SELECT plan_data FROM trading_plans
+                   WHERE status = 'active'
+                   ORDER BY updated_at DESC"""
+            )
+            for row in rows:
+                if row["plan_data"]:
+                    data = json.loads(row["plan_data"]) if isinstance(row["plan_data"], str) else row["plan_data"]
+                    plans.append(TradingPlan(**data))
+        return plans
+
+    async def get_plans_due_for_evaluation(self, minutes_threshold: int = 15) -> List[TradingPlan]:
+        """Get all active plans across all users that are due for evaluation.
+
+        A plan is due if:
+        - It has a last_evaluation timestamp older than minutes_threshold, OR
+        - It has no last_evaluation and created_at is older than minutes_threshold
+        """
+        from app.storage.postgres import get_connection
+
+        cutoff = (datetime.utcnow() - timedelta(minutes=minutes_threshold)).isoformat()
+
+        plans = []
+        async with get_connection() as conn:
+            rows = await conn.fetch(
+                """SELECT plan_data FROM trading_plans
+                   WHERE status = 'active'
+                   AND (
+                       (plan_data->>'last_evaluation' IS NULL OR plan_data->>'last_evaluation' = '')
+                       AND (plan_data->>'created_at' < $1 OR created_at < $1)
+                       OR
+                       (plan_data->>'last_evaluation' IS NOT NULL AND plan_data->>'last_evaluation' != ''
+                        AND plan_data->>'last_evaluation' < $1)
+                   )
+                   ORDER BY COALESCE(NULLIF(plan_data->>'last_evaluation', ''), plan_data->>'created_at', created_at) ASC""",
+                cutoff
+            )
+            for row in rows:
+                if row["plan_data"]:
+                    data = json.loads(row["plan_data"]) if isinstance(row["plan_data"], str) else row["plan_data"]
+                    plans.append(TradingPlan(**data))
+        return plans
+
     async def update_evaluation(
         self,
         user_id: str,
@@ -403,6 +500,7 @@ class DatabasePlanStore:
         # Apply adjustments
         if adjustments:
             allowed_fields = {
+                "thesis",  # Can update thesis during evaluation
                 "stop_loss", "target_1", "target_2", "target_3",
                 "entry_zone_low", "entry_zone_high", "risk_reward",
                 "stop_reasoning", "target_reasoning", "invalidation_criteria",

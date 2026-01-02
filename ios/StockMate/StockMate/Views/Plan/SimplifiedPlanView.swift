@@ -171,7 +171,7 @@ struct SimplifiedPlanView: View {
                     )
 
                     // Thesis
-                    ThesisSectionView(text: plan.thesis)
+                    ThesisSectionView(text: plan.thesis, originalThesis: plan.originalThesis)
 
                     // Price Ladder
                     PriceLadderView(
@@ -389,16 +389,60 @@ private struct BiasIndicatorView: View {
 
 private struct ThesisSectionView: View {
     let text: String
+    let originalThesis: String?
+
+    @State private var showOriginalThesis = false
+
+    // Check if thesis has been updated (differs from original)
+    private var hasUpdatedThesis: Bool {
+        guard let original = originalThesis, !original.isEmpty else { return false }
+        return original != text
+    }
 
     var body: some View {
-        MarkdownText(text, size: 15, opacity: 0.9)
-            .lineSpacing(5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(.secondarySystemBackground))
-            )
+        VStack(alignment: .leading, spacing: 12) {
+            // Current thesis
+            MarkdownText(text, size: 15, opacity: 0.9)
+                .lineSpacing(5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Show original thesis toggle if thesis was updated
+            if hasUpdatedThesis {
+                Divider()
+                    .padding(.vertical, 4)
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showOriginalThesis.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: showOriginalThesis ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("View Original Thesis")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+
+                if showOriginalThesis, let original = originalThesis {
+                    MarkdownText(original, size: 14, opacity: 0.7)
+                        .lineSpacing(4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color(.tertiarySystemBackground))
+                        )
+                }
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
     }
 }
 
@@ -3707,7 +3751,7 @@ private struct PreviewFullPlanView: View {
                     BiasIndicatorView(bias: "neutral", confidence: 85)
 
                     // Thesis - detailed like screenshot
-                    ThesisSectionView(text: "ARBK just completed a major court-sanctioned restructuring on December 15, 2025, resulting in massive dilution (existing shareholders went from 10:1 to 2160:1 ADS ratio). Growler Mining now owns approximately 87.5% of the company. The stock dropped 79% after the restructuring was announced. While the company claims enhanced hashrate capacity (1.8 to 2.4 EH/s) and expansion into AI/HPC, the technicals are messy with virtually no support/resistance levels established post-restructuring, and volume is nearly non-existent at 0.04x average. This is a highly speculative restructuring play with extreme risk - not suitable for a technical swing trade.")
+                    ThesisSectionView(text: "ARBK just completed a major court-sanctioned restructuring on December 15, 2025, resulting in massive dilution (existing shareholders went from 10:1 to 2160:1 ADS ratio). Growler Mining now owns approximately 87.5% of the company. The stock dropped 79% after the restructuring was announced. While the company claims enhanced hashrate capacity (1.8 to 2.4 EH/s) and expansion into AI/HPC, the technicals are messy with virtually no support/resistance levels established post-restructuring, and volume is nearly non-existent at 0.04x average. This is a highly speculative restructuring play with extreme risk - not suitable for a technical swing trade.", originalThesis: nil)
 
                     // Risk/Reward
                     RiskRewardBadgeView(ratio: 0.0)
@@ -3872,7 +3916,7 @@ private struct PreviewSavedPlanView: View {
                     BiasIndicatorView(bias: "neutral", confidence: 85)
 
                     // Thesis
-                    ThesisSectionView(text: "ARBK just completed a major court-sanctioned restructuring on December 15, 2025, resulting in massive dilution. The technicals are messy with virtually no support/resistance levels established post-restructuring, and volume is nearly non-existent. This is a highly speculative restructuring play with extreme risk.")
+                    ThesisSectionView(text: "ARBK just completed a major court-sanctioned restructuring on December 15, 2025, resulting in massive dilution. The technicals are messy with virtually no support/resistance levels established post-restructuring, and volume is nearly non-existent. This is a highly speculative restructuring play with extreme risk.", originalThesis: nil)
 
                     // Risk/Reward
                     RiskRewardBadgeView(ratio: 0.0)

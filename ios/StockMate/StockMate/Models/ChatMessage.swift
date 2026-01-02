@@ -246,6 +246,7 @@ struct TradingPlanResponse: Codable, Equatable {
     let symbol: String
     let bias: String
     let thesis: String
+    let originalThesis: String?  // Preserved from plan creation
     let entryZoneLow: Double?
     let entryZoneHigh: Double?
     let stopLoss: Double?
@@ -283,6 +284,7 @@ struct TradingPlanResponse: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case symbol, bias, thesis, status, confidence
+        case originalThesis = "original_thesis"
         case entryZoneLow = "entry_zone_low"
         case entryZoneHigh = "entry_zone_high"
         case stopLoss = "stop_loss"
@@ -317,6 +319,7 @@ struct TradingPlanResponse: Codable, Equatable {
         symbol = try container.decode(String.self, forKey: .symbol)
         bias = try container.decode(String.self, forKey: .bias)
         thesis = try container.decode(String.self, forKey: .thesis)
+        originalThesis = try container.decodeIfPresent(String.self, forKey: .originalThesis)
         entryZoneLow = try container.decodeIfPresent(Double.self, forKey: .entryZoneLow)
         entryZoneHigh = try container.decodeIfPresent(Double.self, forKey: .entryZoneHigh)
         stopLoss = try container.decodeIfPresent(Double.self, forKey: .stopLoss)
