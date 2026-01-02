@@ -19,6 +19,7 @@ final class KeychainHelper {
         static let refreshToken = "com.stockmate.refreshToken"
         static let userEmail = "com.stockmate.userEmail"
         static let userId = "com.stockmate.userId"
+        static let tokenExpiration = "com.stockmate.tokenExpiration"
     }
 
     // MARK: - Token Management
@@ -67,6 +68,23 @@ final class KeychainHelper {
         }
     }
 
+    var tokenExpirationDate: Date? {
+        get {
+            guard let timestampString = read(key: Keys.tokenExpiration),
+                  let timestamp = Double(timestampString) else {
+                return nil
+            }
+            return Date(timeIntervalSince1970: timestamp)
+        }
+        set {
+            if let date = newValue {
+                save(key: Keys.tokenExpiration, value: String(date.timeIntervalSince1970))
+            } else {
+                delete(key: Keys.tokenExpiration)
+            }
+        }
+    }
+
     // MARK: - Save Auth Session
 
     func saveAuthSession(response: AuthResponse) {
@@ -74,6 +92,8 @@ final class KeychainHelper {
         refreshToken = response.refreshToken
         userEmail = response.user.email
         userId = response.user.id
+        // Calculate and store token expiration (expires_in is in seconds)
+        tokenExpirationDate = Date().addingTimeInterval(TimeInterval(response.expiresIn))
     }
 
     // MARK: - Clear All
@@ -83,6 +103,7 @@ final class KeychainHelper {
         refreshToken = nil
         userEmail = nil
         userId = nil
+        tokenExpirationDate = nil
     }
 
     // MARK: - Check if Logged In
@@ -103,7 +124,9 @@ final class KeychainHelper {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key,
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+            // Use AfterFirstUnlockThisDeviceOnly for better accessibility when app resumes
+            // This ensures tokens remain accessible after device unlock even if app was killed
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
 
         let status = SecItemAdd(query as CFDictionary, nil)

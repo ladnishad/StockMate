@@ -38,6 +38,16 @@ final class AuthenticationManager: ObservableObject {
         currentUser?.id ?? keychain.userId
     }
 
+    /// Check if the access token is expiring soon (within 60 seconds)
+    var isTokenExpiringSoon: Bool {
+        guard let expirationDate = keychain.tokenExpirationDate else {
+            // No expiration stored, assume it might be expired
+            return true
+        }
+        // Consider token "expiring soon" if less than 60 seconds remaining
+        return expirationDate.timeIntervalSinceNow < 60
+    }
+
     // MARK: - Init
 
     private init() {
@@ -55,6 +65,7 @@ final class AuthenticationManager: ObservableObject {
 
     /// Check if existing session is valid by calling /auth/me
     /// If access token is expired, attempts to refresh it before logging out
+    /// Distinguishes between network errors (keep session) and auth errors (logout)
     func checkSession() async {
         guard keychain.hasValidSession else {
             isAuthenticated = false
@@ -62,28 +73,80 @@ final class AuthenticationManager: ObservableObject {
             return
         }
 
+        // Proactively refresh token if expiring soon
+        if isTokenExpiringSoon {
+            print("Token expiring soon, proactively refreshing...")
+            do {
+                try await refreshAccessToken()
+                print("Proactive token refresh successful")
+            } catch {
+                print("Proactive refresh failed: \(error)")
+                // Continue to try fetching user anyway
+            }
+        }
+
         do {
             let user = try await fetchCurrentUser()
             currentUser = user
             isAuthenticated = true
-        } catch {
-            // Token might be expired - try refreshing before giving up
-            print("Session check failed: \(error), attempting token refresh...")
+        } catch let authError as AuthError {
+            // Handle specific auth errors
+            switch authError {
+            case .notAuthenticated:
+                // 401 error - try refresh
+                print("Session check got 401, attempting token refresh...")
+                await handleTokenRefresh()
 
-            do {
-                try await refreshAccessToken()
-                print("Token refresh successful, retrying session check...")
+            case .invalidResponse:
+                // Could be network issue - don't logout, keep existing session
+                print("Invalid response during session check - possible network issue, keeping session")
+                // Keep isAuthenticated = true since we have valid keychain session
 
-                // Retry fetching user with new token
-                let user = try await fetchCurrentUser()
-                currentUser = user
-                isAuthenticated = true
-                print("Session restored successfully")
-            } catch {
-                // Refresh also failed - now we can logout
-                print("Token refresh failed: \(error), logging out")
-                await logout()
+            default:
+                // Other auth errors - try refresh as fallback
+                print("Session check failed with \(authError), attempting refresh...")
+                await handleTokenRefresh()
             }
+        } catch let urlError as URLError {
+            // Network errors - don't logout, just log
+            print("Network error during session check: \(urlError.localizedDescription)")
+            print("Keeping session active, will retry on next app foreground")
+            // Keep isAuthenticated = true since we have valid session in keychain
+        } catch {
+            // Other unexpected errors - don't logout on unknown errors
+            print("Unexpected error during session check: \(error)")
+            // Keep session active to avoid false logouts
+        }
+    }
+
+    /// Handle token refresh with proper error handling
+    private func handleTokenRefresh() async {
+        do {
+            try await refreshAccessToken()
+            print("Token refresh successful, retrying session check...")
+
+            // Retry fetching user with new token
+            let user = try await fetchCurrentUser()
+            currentUser = user
+            isAuthenticated = true
+            print("Session restored successfully")
+        } catch let authError as AuthError {
+            switch authError {
+            case .noRefreshToken, .refreshFailed:
+                // Definite auth failure - logout
+                print("Token refresh failed definitively: \(authError), logging out")
+                await logout()
+            default:
+                // Other auth errors during refresh - might be temporary
+                print("Refresh encountered error: \(authError), keeping session for retry")
+            }
+        } catch let urlError as URLError {
+            // Network error during refresh - don't logout
+            print("Network error during token refresh: \(urlError.localizedDescription)")
+            print("Keeping session, will retry later")
+        } catch {
+            // Unknown errors - log but don't logout
+            print("Unexpected error during refresh: \(error), keeping session")
         }
     }
 
