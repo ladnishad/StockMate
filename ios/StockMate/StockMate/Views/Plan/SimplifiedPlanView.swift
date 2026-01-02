@@ -3751,7 +3751,7 @@ private struct PreviewFullPlanView: View {
                     BiasIndicatorView(bias: "neutral", confidence: 85)
 
                     // Thesis - detailed like screenshot
-                    ThesisSectionView(text: "ARBK just completed a major court-sanctioned restructuring on December 15, 2025, resulting in massive dilution (existing shareholders went from 10:1 to 2160:1 ADS ratio). Growler Mining now owns approximately 87.5% of the company. The stock dropped 79% after the restructuring was announced. While the company claims enhanced hashrate capacity (1.8 to 2.4 EH/s) and expansion into AI/HPC, the technicals are messy with virtually no support/resistance levels established post-restructuring, and volume is nearly non-existent at 0.04x average. This is a highly speculative restructuring play with extreme risk - not suitable for a technical swing trade.")
+                    ThesisSectionView(text: "ARBK just completed a major court-sanctioned restructuring on December 15, 2025, resulting in massive dilution (existing shareholders went from 10:1 to 2160:1 ADS ratio). Growler Mining now owns approximately 87.5% of the company. The stock dropped 79% after the restructuring was announced. While the company claims enhanced hashrate capacity (1.8 to 2.4 EH/s) and expansion into AI/HPC, the technicals are messy with virtually no support/resistance levels established post-restructuring, and volume is nearly non-existent at 0.04x average. This is a highly speculative restructuring play with extreme risk - not suitable for a technical swing trade.", originalThesis: nil)
 
                     // Risk/Reward
                     RiskRewardBadgeView(ratio: 0.0)
@@ -3916,7 +3916,7 @@ private struct PreviewSavedPlanView: View {
                     BiasIndicatorView(bias: "neutral", confidence: 85)
 
                     // Thesis
-                    ThesisSectionView(text: "ARBK just completed a major court-sanctioned restructuring on December 15, 2025, resulting in massive dilution. The technicals are messy with virtually no support/resistance levels established post-restructuring, and volume is nearly non-existent. This is a highly speculative restructuring play with extreme risk.")
+                    ThesisSectionView(text: "ARBK just completed a major court-sanctioned restructuring on December 15, 2025, resulting in massive dilution. The technicals are messy with virtually no support/resistance levels established post-restructuring, and volume is nearly non-existent. This is a highly speculative restructuring play with extreme risk.", originalThesis: nil)
 
                     // Risk/Reward
                     RiskRewardBadgeView(ratio: 0.0)
