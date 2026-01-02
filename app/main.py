@@ -103,7 +103,7 @@ async def lifespan(app: FastAPI):
             from app.services.plan_evaluator import get_plan_evaluator
             plan_evaluator = get_plan_evaluator()
             await plan_evaluator.start()
-            logger.info("✓ Plan evaluator started (30-min periodic + key level triggers)")
+            logger.info("✓ Plan evaluator started (15-min per-plan intervals + key level triggers)")
         except Exception as e:
             logger.error(f"Failed to start plan evaluator: {e}")
     else:

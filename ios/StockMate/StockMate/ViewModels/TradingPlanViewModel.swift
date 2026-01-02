@@ -233,9 +233,12 @@ final class TradingPlanViewModel: ObservableObject {
             }
 
             // Refresh the plan to get updated notes and values
-            plan = try await APIService.shared.getTradingPlan(symbol: symbol)
-            lastUpdated = Date()
-            updatePhase = .complete
+            let updatedPlan = try await APIService.shared.getTradingPlan(symbol: symbol)
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                self.plan = updatedPlan
+                self.lastUpdated = Date()
+                self.updatePhase = .complete
+            }
 
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             updatePhase = .idle

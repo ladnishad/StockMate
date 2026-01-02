@@ -1,13 +1,13 @@
 """Background service for periodic plan evaluation.
 
-Evaluates trading plans every 30 minutes during market hours,
+Evaluates trading plans every 15 minutes (per-plan interval based on last_evaluation),
 and triggers immediate evaluation when price approaches key levels.
 """
 
 import asyncio
 import logging
 from datetime import datetime, time
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, List
 from dataclasses import dataclass
 
 from app.services.scheduler import is_market_open
@@ -19,7 +19,8 @@ from app.agent.tools import get_current_price
 logger = logging.getLogger(__name__)
 
 # Evaluation intervals
-PERIODIC_EVAL_MINUTES = 30  # Evaluate all plans every 30 minutes
+PERIODIC_EVAL_MINUTES = 15  # Per-plan evaluation interval in minutes
+LOOP_CHECK_INTERVAL = 60  # How often to check for plans due (seconds)
 KEY_LEVEL_THRESHOLD_PCT = 0.02  # 2% from key level triggers evaluation
 
 
@@ -34,16 +35,17 @@ class EvaluationResult:
 
 
 class PlanEvaluator:
-    """Background service that evaluates trading plans periodically."""
+    """Background service that evaluates trading plans periodically.
+
+    Evaluates ALL active plans across ALL users using database-driven scheduling.
+    Each plan is evaluated 15 minutes after its creation or last evaluation.
+    """
 
     def __init__(self):
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._plan_store = get_plan_store()
         self._watchlist_store = get_watchlist_store()
-
-        # Track last evaluation times
-        self._last_evaluation: Dict[str, datetime] = {}
 
         # Track last known prices for key level detection
         self._last_prices: Dict[str, float] = {}
@@ -57,15 +59,15 @@ class PlanEvaluator:
         # Track market state for close detection
         self._was_market_open: bool = False
 
-    async def start(self, user_id: str = "default"):
-        """Start the background evaluation service."""
+    async def start(self):
+        """Start the background evaluation service for all users."""
         if self._running:
             logger.warning("PlanEvaluator already running")
             return
 
         self._running = True
-        self._task = asyncio.create_task(self._evaluation_loop(user_id))
-        logger.info("PlanEvaluator started")
+        self._task = asyncio.create_task(self._evaluation_loop())
+        logger.info("PlanEvaluator started (evaluating all users' plans)")
 
     async def stop(self):
         """Stop the background evaluation service."""
@@ -78,8 +80,8 @@ class PlanEvaluator:
                 pass
         logger.info("PlanEvaluator stopped")
 
-    async def _evaluation_loop(self, user_id: str):
-        """Main evaluation loop."""
+    async def _evaluation_loop(self):
+        """Main evaluation loop - evaluates plans due across all users."""
         while self._running:
             try:
                 market_open = is_market_open()
@@ -87,50 +89,54 @@ class PlanEvaluator:
                 # Detect market close transition: was open, now closed
                 if self._was_market_open and not market_open:
                     logger.info("Market just closed - running final evaluation for all plans")
-                    active_plans = await self._plan_store.get_active_plans(user_id)
-                    for plan in active_plans:
-                        await self._evaluate_plan(plan, user_id, "market_close")
+                    all_active_plans = await self._plan_store.get_all_active_plans()
+                    for plan in all_active_plans:
+                        await self._evaluate_plan(plan, plan.user_id, "market_close")
                     self._was_market_open = False
 
-                # If market is closed, wait
+                # If market is closed, wait before checking again
                 if not market_open:
-                    await asyncio.sleep(60)  # Check every minute if market opened
+                    await asyncio.sleep(LOOP_CHECK_INTERVAL)
                     continue
 
                 # Market is open - update state
                 self._was_market_open = True
 
-                # Get all active plans
-                active_plans = await self._plan_store.get_active_plans(user_id)
+                # Get plans that are DUE for evaluation (across all users)
+                # Uses database timestamps, not in-memory tracking
+                due_plans = await self._plan_store.get_plans_due_for_evaluation(PERIODIC_EVAL_MINUTES)
 
-                for plan in active_plans:
+                if due_plans:
+                    logger.debug(f"Found {len(due_plans)} plans due for evaluation")
+
+                # Track which plans we just evaluated (to skip key level check)
+                evaluated_plan_ids = set()
+
+                for plan in due_plans:
+                    self._monitored_symbols.add(plan.symbol)
+                    await self._evaluate_plan(plan, plan.user_id, "periodic")
+                    evaluated_plan_ids.add(plan.id)
+
+                # Also check for key level proximity on all active plans
+                # (only for plans we didn't just evaluate)
+                all_active_plans = await self._plan_store.get_all_active_plans()
+                for plan in all_active_plans:
+                    if plan.id in evaluated_plan_ids:
+                        continue  # Skip if we just evaluated it
+
                     self._monitored_symbols.add(plan.symbol)
 
-                    # Check if periodic evaluation is due
-                    if self._should_evaluate_periodic(plan.symbol):
-                        await self._evaluate_plan(plan, user_id, "periodic")
+                    if await self._is_near_key_level(plan):
+                        await self._evaluate_plan(plan, plan.user_id, "key_level")
 
-                    # Check for key level proximity
-                    elif await self._is_near_key_level(plan):
-                        await self._evaluate_plan(plan, user_id, "key_level")
-
-                # Sleep before next check (1 minute between price checks)
-                await asyncio.sleep(60)
+                # Sleep before next check
+                await asyncio.sleep(LOOP_CHECK_INTERVAL)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in evaluation loop: {e}")
-                await asyncio.sleep(60)
-
-    def _should_evaluate_periodic(self, symbol: str) -> bool:
-        """Check if periodic evaluation is due for a symbol."""
-        last_eval = self._last_evaluation.get(symbol)
-        if not last_eval:
-            return True
-
-        elapsed = (datetime.utcnow() - last_eval).total_seconds() / 60
-        return elapsed >= PERIODIC_EVAL_MINUTES
+                await asyncio.sleep(LOOP_CHECK_INTERVAL)
 
     async def _is_near_key_level(self, plan: TradingPlan) -> bool:
         """Check if current price is near a key level."""
@@ -193,13 +199,13 @@ class PlanEvaluator:
     ) -> Optional[EvaluationResult]:
         """Evaluate a single plan."""
         try:
-            logger.info(f"Evaluating plan for {plan.symbol} (triggered by: {triggered_by})")
+            logger.info(f"Evaluating plan for {plan.symbol} (user: {user_id}, triggered by: {triggered_by})")
 
             agent = StockPlanningAgent(plan.symbol, user_id)
             result = await agent.evaluate_plan()
 
-            # Update last evaluation time
-            self._last_evaluation[plan.symbol] = datetime.utcnow()
+            # Note: last_evaluation is updated in the database by agent.evaluate_plan()
+            # via plan_store.update_evaluation() - no in-memory tracking needed
 
             # Create result
             eval_result = EvaluationResult(
@@ -219,8 +225,13 @@ class PlanEvaluator:
             logger.error(f"Error evaluating plan for {plan.symbol}: {e}")
             return None
 
-    async def evaluate_now(self, symbol: str, user_id: str = "default") -> Optional[EvaluationResult]:
-        """Manually trigger evaluation for a symbol."""
+    async def evaluate_now(self, symbol: str, user_id: str) -> Optional[EvaluationResult]:
+        """Manually trigger evaluation for a symbol.
+
+        Args:
+            symbol: Stock symbol to evaluate
+            user_id: User ID who owns the plan (required)
+        """
         plan = await self._plan_store.get_plan(user_id, symbol.upper())
         if not plan:
             return None
@@ -235,10 +246,7 @@ class PlanEvaluator:
         return {
             "running": self._running,
             "monitored_symbols": list(self._monitored_symbols),
-            "last_evaluations": {
-                sym: dt.isoformat()
-                for sym, dt in self._last_evaluation.items()
-            },
+            "evaluation_interval_minutes": PERIODIC_EVAL_MINUTES,
             "recent_results": {
                 sym: {
                     "status": r.status,
