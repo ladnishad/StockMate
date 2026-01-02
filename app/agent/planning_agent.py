@@ -362,7 +362,8 @@ Evaluate if this plan is still valid. Consider:
 2. Have key levels held or broken?
 3. Has the market context changed?
 4. Should we adjust stops or targets?
-5. **If user has a position**: How is their trade performing? Should they adjust stops based on their entry? Are targets still realistic?
+5. Should the thesis be updated to reflect new developments?
+6. **If user has a position**: How is their trade performing? Should they adjust stops based on their entry? Are targets still realistic? NEVER suggest flipping direction if user has an active position.
 
 **IMPORTANT**: You must respond with a JSON object in this exact format:
 
@@ -372,6 +373,7 @@ Evaluate if this plan is still valid. Consider:
     "evaluation": "2-3 sentence summary of current status",
     "action": "What the trader should do now",
     "adjustments": {{
+        "thesis": null or "Updated thesis reflecting current market conditions",
         "stop_loss": null or new_price,
         "target_1": null or new_price,
         "target_2": null or new_price,
@@ -389,11 +391,13 @@ Evaluate if this plan is still valid. Consider:
 
 Guidelines for adjustments:
 - Set fields to null if no change needed
+- **Thesis**: Update if market conditions have materially changed (new catalysts, trend change, key level break). Keep same directional bias if user has position. Make it reflect current reality, not just the original reasoning.
 - Tighten stop loss if price moved favorably and new support formed
 - Adjust targets if new resistance/support levels emerged
 - Update key_supports/key_resistances if significant new levels have formed or old ones have broken
 - Only adjust if there's a clear technical reason
 - Keep risk/reward reasonable (ideally 2:1 or better)
+- **If user has active position**: Respect their position direction - never suggest opposite direction trades
 """
 
 
@@ -658,6 +662,7 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                 status="active",
                 bias=plan_data.get("bias", "neutral"),
                 thesis=plan_data.get("thesis", ""),
+                original_thesis=plan_data.get("thesis", ""),  # Preserve original thesis
                 entry_zone_low=plan_data.get("entry_zone_low"),
                 entry_zone_high=plan_data.get("entry_zone_high"),
                 stop_loss=plan_data.get("stop_loss"),
@@ -775,6 +780,7 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                 status="active",
                 bias=plan_data.get("bias", "neutral"),
                 thesis=plan_data.get("thesis", ""),
+                original_thesis=plan_data.get("thesis", ""),  # Preserve original thesis
                 entry_zone_low=plan_data.get("entry_zone_low"),
                 entry_zone_high=plan_data.get("entry_zone_high"),
                 stop_loss=plan_data.get("stop_loss"),

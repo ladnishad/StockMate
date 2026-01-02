@@ -171,7 +171,7 @@ struct SimplifiedPlanView: View {
                     )
 
                     // Thesis
-                    ThesisSectionView(text: plan.thesis)
+                    ThesisSectionView(text: plan.thesis, originalThesis: plan.originalThesis)
 
                     // Price Ladder
                     PriceLadderView(
@@ -389,16 +389,60 @@ private struct BiasIndicatorView: View {
 
 private struct ThesisSectionView: View {
     let text: String
+    let originalThesis: String?
+
+    @State private var showOriginalThesis = false
+
+    // Check if thesis has been updated (differs from original)
+    private var hasUpdatedThesis: Bool {
+        guard let original = originalThesis, !original.isEmpty else { return false }
+        return original != text
+    }
 
     var body: some View {
-        MarkdownText(text, size: 15, opacity: 0.9)
-            .lineSpacing(5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(.secondarySystemBackground))
-            )
+        VStack(alignment: .leading, spacing: 12) {
+            // Current thesis
+            MarkdownText(text, size: 15, opacity: 0.9)
+                .lineSpacing(5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Show original thesis toggle if thesis was updated
+            if hasUpdatedThesis {
+                Divider()
+                    .padding(.vertical, 4)
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showOriginalThesis.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: showOriginalThesis ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("View Original Thesis")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+
+                if showOriginalThesis, let original = originalThesis {
+                    MarkdownText(original, size: 14, opacity: 0.7)
+                        .lineSpacing(4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color(.tertiarySystemBackground))
+                        )
+                }
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
     }
 }
 

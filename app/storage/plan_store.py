@@ -29,7 +29,8 @@ class TradingPlan:
 
     # Plan details
     bias: str = ""  # bullish, bearish, neutral
-    thesis: str = ""  # Why this trade makes sense
+    thesis: str = ""  # Why this trade makes sense (can be updated during evaluation)
+    original_thesis: str = ""  # Preserved from plan creation, never changes
     entry_zone_low: Optional[float] = None
     entry_zone_high: Optional[float] = None
     stop_loss: Optional[float] = None
@@ -114,6 +115,7 @@ class PlanStore:
 
                     bias TEXT,
                     thesis TEXT,
+                    original_thesis TEXT DEFAULT '',
                     entry_zone_low REAL,
                     entry_zone_high REAL,
                     stop_loss REAL,
@@ -290,6 +292,7 @@ class PlanStore:
         # Apply any adjustments to plan values
         if adjustments:
             allowed_fields = {
+                "thesis",  # Can update thesis during evaluation
                 "stop_loss", "target_1", "target_2", "target_3",
                 "entry_zone_low", "entry_zone_high", "risk_reward",
                 "stop_reasoning", "target_reasoning", "invalidation_criteria",
@@ -497,6 +500,7 @@ class DatabasePlanStore:
         # Apply adjustments
         if adjustments:
             allowed_fields = {
+                "thesis",  # Can update thesis during evaluation
                 "stop_loss", "target_1", "target_2", "target_3",
                 "entry_zone_low", "entry_zone_high", "risk_reward",
                 "stop_reasoning", "target_reasoning", "invalidation_criteria",
