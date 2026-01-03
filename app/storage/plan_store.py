@@ -91,7 +91,25 @@ class TradingPlan:
         data["key_supports"] = json.loads(data.get("key_supports", "[]"))
         data["key_resistances"] = json.loads(data.get("key_resistances", "[]"))
         data["validation_warnings"] = json.loads(data.get("validation_warnings", "[]"))
+        # Migrate old field names
+        data = _migrate_plan_data(data)
         return cls(**data)
+
+
+def _migrate_plan_data(data: dict) -> dict:
+    """Migrate old field names to new ones for backward compatibility."""
+    # Rename reddit_sentiment -> social_sentiment
+    if "reddit_sentiment" in data:
+        data["social_sentiment"] = data.pop("reddit_sentiment")
+    # Rename reddit_buzz -> social_buzz
+    if "reddit_buzz" in data:
+        data["social_buzz"] = data.pop("reddit_buzz")
+    # Set default sentiment_source for old plans
+    if "sentiment_source" not in data or not data.get("sentiment_source"):
+        # Old plans used Claude with Reddit search
+        if data.get("social_sentiment") or data.get("social_buzz"):
+            data["sentiment_source"] = "reddit"
+    return data
 
 
 class PlanStore:
@@ -402,6 +420,7 @@ class DatabasePlanStore:
             )
             if row and row["plan_data"]:
                 data = json.loads(row["plan_data"]) if isinstance(row["plan_data"], str) else row["plan_data"]
+                data = _migrate_plan_data(data)
                 return TradingPlan(**data)
         return None
 
@@ -420,6 +439,7 @@ class DatabasePlanStore:
             for row in rows:
                 if row["plan_data"]:
                     data = json.loads(row["plan_data"]) if isinstance(row["plan_data"], str) else row["plan_data"]
+                    data = _migrate_plan_data(data)
                     plans.append(TradingPlan(**data))
         return plans
 
@@ -437,6 +457,7 @@ class DatabasePlanStore:
             for row in rows:
                 if row["plan_data"]:
                     data = json.loads(row["plan_data"]) if isinstance(row["plan_data"], str) else row["plan_data"]
+                    data = _migrate_plan_data(data)
                     plans.append(TradingPlan(**data))
         return plans
 
@@ -469,6 +490,7 @@ class DatabasePlanStore:
             for row in rows:
                 if row["plan_data"]:
                     data = json.loads(row["plan_data"]) if isinstance(row["plan_data"], str) else row["plan_data"]
+                    data = _migrate_plan_data(data)
                     plans.append(TradingPlan(**data))
         return plans
 
