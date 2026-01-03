@@ -265,6 +265,16 @@ async def init_postgres_tables():
             ON plan_analyses (user_id, status)
         """)
 
+        # User settings table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id TEXT PRIMARY KEY,
+                model_provider TEXT DEFAULT 'grok',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
         # Add V2 columns to trading_plans if they don't exist
         # PostgreSQL doesn't have IF NOT EXISTS for ADD COLUMN, so we check first
         try:

@@ -15,10 +15,13 @@ import time
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
-import anthropic
+import httpx
 from anthropic._exceptions import OverloadedError, RateLimitError, APIStatusError
 
 from app.config import get_settings
+from app.agent.providers.factory import get_user_provider
+from app.agent.providers import AIMessage, AIProvider, ModelProvider, SearchParameters
+from app.agent.providers.grok_provider import get_x_search_parameters
 from app.agent.tools import (
     get_current_price,
     get_key_levels,
@@ -179,19 +182,19 @@ def validate_plan_price_consistency(
 PLANNING_AGENT_SYSTEM = """You are an expert swing trader and technical analyst. Your job is to analyze stocks comprehensively and create actionable trading plans.
 
 ## Your Approach
-1. **Search for context first** - Before analyzing technicals, search for recent news and Reddit sentiment about the stock
+1. **Search for context first** - Before analyzing technicals, search for recent news and social sentiment about the stock
 2. **Analyze the data thoroughly** - Look at all technical indicators, key levels, volume, and market context
 3. **Form a thesis** - What's the story? Why would this trade work?
 4. **Define precise levels** - Entry zones, stop loss, and profit targets based on actual support/resistance
 5. **Consider risk** - Position sizing, risk/reward, and what would invalidate the trade
 6. **Be honest** - If the setup isn't good, say so. Not every stock is a trade.
 
-## Web Search Strategy
-When web search is available, ALWAYS search for:
+## Social Search Strategy
+When search is available, ALWAYS search for:
 1. "{symbol} stock news" - Get recent news, earnings, analyst ratings
-2. "site:reddit.com/r/wallstreetbets {symbol}" - Check retail sentiment and buzz
+2. Social sentiment - Check retail sentiment and buzz (X/Twitter posts, Reddit discussions, etc.)
 
-Focus on recent, relevant information. Ignore outdated articles or old Reddit posts.
+Focus on recent, relevant information. Ignore outdated articles or old posts.
 
 ## When Creating a Plan - Level Placement by Bias
 
@@ -208,7 +211,7 @@ Focus on recent, relevant information. Ignore outdated articles or old Reddit po
 ### For Both:
 - Risk/reward should be at least 2:1 for swing trades
 - Consider the broader market direction
-- Factor in any news catalysts or Reddit buzz into your thesis
+- Factor in any news catalysts or social sentiment into your thesis
 
 ## When Evaluating a Plan
 - Has price moved toward entry? Away from it?
@@ -308,7 +311,7 @@ Analyze this stock like an expert trader. Follow this framework:
    - SWING TRADE: Moderate ATR (1-3%), multi-day patterns, clear S/R, 2-10 day hold
    - POSITION TRADE: Major trend alignment, wide levels, low volatility, weeks-months
 
-IMPORTANT: If web search is available, search for news and Reddit sentiment FIRST before responding.
+IMPORTANT: If search is available, search for news and social sentiment FIRST before responding.
 
 Respond in this exact JSON format:
 
@@ -333,9 +336,9 @@ Respond in this exact JSON format:
     "key_resistances": [<price>, <price>],
     "invalidation_criteria": "What would invalidate this plan",
     "technical_summary": "Brief summary of key technical factors",
-    "news_summary": "Brief summary of recent news/catalysts (from web search). Empty string if no news found or web search unavailable.",
-    "reddit_sentiment": "bullish" | "bearish" | "neutral" | "mixed" | "none",
-    "reddit_buzz": "Summary of Reddit discussion if found. Empty string if none."
+    "news_summary": "Brief summary of recent news/catalysts (from search). Empty string if no news found or search unavailable.",
+    "social_sentiment": "bullish" | "bearish" | "neutral" | "mixed" | "none",
+    "social_buzz": "Summary of social discussion (X/Twitter, Reddit, etc.) if found. Empty string if none."
 }}
 
 If this is NOT a good setup, still provide your analysis but set entry_zone, stop_loss, and targets to null and explain in the thesis why you're passing. Set confidence to how confident you are that there's no good trade here.
@@ -407,7 +410,7 @@ class StockPlanningAgent:
     def __init__(self, symbol: str, user_id: str = "default"):
         self.symbol = symbol.upper()
         self.user_id = user_id
-        self._client: Optional[anthropic.Anthropic] = None
+        self._provider: Optional[AIProvider] = None
 
         # Stores
         self._plan_store = get_plan_store()
@@ -423,14 +426,29 @@ class StockPlanningAgent:
         self._position_data: Dict[str, Any] = {}
         self._current_plan: Optional[TradingPlan] = None
 
-    def _get_client(self) -> anthropic.Anthropic:
-        """Get or create Anthropic client."""
-        if self._client is None:
-            settings = get_settings()
-            if not settings.claude_api_key:
-                raise ValueError("CLAUDE_API_KEY not configured")
-            self._client = anthropic.Anthropic(api_key=settings.claude_api_key)
-        return self._client
+    async def _get_provider(self) -> AIProvider:
+        """Get or create AI provider for the user."""
+        if self._provider is None:
+            self._provider = await get_user_provider(self.user_id)
+        return self._provider
+
+    def _get_search_parameters(self) -> Optional[SearchParameters]:
+        """Get search parameters based on the provider's capabilities.
+
+        Uses X search for Grok (real-time sentiment), web search for Claude.
+        """
+        if self._provider is None:
+            return None
+
+        settings = get_settings()
+        if not settings.web_search_enabled:
+            return None
+
+        # Use X search if available (Grok), otherwise web search only
+        if self._provider.supports_x_search:
+            return get_x_search_parameters()
+        else:
+            return SearchParameters(mode="on", sources=[{"type": "web"}], return_citations=True)
 
     async def gather_comprehensive_data(self) -> Dict[str, Any]:
         """Gather ALL available data for the stock."""
@@ -623,29 +641,24 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
         )
 
         try:
-            client = self._get_client()
+            provider = await self._get_provider()
             settings = get_settings()
 
-            # Build tools list (web search if enabled)
-            tools = None
-            if settings.web_search_enabled:
-                tools = [{
-                    "type": "web_search_20250305",
-                    "name": "web_search",
-                    "max_uses": settings.web_search_max_uses,
-                }]
-                logger.info(f"Web search enabled for {self.symbol} plan generation")
+            # Get search parameters based on provider capabilities
+            search_params = self._get_search_parameters()
+            if search_params:
+                logger.info(f"Search enabled for {self.symbol} plan generation (X search: {provider.supports_x_search})")
 
-            response = client.messages.create(
-                model=settings.claude_model_planning,
-                max_tokens=4000,  # Increased for web search results
+            response = await provider.create_message(
+                messages=[AIMessage(role="user", content=prompt)],
                 system=PLANNING_AGENT_SYSTEM,
-                messages=[{"role": "user", "content": prompt}],
-                tools=tools,
+                model_type="planning",
+                max_tokens=4000,  # Increased for web search results
+                search_parameters=search_params,
             )
 
-            # Extract text from response (may contain multiple content blocks with web search)
-            response_text = self._extract_text_from_response(response)
+            # Extract text from response
+            response_text = response.content
 
             # Parse JSON response
             plan_data = self._parse_plan_response(response_text)
@@ -686,10 +699,11 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                 rsi_at_creation=rsi_data.get("value"),
                 market_direction_at_creation=market_ctx.get("market_direction", ""),
                 technical_summary=plan_data.get("technical_summary", ""),
-                # External sentiment from web search
+                # External sentiment from web/social search
                 news_summary=plan_data.get("news_summary", ""),
-                reddit_sentiment=plan_data.get("reddit_sentiment", "none"),
-                reddit_buzz=plan_data.get("reddit_buzz", ""),
+                social_sentiment=plan_data.get("social_sentiment", "none"),
+                social_buzz=plan_data.get("social_buzz", ""),
+                sentiment_source="x" if provider.supports_x_search else "reddit",
                 # Validation warnings (if price levels don't match bias)
                 validation_warnings=plan_data.get("_validation_warnings", []),
             )
@@ -738,32 +752,25 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
         )
 
         try:
-            client = self._get_client()
+            provider = await self._get_provider()
             settings = get_settings()
 
-            # Build tools list (web search if enabled)
-            # Note: Streaming with tools requires handling tool_use blocks
-            tools = None
-            if settings.web_search_enabled:
-                tools = [{
-                    "type": "web_search_20250305",
-                    "name": "web_search",
-                    "max_uses": settings.web_search_max_uses,
-                }]
-                logger.info(f"Web search enabled for {self.symbol} streaming plan")
+            # Get search parameters based on provider capabilities
+            search_params = self._get_search_parameters()
+            if search_params:
+                logger.info(f"Search enabled for {self.symbol} streaming plan (X search: {provider.supports_x_search})")
 
             # Use streaming API
             full_text = ""
-            with client.messages.stream(
-                model=settings.claude_model_planning,
-                max_tokens=4000,
+            async for text in provider.create_message_stream(
+                messages=[AIMessage(role="user", content=prompt)],
                 system=PLANNING_AGENT_SYSTEM,
-                messages=[{"role": "user", "content": prompt}],
-                tools=tools,
-            ) as stream:
-                for text in stream.text_stream:
-                    full_text += text
-                    yield {"type": "text", "content": text}
+                model_type="planning",
+                max_tokens=4000,
+                search_parameters=search_params,
+            ):
+                full_text += text
+                yield {"type": "text", "content": text}
 
             # Parse the complete response and save plan
             plan_data = self._parse_plan_response(full_text)
@@ -803,8 +810,9 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                 market_direction_at_creation=market_ctx.get("market_direction", ""),
                 technical_summary=plan_data.get("technical_summary", ""),
                 news_summary=plan_data.get("news_summary", ""),
-                reddit_sentiment=plan_data.get("reddit_sentiment", "none"),
-                reddit_buzz=plan_data.get("reddit_buzz", ""),
+                social_sentiment=plan_data.get("social_sentiment", "none"),
+                social_buzz=plan_data.get("social_buzz", ""),
+                sentiment_source="x" if provider.supports_x_search else "reddit",
                 # Validation warnings (if price levels don't match bias)
                 validation_warnings=plan_data.get("_validation_warnings", []),
             )
@@ -848,8 +856,9 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
             "holding_period": plan.holding_period,
             "confidence": plan.confidence,
             "news_summary": plan.news_summary,
-            "reddit_sentiment": plan.reddit_sentiment,
-            "reddit_buzz": plan.reddit_buzz,
+            "social_sentiment": plan.social_sentiment,
+            "social_buzz": plan.social_buzz,
+            "sentiment_source": plan.sentiment_source,
             "validation_warnings": plan.validation_warnings,
         }
 
@@ -881,8 +890,7 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
             position_data=data["position_data"],
         )
 
-        client = self._get_client()
-        settings = get_settings()
+        provider = await self._get_provider()
 
         # Retry logic with exponential backoff for transient errors
         max_retries = 3
@@ -890,14 +898,14 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
 
         for attempt in range(max_retries):
             try:
-                response = client.messages.create(
-                    model=settings.claude_model_planning,
-                    max_tokens=4000,  # Larger for educational content
+                response = await provider.create_message(
+                    messages=[AIMessage(role="user", content=prompt)],
                     system=SMART_PLANNING_SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": prompt}],
+                    model_type="planning",
+                    max_tokens=4000,  # Larger for educational content
                 )
 
-                response_text = response.content[0].text
+                response_text = response.content
                 logger.debug(f"Smart plan response: {response_text[:500]}...")
 
                 # Parse the JSON response
@@ -948,11 +956,18 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                     time.sleep(delay)
                 else:
                     logger.error(f"API overloaded after {max_retries} attempts for {self.symbol}: {e}")
-                    raise ValueError(f"Claude API is currently overloaded. Please try again in a few moments.")
+                    raise ValueError(f"AI API is currently overloaded. Please try again in a few moments.")
 
-            except APIStatusError as e:
-                logger.error(f"API error generating smart plan for {self.symbol}: {e}")
-                raise ValueError(f"API error: {str(e)}")
+            except (APIStatusError, httpx.HTTPStatusError) as e:
+                # Handle rate limits from Grok (httpx) similar to Claude
+                status_code = getattr(e, 'status_code', None) or getattr(getattr(e, 'response', None), 'status_code', None)
+                if status_code == 429 and attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(f"API rate limited for {self.symbol}, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                else:
+                    logger.error(f"API error generating smart plan for {self.symbol}: {e}")
+                    raise ValueError(f"API error: {str(e)}")
 
             except Exception as e:
                 logger.error(f"Error generating smart plan for {self.symbol}: {e}")
@@ -1148,35 +1163,17 @@ ATR (14): ${levels.get('atr', 0):.2f}
                 show_rsi=True,
             )
 
-            # Send to Claude Vision for analysis
-            logger.info(f"Sending chart to Claude Vision for {self.symbol}")
-            client = self._get_client()
+            # Send to AI provider for vision analysis
+            logger.info(f"Sending chart to AI vision for {self.symbol}")
+            provider = await self._get_provider()
 
-            vision_response = client.messages.create(
-                model=settings.claude_model_planning,
-                max_tokens=2000,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/png",
-                                    "data": chart_image,
-                                },
-                            },
-                            {
-                                "type": "text",
-                                "text": VISUAL_ANALYSIS_PROMPT,
-                            }
-                        ]
-                    }
-                ]
+            vision_response = await provider.analyze_image(
+                image_base64=chart_image,
+                prompt=VISUAL_ANALYSIS_PROMPT,
+                model_type="planning",
             )
 
-            response_text = vision_response.content[0].text
+            response_text = vision_response.content
 
             # Parse the visual analysis JSON
             visual_analysis = self._parse_visual_analysis_response(response_text)
@@ -1484,18 +1481,17 @@ Invalidation: {plan.invalidation_criteria}
         )
 
         try:
-            client = self._get_client()
-            settings = get_settings()
+            provider = await self._get_provider()
 
             # Use the planning model for evaluation since it makes important decisions
-            response = client.messages.create(
-                model=settings.claude_model_planning,
-                max_tokens=1500,
+            response = await provider.create_message(
+                messages=[AIMessage(role="user", content=prompt)],
                 system=PLANNING_AGENT_SYSTEM,
-                messages=[{"role": "user", "content": prompt}],
+                model_type="planning",
+                max_tokens=1500,
             )
 
-            response_text = response.content[0].text
+            response_text = response.content
 
             # Parse JSON response
             eval_data = self._parse_evaluation_response(response_text)
@@ -1672,21 +1668,21 @@ Answer the user's question based on this data. If they ask to create or update a
 """
 
         # Build messages with history
-        messages = conversation.to_claude_messages(max_messages=10)
-        messages.append({"role": "user", "content": user_message})
+        history_messages = conversation.to_claude_messages(max_messages=10)
+        ai_messages = [AIMessage(role=msg["role"], content=msg["content"]) for msg in history_messages]
+        ai_messages.append(AIMessage(role="user", content=user_message))
 
         try:
-            client = self._get_client()
-            settings = get_settings()
+            provider = await self._get_provider()
 
-            response = client.messages.create(
-                model=settings.claude_model_fast,
-                max_tokens=1500,
+            response = await provider.create_message(
+                messages=ai_messages,
                 system=system_prompt,
-                messages=messages,
+                model_type="fast",  # Use fast model for chat
+                max_tokens=1500,
             )
 
-            response_text = response.content[0].text
+            response_text = response.content
 
             # Save conversation
             conversation.add_message("user", user_message)
@@ -1739,8 +1735,6 @@ Answer the user's question based on this data. If they ask to create or update a
 
         Returns an explanation and optionally presents options.
         """
-        settings = get_settings()
-
         # Build context from the plan
         plan_context = self._format_plan_for_prompt(draft_plan)
 
@@ -1785,15 +1779,15 @@ If the user's question implies they want something that might not be optimal, re
 Respond conversationally in plain text. No markdown formatting."""
 
         try:
-            client = self._get_client()
-            response = client.messages.create(
-                model=settings.claude_model_fast,
-                max_tokens=1000,
+            provider = await self._get_provider()
+            response = await provider.create_message(
+                messages=[AIMessage(role="user", content=prompt)],
                 system="You are an expert trading advisor explaining a trading plan. Be thorough but conversational.",
-                messages=[{"role": "user", "content": prompt}]
+                model_type="fast",
+                max_tokens=1000,
             )
 
-            ai_response = response.content[0].text
+            ai_response = response.content
 
             # Check if the response suggests options
             options = []
@@ -1823,8 +1817,6 @@ Respond conversationally in plain text. No markdown formatting."""
 
         Returns an explanation of tradeoffs and options, NOT blind agreement.
         """
-        settings = get_settings()
-
         # Gather fresh market data for context
         await self.gather_comprehensive_data()
 
@@ -1883,15 +1875,15 @@ UPDATED_PLAN_JSON:
 Only include fields that should be changed. If you don't recommend a change, don't include the JSON block."""
 
         try:
-            client = self._get_client()
-            response = client.messages.create(
-                model=settings.claude_model_fast,
-                max_tokens=1500,
+            provider = await self._get_provider()
+            response = await provider.create_message(
+                messages=[AIMessage(role="user", content=prompt)],
                 system="You are an expert trading advisor. Your job is to protect the user from making bad trades while respecting their preferences. Never blindly agree - always explain tradeoffs.",
-                messages=[{"role": "user", "content": prompt}]
+                model_type="fast",
+                max_tokens=1500,
             )
 
-            ai_response = response.content[0].text
+            ai_response = response.content
 
             # Parse options from the response (simplified - UI can do more sophisticated parsing)
             options = []

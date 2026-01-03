@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     claude_model_planning: str = "claude-sonnet-4-20250514"  # Smarter model for plan generation
     claude_model_fast: str = "claude-3-5-haiku-20241022"  # Fast model for chat/evaluation
 
+    # Grok (xAI) Configuration
+    # Get your API key from https://console.x.ai/team/default/api-keys
+    grok_api_key: str = ""  # XAI_API_KEY environment variable
+    grok_model_planning: str = "grok-4"  # Flagship model for plan generation
+    grok_model_fast: str = "grok-4-1-fast"  # Fast model for chat/evaluation
+
     # Supabase Configuration (Authentication + Database)
     supabase_url: str = ""  # https://xxxxx.supabase.co
     supabase_anon_key: str = ""  # Public anon key (for client-side)
@@ -47,7 +53,7 @@ class Settings(BaseSettings):
     max_concurrent_agents: int = 20  # Maximum stocks to monitor simultaneously
 
     # Web Search Configuration (Claude's built-in web search tool)
-    web_search_enabled: bool = True  # Enable web search for news/Reddit sentiment
+    web_search_enabled: bool = True  # Enable web/social search for news and sentiment
     web_search_max_uses: int = 5  # Max searches per plan generation (controls cost)
 
     # Rate Limiting Configuration
@@ -78,9 +84,11 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in self.cors_origins.split(",")]
         return []
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    model_config = {
+        "env_file": ".env",
+        "case_sensitive": False,
+        "extra": "ignore",  # Ignore extra env vars like finnhub_api_key
+    }
 
 
 @lru_cache()

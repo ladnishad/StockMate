@@ -167,6 +167,16 @@ class Database:
                 )
             """)
 
+            # User settings table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id TEXT PRIMARY KEY,
+                    model_provider TEXT DEFAULT 'grok',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+
             await conn.commit()
             logger.info(f"Database initialized at {self.db_path}")
 

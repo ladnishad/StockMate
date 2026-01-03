@@ -198,12 +198,13 @@ struct SimplifiedPlanView: View {
                         )
                     }
 
-                    // Market Sentiment (News + Reddit)
+                    // Market Sentiment (News + Social)
                     if plan.hasNewsSentiment {
                         MarketSentimentSectionView(
                             newsSummary: plan.newsSummary,
-                            redditSentiment: plan.redditSentiment,
-                            redditBuzz: plan.redditBuzz
+                            socialSentiment: plan.socialSentiment,
+                            socialBuzz: plan.socialBuzz,
+                            sentimentSourceLabel: plan.sentimentSourceLabel
                         )
                     }
 
@@ -2650,13 +2651,14 @@ private struct KeyLevelsSectionView: View {
 
 private struct MarketSentimentSectionView: View {
     let newsSummary: String?
-    let redditSentiment: String?
-    let redditBuzz: String?
+    let socialSentiment: String?
+    let socialBuzz: String?
+    let sentimentSourceLabel: String
 
     @State private var isExpanded = false
 
     private var sentimentColor: Color {
-        switch redditSentiment?.lowercased() {
+        switch socialSentiment?.lowercased() {
         case "bullish": return Color(hex: "10B981")
         case "bearish": return Color(hex: "F87171")
         case "mixed": return .orange
@@ -2665,7 +2667,7 @@ private struct MarketSentimentSectionView: View {
     }
 
     private var hasSentiment: Bool {
-        if let s = redditSentiment, !s.isEmpty, s.lowercased() != "none" {
+        if let s = socialSentiment, !s.isEmpty, s.lowercased() != "none" {
             return true
         }
         return false
@@ -2693,7 +2695,7 @@ private struct MarketSentimentSectionView: View {
                             .foregroundColor(.secondary)
                             .tracking(0.8)
 
-                        if hasSentiment, let sentiment = redditSentiment {
+                        if hasSentiment, let sentiment = socialSentiment {
                             Text(sentiment.capitalized)
                                 .font(.system(size: 15, weight: .semibold))
                                 .foregroundColor(sentimentColor)
@@ -2722,10 +2724,10 @@ private struct MarketSentimentSectionView: View {
                         .padding(.horizontal, 16)
 
                     VStack(alignment: .leading, spacing: 12) {
-                        // Reddit buzz
-                        if let buzz = redditBuzz, !buzz.isEmpty {
+                        // Social buzz (X or Reddit depending on provider)
+                        if let buzz = socialBuzz, !buzz.isEmpty {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Reddit")
+                                Text(sentimentSourceLabel)
                                     .font(.system(size: 10, weight: .medium))
                                     .foregroundColor(.secondary)
                                     .tracking(0.5)
@@ -3766,8 +3768,9 @@ private struct PreviewFullPlanView: View {
                     // Market Sentiment - like screenshot
                     MarketSentimentSectionView(
                         newsSummary: "Major restructuring completed in mid-December 2025 transferred 87.5% stake to Growler, causing 79% stock crash. Company pivoting toward AI/HPC alongside crypto mining. New CEO Justin Nolan appointed March 2025. 2024 results showed revenue down 7%, $55.1M net loss, Bitcoin production cut in half due to halving. Company faces class action lawsuits from 2023.",
-                        redditSentiment: "Neutral",
-                        redditBuzz: nil
+                        socialSentiment: "Neutral",
+                        socialBuzz: nil,
+                        sentimentSourceLabel: "X"
                     )
 
                     // V2: Position Action (when user has position)
@@ -3931,8 +3934,9 @@ private struct PreviewSavedPlanView: View {
                     // Market Sentiment
                     MarketSentimentSectionView(
                         newsSummary: "Major restructuring completed in mid-December 2025 transferred 87.5% stake to Growler, causing 79% stock crash. Company pivoting toward AI/HPC alongside crypto mining. New CEO Justin Nolan appointed March 2025. 2024 results showed revenue down 7%, $55.1M net loss, Bitcoin production cut in half due to halving. Company faces class action lawsuits from 2023.",
-                        redditSentiment: "Neutral",
-                        redditBuzz: nil
+                        socialSentiment: "Neutral",
+                        socialBuzz: nil,
+                        sentimentSourceLabel: "X"
                     )
                 }
                 .padding(.horizontal, 20)
