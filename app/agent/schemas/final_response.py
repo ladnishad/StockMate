@@ -90,7 +90,7 @@ class FinalPlanResponse(BaseModel):
         description="The trade style that was selected as best."
     )
     selection_reasoning: str = Field(
-        max_length=500,
+        max_length=1500,
         description="Why this plan was selected: 'highest confidence', 'best R:R', 'aligns with position', etc."
     )
 
@@ -144,6 +144,12 @@ class FinalPlanResponse(BaseModel):
     position_trade_analyzed: bool = Field(
         default=True,
         description="Whether position trade analysis completed successfully."
+    )
+
+    # X/Social Sentiment Citations (aggregated from all sub-agents)
+    all_citations: List[str] = Field(
+        default_factory=list,
+        description="All unique URLs to X/Twitter posts and sources used across all analyses."
     )
 
     def get_alternative_by_style(self, style: TradeStyleLiteral) -> Optional[SubAgentReport]:

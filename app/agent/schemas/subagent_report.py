@@ -94,7 +94,7 @@ class SubAgentReport(BaseModel):
         description="Directional bias: bullish (long), bearish (short), or neutral (no clear direction)."
     )
     thesis: str = Field(
-        max_length=500,
+        max_length=1500,
         description="2-3 sentence explanation of why this trade works for THIS style."
     )
 
@@ -205,6 +205,12 @@ class SubAgentReport(BaseModel):
     technical_summary: str = Field(
         default="",
         description="Brief summary of key technicals: RSI, MACD, EMA alignment, volume."
+    )
+
+    # X/Social Sentiment Citations (from Grok X search)
+    x_citations: List[str] = Field(
+        default_factory=list,
+        description="URLs to X/Twitter posts and other sources used for sentiment analysis."
     )
 
     def has_valid_setup(self) -> bool:

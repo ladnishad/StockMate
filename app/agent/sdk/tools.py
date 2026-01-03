@@ -6,8 +6,11 @@ Each tool is parameterized so agents can request the appropriate timeframe.
 
 import logging
 import base64
-from typing import List, Dict, Any, Optional, Literal
+from typing import List, Dict, Any, Optional, Literal, TYPE_CHECKING
 from datetime import datetime
+
+if TYPE_CHECKING:
+    from app.agent.providers import AIProvider
 
 from app.tools.market_data import (
     fetch_price_bars,
@@ -75,7 +78,7 @@ async def get_price_bars(
         lows = [b.low for b in bars]
         volumes = [b.volume for b in bars]
 
-        # Calculate ATR for this timeframe
+        # Calculate ATR for this timeframe using Wilder's smoothing
         true_ranges = []
         for i in range(1, len(bars)):
             high_low = highs[i] - lows[i]
@@ -83,7 +86,15 @@ async def get_price_bars(
             low_close = abs(lows[i] - closes[i - 1])
             true_ranges.append(max(high_low, high_close, low_close))
 
-        atr = sum(true_ranges[-14:]) / min(14, len(true_ranges)) if true_ranges else 0
+        # Use Wilder's smoothing (standard ATR method)
+        if len(true_ranges) >= 14:
+            # Initial ATR is simple average of first 14 TRs
+            atr = sum(true_ranges[:14]) / 14
+            # Apply Wilder's smoothing for remaining values
+            for tr in true_ranges[14:]:
+                atr = (atr * 13 + tr) / 14
+        else:
+            atr = sum(true_ranges) / len(true_ranges) if true_ranges else 0
         atr_pct = (atr / closes[-1] * 100) if closes[-1] > 0 else 0
 
         return {
@@ -477,23 +488,21 @@ async def analyze_chart_vision(
     symbol: str,
     chart_image_base64: str,
     trade_style: Literal["day", "swing", "position"],
+    provider: "AIProvider",
 ) -> Dict[str, Any]:
-    """Analyze chart image using Claude Vision.
+    """Analyze chart image using the user's selected AI provider.
 
     Args:
         symbol: Stock ticker symbol
         chart_image_base64: Base64-encoded chart image
         trade_style: Trade style for analysis context
+        provider: AI provider instance (Claude or Grok) for vision analysis
 
     Returns:
         Dictionary with vision analysis results
     """
     try:
-        from anthropic import Anthropic
-        from app.config import get_settings
-
-        settings = get_settings()
-        client = Anthropic(api_key=settings.claude_api_key)
+        import json
 
         # Style-specific prompts
         style_focus = {
@@ -527,30 +536,15 @@ Respond with JSON:
 }}
 """
 
-        response = client.messages.create(
-            model=settings.claude_model_planning,
-            max_tokens=1000,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": chart_image_base64,
-                            },
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }
-            ],
+        # Use the provider's analyze_image method (works for both Claude and Grok)
+        response = await provider.analyze_image(
+            image_base64=chart_image_base64,
+            prompt=prompt,
+            model_type="planning",
         )
 
-        # Parse response
-        import json
-        response_text = response.content[0].text
+        # Parse response from AIResponse.content
+        response_text = response.content
 
         # Try to extract JSON
         try:
@@ -577,7 +571,7 @@ Respond with JSON:
             "volume_confirmation": "Unable to parse",
             "warning_signs": [],
             "confidence_modifier": 0,
-            "summary": response_text[:200],
+            "summary": response_text[:200] if response_text else "No response",
             "raw_response": response_text,
         }
     except Exception as e:
