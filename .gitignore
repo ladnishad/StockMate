@@ -25,7 +25,8 @@ wheels/
 
 # Environment
 .env
-.env.example
+.env.*
+!.env.example
 .venv
 
 # Local data

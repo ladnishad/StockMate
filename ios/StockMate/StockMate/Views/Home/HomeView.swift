@@ -7,6 +7,7 @@ struct HomeView: View {
     @State private var showingAddTicker = false
     @State private var showingChat = false
     @State private var showingLogoutConfirmation = false
+    @State private var showingSettings = false
 
     var body: some View {
         NavigationStack {
@@ -68,6 +69,11 @@ struct HomeView: View {
                             Text(user.email)
                         }
                         Divider()
+                        Button {
+                            showingSettings = true
+                        } label: {
+                            Label("Settings", systemImage: "gearshape")
+                        }
                         Button(role: .destructive) {
                             showingLogoutConfirmation = true
                         } label: {
@@ -127,6 +133,10 @@ struct HomeView: View {
                 NavigationStack {
                     ChatView()
                 }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
+                    .environmentObject(authManager)
             }
             .alert("Error", isPresented: .constant(viewModel.error != nil)) {
                 Button("Retry") {

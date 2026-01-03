@@ -852,24 +852,24 @@ private struct NewsSentimentCard: View {
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
 
-            // Reddit sentiment badge
-            if !plan.redditSentimentDisplay.isEmpty {
+            // Social sentiment badge
+            if !plan.socialSentimentDisplay.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "bubble.left.and.bubble.right.fill")
                         .font(.system(size: 14))
                         .foregroundColor(sentimentColor)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Reddit Buzz")
+                        Text("\(plan.sentimentSourceLabel) Buzz")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(.secondary)
 
                         HStack(spacing: 6) {
-                            Text(plan.redditSentimentDisplay)
+                            Text(plan.socialSentimentDisplay)
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(sentimentColor)
 
-                            if let buzz = plan.redditBuzz, !buzz.isEmpty {
+                            if let buzz = plan.socialBuzz, !buzz.isEmpty {
                                 Text("•")
                                     .foregroundStyle(.tertiary)
                                 Text(buzz)
@@ -915,7 +915,7 @@ private struct NewsSentimentCard: View {
     }
 
     private var sentimentColor: Color {
-        switch plan.redditSentiment?.lowercased() {
+        switch plan.socialSentiment?.lowercased() {
         case "bullish": return .green
         case "bearish": return .red
         case "mixed": return .orange

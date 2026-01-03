@@ -59,10 +59,11 @@ class TradingPlan:
     market_direction_at_creation: str = ""
     technical_summary: str = ""
 
-    # External sentiment (from web search)
+    # External sentiment (from web/social search)
     news_summary: str = ""  # Brief summary of recent news/catalysts
-    reddit_sentiment: str = ""  # bullish, bearish, neutral, mixed, none
-    reddit_buzz: str = ""  # Summary of Reddit discussion if found
+    social_sentiment: str = ""  # bullish, bearish, neutral, mixed, none
+    social_buzz: str = ""  # Summary of social discussion if found
+    sentiment_source: str = ""  # "reddit" or "x" - which platform was searched
 
     # Tracking
     created_at: str = ""
@@ -142,8 +143,9 @@ class PlanStore:
                     technical_summary TEXT,
 
                     news_summary TEXT DEFAULT '',
-                    reddit_sentiment TEXT DEFAULT '',
-                    reddit_buzz TEXT DEFAULT '',
+                    social_sentiment TEXT DEFAULT '',
+                    social_buzz TEXT DEFAULT '',
+                    sentiment_source TEXT DEFAULT '',
 
                     created_at TEXT,
                     updated_at TEXT,

@@ -27,6 +27,9 @@ from app.agent.sdk.tools import (
     get_market_context,
     get_news_sentiment,
 )
+from app.agent.providers.factory import get_user_provider
+from app.agent.providers import AIMessage, AIProvider, SearchParameters
+from app.agent.providers.grok_provider import get_x_search_parameters
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +44,35 @@ class TradePlanOrchestrator:
     - position-trade-analyzer
     """
 
-    def __init__(self):
+    def __init__(self, user_id: Optional[str] = None):
+        """Initialize the orchestrator.
+
+        Args:
+            user_id: User ID for provider lookup. If not provided,
+                     must be passed to generate_plan_stream.
+        """
         self.context: Optional[DataContext] = None
         self.subagent_reports: Dict[str, SubAgentReport] = {}
         self.subagent_progress: Dict[str, SubAgentProgress] = {}
         self._start_time: float = 0
+        self._user_id: Optional[str] = user_id
+        self._provider: Optional[AIProvider] = None
+
+    async def _get_provider(self, user_id: Optional[str] = None) -> AIProvider:
+        """Get the AI provider for the current user.
+
+        Args:
+            user_id: Optional user ID override
+
+        Returns:
+            AIProvider instance for the user
+        """
+        if self._provider is None:
+            uid = user_id or self._user_id
+            if not uid:
+                raise ValueError("user_id is required to get provider")
+            self._provider = await get_user_provider(uid)
+        return self._provider
 
     async def gather_common_context(
         self,
@@ -125,6 +152,7 @@ class TradePlanOrchestrator:
             StreamEvent objects for each progress update
         """
         self._start_time = time.time()
+        self._user_id = user_id  # Store for provider lookup
         logger.info(f"[Orchestrator] Starting plan generation for {symbol}")
 
         try:
@@ -257,7 +285,7 @@ class TradePlanOrchestrator:
                 yield event
             return
 
-        # Real implementation using direct Anthropic API calls
+        # Real implementation using the AI provider abstraction
         # This runs all 3 sub-agents in parallel using asyncio.gather
         logger.info(f"Running real sub-agents for {symbol}")
         async for event in self._run_subagents_real(symbol, context):
@@ -268,19 +296,18 @@ class TradePlanOrchestrator:
         symbol: str,
         context: DataContext,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """Run real sub-agents using direct Anthropic API calls.
+        """Run real sub-agents using the AI provider abstraction.
 
         This runs all 3 trade-style analyses in parallel using asyncio.gather.
         Each agent gathers its own timeframe-specific data and analyzes charts.
+        Uses the provider abstraction to work with both Claude and Grok.
         """
         from app.agent.sdk.subagent_definitions import get_all_subagent_definitions
         from app.agent.sdk import tools as sdk_tools
-        from anthropic import AsyncAnthropic
-        from app.config import get_settings
         import json
 
-        settings = get_settings()
-        client = AsyncAnthropic(api_key=settings.claude_api_key)
+        # Get the provider for this user
+        provider = await self._get_provider()
 
         position_context = context.to_prompt_context() if context else "No context available."
 
@@ -554,14 +581,8 @@ Based on this data, provide your {trade_style} trade analysis.
                 else:
                     system_prompt = build_position_trade_prompt(symbol, context.to_prompt_context())
 
-                # Call Claude for real analysis
-                plan_response = await client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=2000,
-                    system=system_prompt,
-                    messages=[{
-                        "role": "user",
-                        "content": f"""Analyze {symbol} for a {trade_style} trade setup.
+                # Build the user message for analysis
+                user_message = f"""Analyze {symbol} for a {trade_style} trade setup.
 
 {analysis_context}
 
@@ -588,40 +609,52 @@ Respond with a JSON object containing:
 }}
 
 Return ONLY the JSON object, no other text."""
-                    }],
+
+                # Call the provider for real analysis
+                # Use search if provider supports X search (Grok), otherwise no search for sub-agents
+                search_params = None
+                if provider.supports_x_search:
+                    search_params = get_x_search_parameters()
+
+                plan_response = await provider.create_message(
+                    messages=[AIMessage(role="user", content=user_message)],
+                    system=system_prompt,
+                    model_type="planning",
+                    max_tokens=2000,
+                    search_parameters=search_params,
                 )
 
-                # Parse Claude's response
-                claude_text = plan_response.content[0].text.strip()
+                # Parse the AI response
+                ai_text = plan_response.content.strip()
                 # Remove markdown code blocks if present
-                if claude_text.startswith("```"):
-                    claude_text = claude_text.split("```")[1]
-                    if claude_text.startswith("json"):
-                        claude_text = claude_text[4:]
-                    claude_text = claude_text.strip()
+                if ai_text.startswith("```"):
+                    ai_text = ai_text.split("```")[1]
+                    if ai_text.startswith("json"):
+                        ai_text = ai_text[4:]
+                    ai_text = ai_text.strip()
 
                 try:
-                    claude_plan = json.loads(claude_text)
+                    ai_plan = json.loads(ai_text)
                 except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse Claude response for {agent_name}, using fallback")
-                    claude_plan = {}
+                    logger.warning(f"Failed to parse AI response for {agent_name}, using fallback")
+                    ai_plan = {}
 
-                # Use Claude's analysis or fall back to calculated values
+                # Use AI's analysis or fall back to calculated values
                 # Note: Use `or` to handle both missing keys AND null values
-                thesis = claude_plan.get("thesis") or f"{trade_style.capitalize()} trade analysis for {symbol}. ATR: {atr_pct:.1f}%, EMA trend: {ema_trend}.{position_context_str}"
-                final_suitable = claude_plan.get("suitable") if claude_plan.get("suitable") is not None else suitable
-                final_confidence = claude_plan.get("confidence") or confidence
-                final_bias = claude_plan.get("bias") or bias
-                final_entry_low = claude_plan.get("entry_zone_low") or entry_low
-                final_entry_high = claude_plan.get("entry_zone_high") or entry_high
-                final_stop = claude_plan.get("stop_loss") or stop_loss
-                final_holding = claude_plan.get("holding_period") or holding_periods[trade_style]
+                thesis = ai_plan.get("thesis") or f"{trade_style.capitalize()} trade analysis for {symbol}. ATR: {atr_pct:.1f}%, EMA trend: {ema_trend}.{position_context_str}"
+                final_suitable = ai_plan.get("suitable") if ai_plan.get("suitable") is not None else suitable
+                final_confidence = ai_plan.get("confidence") or confidence
+                final_bias = ai_plan.get("bias") or bias
+                final_entry_low = ai_plan.get("entry_zone_low") or entry_low
+                final_entry_high = ai_plan.get("entry_zone_high") or entry_high
+                final_stop = ai_plan.get("stop_loss") or stop_loss
+                final_holding = ai_plan.get("holding_period") or holding_periods[trade_style]
 
-                # Parse targets from Claude
-                claude_targets = claude_plan.get("targets") or []
-                if claude_targets and isinstance(claude_targets, list):
+                # Parse targets from AI response
+                ai_targets = ai_plan.get("targets") or []
+                if ai_targets and isinstance(ai_targets, list):
                     parsed_targets = []
-                    for t in claude_targets[:3]:
+                    for t in ai_targets[:3]:
                         if isinstance(t, dict):
                             target_price = t.get("price")
                             if target_price is not None:
@@ -635,12 +668,12 @@ Return ONLY the JSON object, no other text."""
                         targets = parsed_targets
 
                 # Merge what_to_watch and risk_warnings
-                claude_watch = claude_plan.get("what_to_watch", [])
-                claude_warnings = claude_plan.get("risk_warnings", [])
-                if claude_watch:
-                    what_to_watch = claude_watch
-                if claude_warnings:
-                    risk_warnings = list(set(risk_warnings + claude_warnings))
+                ai_watch = ai_plan.get("what_to_watch", [])
+                ai_warnings = ai_plan.get("risk_warnings", [])
+                if ai_watch:
+                    what_to_watch = ai_watch
+                if ai_warnings:
+                    risk_warnings = list(set(risk_warnings + ai_warnings))
 
                 logger.info(f"[{agent_name}] Completed: {final_bias} bias, {final_confidence}% confidence")
                 return SubAgentReport(
@@ -663,19 +696,19 @@ Return ONLY the JSON object, no other text."""
                     ),
                     entry_zone_low=round(float(final_entry_low), 2) if final_entry_low else round(current_price * 0.98, 2),
                     entry_zone_high=round(float(final_entry_high), 2) if final_entry_high else round(current_price * 0.995, 2),
-                    entry_reasoning=claude_plan.get("entry_reasoning") or f"Near support at ${final_entry_low:.2f}" if final_entry_low else "Near current price",
+                    entry_reasoning=ai_plan.get("entry_reasoning") or f"Near support at ${final_entry_low:.2f}" if final_entry_low else "Near current price",
                     stop_loss=round(float(final_stop), 2) if final_stop else round(current_price * 0.95, 2),
-                    stop_reasoning=claude_plan.get("stop_reasoning") or "Below recent support",
+                    stop_reasoning=ai_plan.get("stop_reasoning") or "Below recent support",
                     targets=targets,
-                    risk_reward=float(claude_plan.get("risk_reward") or 2.0),
+                    risk_reward=float(ai_plan.get("risk_reward") or 2.0),
                     position_size_pct=2.0,
                     holding_period=final_holding,
                     key_supports=supports or [],
                     key_resistances=resistances or [],
-                    invalidation_criteria=claude_plan.get("invalidation_criteria") or f"Close below ${final_stop:.2f}" if final_stop else "Price closes below stop level",
+                    invalidation_criteria=ai_plan.get("invalidation_criteria") or f"Close below ${final_stop:.2f}" if final_stop else "Price closes below stop level",
                     position_aligned=position_aligned,
                     position_recommendation=position_recommendation,
-                    setup_explanation=claude_plan.get("setup_explanation") or f"This {trade_style} setup is based on {ema_trend} EMA alignment.",
+                    setup_explanation=ai_plan.get("setup_explanation") or f"This {trade_style} setup is based on {ema_trend} EMA alignment.",
                     what_to_watch=what_to_watch or ["Monitor price action", "Watch for volume confirmation"],
                     risk_warnings=risk_warnings or [],
                     atr_percent=atr_pct,
@@ -975,15 +1008,13 @@ Return ONLY the JSON object, no other text."""
             reasoning_parts.append("No valid setups found - passing on trade")
 
         # ============================================================
-        # FINAL SYNTHESIS: Call Claude to create comprehensive plan
+        # FINAL SYNTHESIS: Call AI provider to create comprehensive plan
         # ============================================================
         try:
-            from anthropic import AsyncAnthropic
-            from app.config import get_settings
             import json
 
-            settings = get_settings()
-            client = AsyncAnthropic(api_key=settings.claude_api_key)
+            # Get the provider for this user
+            provider = await self._get_provider()
 
             # Build summary of all analyses
             analyses_summary = []
@@ -1056,13 +1087,23 @@ Create a comprehensive trading plan synthesis. Respond with JSON:
 
 Return ONLY valid JSON."""
 
-            synthesis_response = await client.messages.create(
-                model="claude-sonnet-4-20250514",
+            # Use search if provider supports X search (Grok) for real-time sentiment
+            search_params = None
+            if provider.supports_x_search:
+                search_params = get_x_search_parameters()
+            elif provider.supports_web_search:
+                # Claude: use web search for synthesis
+                search_params = SearchParameters(mode="on", sources=[{"type": "web"}], return_citations=True)
+
+            synthesis_response = await provider.create_message(
+                messages=[AIMessage(role="user", content=synthesis_prompt)],
+                system=None,
+                model_type="planning",
                 max_tokens=1500,
-                messages=[{"role": "user", "content": synthesis_prompt}],
+                search_parameters=search_params,
             )
 
-            synthesis_text = synthesis_response.content[0].text.strip()
+            synthesis_text = synthesis_response.content.strip()
             # Remove markdown code blocks if present
             if synthesis_text.startswith("```"):
                 synthesis_text = synthesis_text.split("```")[1]

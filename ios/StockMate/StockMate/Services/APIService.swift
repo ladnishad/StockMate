@@ -935,6 +935,44 @@ actor APIService {
         }
     }
 
+    // MARK: - Settings
+
+    struct UserSettingsResponse: Decodable {
+        let modelProvider: String
+        let availableProviders: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case modelProvider = "model_provider"
+            case availableProviders = "available_providers"
+        }
+    }
+
+    func getUserSettings() async throws -> UserSettingsResponse {
+        let url = URL(string: "\(baseURL)/settings")!
+        return try await fetch(url: url)
+    }
+
+    func updateProvider(provider: String) async throws {
+        let url = URL(string: "\(baseURL)/settings/provider")!
+
+        struct UpdateRequest: Encodable {
+            let provider: String
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        addAuthHeader(to: &request)
+        request.httpBody = try JSONEncoder().encode(UpdateRequest(provider: provider))
+
+        let (_, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw APIServiceError.invalidResponse
+        }
+    }
+
     // MARK: - Private Helpers
 
     private func fetch<T: Decodable>(url: URL) async throws -> T {

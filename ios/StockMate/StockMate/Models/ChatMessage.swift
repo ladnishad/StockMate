@@ -271,10 +271,11 @@ struct TradingPlanResponse: Codable, Equatable {
     let holdingPeriod: String?  // e.g., "1-3 days", "1-2 weeks"
     let confidence: Int?  // 0-100
 
-    // External sentiment (from web search)
+    // External sentiment (from web/social search)
     let newsSummary: String?  // Brief summary of recent news/catalysts
-    let redditSentiment: String?  // bullish, bearish, neutral, mixed, none
-    let redditBuzz: String?  // Summary of Reddit discussion
+    let socialSentiment: String?  // bullish, bearish, neutral, mixed, none
+    let socialBuzz: String?  // Summary of social discussion
+    let sentimentSource: String?  // "reddit" or "x" - which platform was searched
 
     // V2 Position Management fields
     let positionRecommendation: String?  // "hold", "trim", "reduce", "exit", or null
@@ -305,8 +306,9 @@ struct TradingPlanResponse: Codable, Equatable {
         case tradeStyleReasoning = "trade_style_reasoning"
         case holdingPeriod = "holding_period"
         case newsSummary = "news_summary"
-        case redditSentiment = "reddit_sentiment"
-        case redditBuzz = "reddit_buzz"
+        case socialSentiment = "social_sentiment"
+        case socialBuzz = "social_buzz"
+        case sentimentSource = "sentiment_source"
         case positionRecommendation = "position_recommendation"
         case whatToWatch = "what_to_watch"
         case riskWarnings = "risk_warnings"
@@ -342,8 +344,9 @@ struct TradingPlanResponse: Codable, Equatable {
         holdingPeriod = try container.decodeIfPresent(String.self, forKey: .holdingPeriod)
         confidence = try container.decodeIfPresent(Int.self, forKey: .confidence)
         newsSummary = try container.decodeIfPresent(String.self, forKey: .newsSummary)
-        redditSentiment = try container.decodeIfPresent(String.self, forKey: .redditSentiment)
-        redditBuzz = try container.decodeIfPresent(String.self, forKey: .redditBuzz)
+        socialSentiment = try container.decodeIfPresent(String.self, forKey: .socialSentiment)
+        socialBuzz = try container.decodeIfPresent(String.self, forKey: .socialBuzz)
+        sentimentSource = try container.decodeIfPresent(String.self, forKey: .sentimentSource)
         positionRecommendation = try container.decodeIfPresent(String.self, forKey: .positionRecommendation)
         whatToWatch = try container.decodeIfPresent([String].self, forKey: .whatToWatch) ?? []
         riskWarnings = try container.decodeIfPresent([String].self, forKey: .riskWarnings) ?? []
@@ -378,11 +381,11 @@ struct TradingPlanResponse: Codable, Equatable {
     // Sentiment helpers
     var hasNewsSentiment: Bool {
         (newsSummary != nil && !newsSummary!.isEmpty) ||
-        (redditSentiment != nil && redditSentiment!.lowercased() != "none")
+        (socialSentiment != nil && socialSentiment!.lowercased() != "none")
     }
 
-    var redditSentimentDisplay: String {
-        guard let sentiment = redditSentiment?.lowercased() else { return "" }
+    var socialSentimentDisplay: String {
+        guard let sentiment = socialSentiment?.lowercased() else { return "" }
         switch sentiment {
         case "bullish": return "Bullish"
         case "bearish": return "Bearish"
@@ -392,14 +395,24 @@ struct TradingPlanResponse: Codable, Equatable {
         }
     }
 
-    var redditSentimentColor: String {
-        guard let sentiment = redditSentiment?.lowercased() else { return "gray" }
+    var socialSentimentColor: String {
+        guard let sentiment = socialSentiment?.lowercased() else { return "gray" }
         switch sentiment {
         case "bullish": return "green"
         case "bearish": return "red"
         case "neutral": return "gray"
         case "mixed": return "orange"
         default: return "gray"
+        }
+    }
+
+    /// Returns the display label for the sentiment source (e.g., "X" or "Reddit")
+    var sentimentSourceLabel: String {
+        guard let source = sentimentSource?.lowercased() else { return "Social" }
+        switch source {
+        case "x", "twitter": return "X"
+        case "reddit": return "Reddit"
+        default: return "Social"
         }
     }
 

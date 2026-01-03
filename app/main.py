@@ -2856,10 +2856,11 @@ class PlanResponse(BaseModel):
     trade_style_reasoning: Optional[str] = None
     holding_period: Optional[str] = None
     confidence: Optional[int] = None
-    # External sentiment from web search
+    # External sentiment from web/social search
     news_summary: Optional[str] = None
-    reddit_sentiment: Optional[str] = None
-    reddit_buzz: Optional[str] = None
+    social_sentiment: Optional[str] = None
+    social_buzz: Optional[str] = None
+    sentiment_source: Optional[str] = None
 
     @field_validator(
         'entry_zone_low', 'entry_zone_high', 'stop_loss',
@@ -3040,8 +3041,9 @@ async def get_plan(
         holding_period=plan.holding_period,
         confidence=plan.confidence,
         news_summary=plan.news_summary,
-        reddit_sentiment=plan.reddit_sentiment,
-        reddit_buzz=plan.reddit_buzz,
+        social_sentiment=plan.social_sentiment,
+        social_buzz=plan.social_buzz,
+        sentiment_source=plan.sentiment_source,
     )
 
 
@@ -3091,8 +3093,9 @@ async def create_plan(
             holding_period=plan.holding_period,
             confidence=plan.confidence,
             news_summary=plan.news_summary,
-            reddit_sentiment=plan.reddit_sentiment,
-            reddit_buzz=plan.reddit_buzz,
+            social_sentiment=plan.social_sentiment,
+            social_buzz=plan.social_buzz,
+            sentiment_source=plan.sentiment_source,
         )
 
     except Exception as e:
@@ -3848,8 +3851,9 @@ async def start_plan_session(
                     "holding_period": plan.holding_period,
                     "confidence": plan.confidence,
                     "news_summary": plan.news_summary,
-                    "reddit_sentiment": plan.reddit_sentiment,
-                    "reddit_buzz": plan.reddit_buzz,
+                    "social_sentiment": plan.social_sentiment,
+                    "social_buzz": plan.social_buzz,
+                    "sentiment_source": plan.sentiment_source,
                 }
 
                 await session_store.set_draft_plan(session.id, plan_dict)
@@ -4135,8 +4139,9 @@ async def approve_plan_session(
             confidence=session.draft_plan_data.get("confidence", 0),
             technical_summary=session.draft_plan_data.get("technical_summary", ""),
             news_summary=session.draft_plan_data.get("news_summary", ""),
-            reddit_sentiment=session.draft_plan_data.get("reddit_sentiment", ""),
-            reddit_buzz=session.draft_plan_data.get("reddit_buzz", ""),
+            social_sentiment=session.draft_plan_data.get("social_sentiment", ""),
+            social_buzz=session.draft_plan_data.get("social_buzz", ""),
+            sentiment_source=session.draft_plan_data.get("sentiment_source", ""),
         )
 
         await plan_store.save_plan(final_plan)
@@ -4178,8 +4183,9 @@ async def approve_plan_session(
             holding_period=final_plan.holding_period,
             confidence=final_plan.confidence,
             news_summary=final_plan.news_summary,
-            reddit_sentiment=final_plan.reddit_sentiment,
-            reddit_buzz=final_plan.reddit_buzz,
+            social_sentiment=final_plan.social_sentiment,
+            social_buzz=final_plan.social_buzz,
+            sentiment_source=final_plan.sentiment_source,
         )
 
     except HTTPException:
@@ -4319,8 +4325,9 @@ async def start_session_from_existing(
             "holding_period": existing_plan.holding_period,
             "confidence": existing_plan.confidence,
             "news_summary": existing_plan.news_summary,
-            "reddit_sentiment": existing_plan.reddit_sentiment,
-            "reddit_buzz": existing_plan.reddit_buzz,
+            "social_sentiment": existing_plan.social_sentiment,
+            "social_buzz": existing_plan.social_buzz,
+            "sentiment_source": existing_plan.sentiment_source,
         }
 
         # Set the draft plan immediately (no generation needed)
@@ -4428,8 +4435,9 @@ async def reopen_plan_session(
                     "holding_period": current_plan.holding_period,
                     "confidence": current_plan.confidence,
                     "news_summary": current_plan.news_summary,
-                    "reddit_sentiment": current_plan.reddit_sentiment,
-                    "reddit_buzz": current_plan.reddit_buzz,
+                    "social_sentiment": current_plan.social_sentiment,
+                    "social_buzz": current_plan.social_buzz,
+                    "sentiment_source": current_plan.sentiment_source,
                 }
                 session.draft_plan_data = plan_dict
 
@@ -4603,6 +4611,86 @@ async def clear_chat_history(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to clear chat history: {str(e)}"
+        )
+
+
+# =============================================================================
+# Settings Endpoints
+# =============================================================================
+
+
+class UserSettingsResponse(BaseModel):
+    """Response model for user settings."""
+
+    model_provider: str
+    available_providers: List[str]
+
+
+class UpdateProviderRequest(BaseModel):
+    """Request model for updating AI provider preference."""
+
+    provider: str
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, v):
+        if v not in ["claude", "grok"]:
+            raise ValueError("Provider must be 'claude' or 'grok'")
+        return v
+
+
+@app.get(
+    "/settings",
+    response_model=UserSettingsResponse,
+    summary="Get user settings",
+    description="Get the current user's AI provider settings. Requires authentication.",
+)
+async def get_user_settings(user: User = Depends(get_current_user)):
+    """Get user settings including AI provider preference."""
+    from app.storage.user_settings_store import get_user_settings_store
+
+    user_id = user.id
+    try:
+        store = get_user_settings_store()
+        settings = await store.get_settings(user_id)
+
+        return UserSettingsResponse(
+            model_provider=settings.model_provider,
+            available_providers=["claude", "grok"],
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting user settings: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get user settings: {str(e)}",
+        )
+
+
+@app.put(
+    "/settings/provider",
+    summary="Update AI provider preference",
+    description="Update the user's preferred AI provider (claude or grok). Requires authentication.",
+)
+async def update_provider_setting(
+    request: UpdateProviderRequest,
+    user: User = Depends(get_current_user),
+):
+    """Update the user's AI provider preference."""
+    from app.storage.user_settings_store import get_user_settings_store
+
+    user_id = user.id
+    try:
+        store = get_user_settings_store()
+        await store.update_provider(user_id, request.provider)
+
+        return {"status": "ok", "provider": request.provider}
+
+    except Exception as e:
+        logger.error(f"Error updating provider setting: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update provider setting: {str(e)}",
         )
 
 

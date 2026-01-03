@@ -362,8 +362,8 @@ private struct DraftWarningsSection: View {
                 WarningItem(text: news)
             }
 
-            if let sentiment = plan.redditSentiment, sentiment.lowercased() != "none" {
-                WarningItem(text: "Reddit sentiment: \(plan.redditSentimentDisplay)")
+            if let sentiment = plan.socialSentiment, sentiment.lowercased() != "none" {
+                WarningItem(text: "\(plan.sentimentSourceLabel) sentiment: \(plan.socialSentimentDisplay)")
             }
         }
         .padding(12)
