@@ -1566,7 +1566,7 @@ def generate_trade_plan(
     fib_indicator = None
     if use_fib_extensions or target_method == "fibonacci":
         try:
-            fib_indicator = calculate_fibonacci_levels(snapshot.price_bars_1d)
+            fib_indicator = calculate_fibonacci_levels(snapshot.price_bars_1d, trade_type=trade_type)
         except Exception as e:
             logger.warning(f"Could not calculate Fibonacci for targets: {e}")
 
@@ -2105,9 +2105,80 @@ def run_analysis(
         raise
 
 
+def _find_swing_pivots(
+    price_bars: List[PriceBar],
+    lookback: int,
+    pivot_window: int = 5,
+) -> tuple[float, float, int, int]:
+    """Find proper swing pivot highs and lows.
+
+    A swing high is a bar whose high is higher than N bars on each side.
+    A swing low is a bar whose low is lower than N bars on each side.
+
+    Args:
+        price_bars: List of PriceBar objects
+        lookback: How many recent bars to search
+        pivot_window: Number of bars on each side for pivot confirmation
+
+    Returns:
+        Tuple of (swing_high, swing_low, high_index, low_index)
+        Indices are relative to the lookback window
+    """
+    recent_bars = price_bars[-lookback:]
+    swing_high = None
+    swing_low = None
+    high_index = -1
+    low_index = -1
+
+    # Search for swing pivots, leaving room for confirmation window
+    for i in range(pivot_window, len(recent_bars) - pivot_window):
+        bar = recent_bars[i]
+
+        # Check if this is a swing high
+        is_swing_high = True
+        for j in range(i - pivot_window, i + pivot_window + 1):
+            if j == i:
+                continue
+            if recent_bars[j].high >= bar.high:
+                is_swing_high = False
+                break
+
+        if is_swing_high and (swing_high is None or bar.high > swing_high):
+            swing_high = bar.high
+            high_index = i
+
+        # Check if this is a swing low
+        is_swing_low = True
+        for j in range(i - pivot_window, i + pivot_window + 1):
+            if j == i:
+                continue
+            if recent_bars[j].low <= bar.low:
+                is_swing_low = False
+                break
+
+        if is_swing_low and (swing_low is None or bar.low < swing_low):
+            swing_low = bar.low
+            low_index = i
+
+    # Fallback to simple min/max if no pivots found
+    if swing_high is None:
+        swing_high = max(bar.high for bar in recent_bars)
+        high_index = next(i for i, bar in enumerate(recent_bars) if bar.high == swing_high)
+        logger.debug("No swing high pivot found, using max high")
+
+    if swing_low is None:
+        swing_low = min(bar.low for bar in recent_bars)
+        low_index = next(i for i, bar in enumerate(recent_bars) if bar.low == swing_low)
+        logger.debug("No swing low pivot found, using min low")
+
+    return swing_high, swing_low, high_index, low_index
+
+
 def calculate_fibonacci_levels(
     price_bars: List[PriceBar],
     swing_lookback: int = 20,
+    trade_type: Optional[str] = None,
+    use_3point: bool = False,
 ) -> Indicator:
     """Calculate Fibonacci retracement and extension levels.
 
@@ -2120,9 +2191,19 @@ def calculate_fibonacci_levels(
     - 0.618 (61.8%): Golden ratio, strongest level
     - 0.786 (78.6%): Deep retracement, last chance
 
+    Extension levels (beyond swing high/low):
+    - 1.272: First extension target
+    - 1.618: Golden extension, common target
+    - 2.000: Double the range
+    - 2.618: Extreme extension target
+
     Args:
         price_bars: List of PriceBar objects (OHLCV data)
-        swing_lookback: Period to identify swing high and low
+        swing_lookback: Period to identify swing high and low (default: 20)
+        trade_type: Optional trade type to auto-select lookback period.
+                   Options: "day" (15 bars), "swing" (30 bars), "position" (50 bars).
+                   If provided, overrides swing_lookback parameter.
+        use_3point: Use 3-point extension method (A-B-C pattern)
 
     Returns:
         Indicator object with Fibonacci analysis and signal for scoring
@@ -2132,34 +2213,57 @@ def calculate_fibonacci_levels(
 
     Example:
         >>> bars = fetch_price_bars("AAPL", "1d", 100)
-        >>> fib = calculate_fibonacci_levels(bars)
+        >>> fib = calculate_fibonacci_levels(bars, trade_type="swing")
         >>> if fib.signal == "bullish" and fib.metadata['at_entry_level']:
         >>>     print(f"Entry at {fib.metadata['nearest_level']} level")
     """
-    logger.info(f"Calculating Fibonacci levels for {len(price_bars)} bars")
+    # Trade type to lookback period mapping
+    TRADE_TYPE_LOOKBACKS = {
+        "day": 15,
+        "swing": 30,
+        "position": 50,
+    }
+
+    # Use trade type lookback if provided, otherwise use swing_lookback parameter
+    if trade_type and trade_type in TRADE_TYPE_LOOKBACKS:
+        lookback_used = TRADE_TYPE_LOOKBACKS[trade_type]
+        logger.info(f"Using {trade_type} trade type with {lookback_used} bar lookback")
+    else:
+        lookback_used = swing_lookback
+        if trade_type and trade_type not in TRADE_TYPE_LOOKBACKS:
+            logger.warning(f"Unknown trade_type '{trade_type}', using default lookback {swing_lookback}")
+
+    logger.info(f"Calculating Fibonacci levels for {len(price_bars)} bars (3-point: {use_3point})")
 
     if not price_bars:
         raise ValueError("price_bars cannot be empty")
 
-    if len(price_bars) < swing_lookback:
-        raise ValueError(f"Need at least {swing_lookback} bars for Fibonacci calculation")
+    if len(price_bars) < lookback_used:
+        raise ValueError(f"Need at least {lookback_used} bars for Fibonacci calculation")
 
-    # Find swing high and low in recent period
-    recent_bars = price_bars[-swing_lookback:]
-    swing_high = max(bar.high for bar in recent_bars)
-    swing_low = min(bar.low for bar in recent_bars)
+    # Find proper swing pivots
+    swing_high, swing_low, high_idx, low_idx = _find_swing_pivots(
+        price_bars, lookback_used, pivot_window=5
+    )
+
+    logger.debug(
+        f"Swing pivots found: High={swing_high:.2f} at index {high_idx}, "
+        f"Low={swing_low:.2f} at index {low_idx}"
+    )
 
     current_price = price_bars[-1].close
+    price_range = swing_high - swing_low
 
-    # Determine trend direction (for retracement vs extension)
-    if current_price > (swing_high + swing_low) / 2:
+    # Determine trend direction based on swing sequence
+    # If swing high came after swing low, we're in uptrend
+    if high_idx > low_idx:
         trend = "uptrend"
-        # Retracement from swing high down to swing low
+        # Retracement: measure from swing high down to swing low
         retracement_base = swing_high
         retracement_target = swing_low
     else:
         trend = "downtrend"
-        # Retracement from swing low up to swing high
+        # Retracement: measure from swing low up to swing high
         retracement_base = swing_low
         retracement_target = swing_high
 
@@ -2176,15 +2280,79 @@ def calculate_fibonacci_levels(
     }
 
     # Calculate Fibonacci extension levels
-    extension_levels = {
-        "1.272": retracement_base + (diff * 0.272),
-        "1.618": retracement_base + (diff * 0.618),
-        "2.000": retracement_base + diff,
-        "2.618": retracement_base + (diff * 1.618),
-    }
+    # Extensions project BEYOND the swing high (uptrend) or swing low (downtrend)
+    if trend == "uptrend":
+        # Extensions project above swing high
+        extension_levels = {
+            "1.272": swing_high + (price_range * 0.272),
+            "1.618": swing_high + (price_range * 0.618),
+            "2.000": swing_high + price_range,
+            "2.618": swing_high + (price_range * 1.618),
+        }
+    else:
+        # Extensions project below swing low
+        extension_levels = {
+            "1.272": swing_low - (price_range * 0.272),
+            "1.618": swing_low - (price_range * 0.618),
+            "2.000": swing_low - price_range,
+            "2.618": swing_low - (price_range * 1.618),
+        }
+
+    # Optional: Calculate 3-point extensions (A-B-C pattern)
+    three_point_extensions = {}
+    if use_3point and len(price_bars) >= lookback_used * 2:
+        try:
+            # Find earlier swing for point A
+            earlier_lookback = lookback_used * 2
+            earlier_bars = price_bars[-earlier_lookback:-lookback_used]
+
+            if trend == "uptrend":
+                # Point A: Earlier swing low
+                point_a = min(bar.low for bar in earlier_bars)
+                # Point B: Current swing high
+                point_b = swing_high
+                # Point C: Current retracement (swing low)
+                point_c = swing_low
+                # Calculate extensions from C based on B-A range
+                ab_range = point_b - point_a
+                three_point_extensions = {
+                    "3pt_1.272": point_c + (ab_range * 1.272),
+                    "3pt_1.618": point_c + (ab_range * 1.618),
+                    "3pt_2.000": point_c + (ab_range * 2.000),
+                    "3pt_2.618": point_c + (ab_range * 2.618),
+                }
+                logger.debug(
+                    f"3-point extensions (uptrend): A={point_a:.2f}, B={point_b:.2f}, "
+                    f"C={point_c:.2f}, AB range={ab_range:.2f}"
+                )
+            else:
+                # Point A: Earlier swing high
+                point_a = max(bar.high for bar in earlier_bars)
+                # Point B: Current swing low
+                point_b = swing_low
+                # Point C: Current retracement (swing high)
+                point_c = swing_high
+                # Calculate extensions from C based on A-B range
+                ab_range = point_a - point_b
+                three_point_extensions = {
+                    "3pt_1.272": point_c - (ab_range * 1.272),
+                    "3pt_1.618": point_c - (ab_range * 1.618),
+                    "3pt_2.000": point_c - (ab_range * 2.000),
+                    "3pt_2.618": point_c - (ab_range * 2.618),
+                }
+                logger.debug(
+                    f"3-point extensions (downtrend): A={point_a:.2f}, B={point_b:.2f}, "
+                    f"C={point_c:.2f}, AB range={ab_range:.2f}"
+                )
+        except Exception as e:
+            logger.warning(f"Could not calculate 3-point extensions: {e}")
+
+    # Combine all levels for nearest level calculation
+    all_levels = {**retracement_levels, **extension_levels}
+    if three_point_extensions:
+        all_levels = {**all_levels, **three_point_extensions}
 
     # Find nearest Fibonacci level to current price
-    all_levels = {**retracement_levels, **extension_levels}
     nearest_level = min(all_levels.items(), key=lambda x: abs(x[1] - current_price))
 
     # Check if price is near a Fibonacci level (within 1%)
@@ -2212,25 +2380,35 @@ def calculate_fibonacci_levels(
 
     logger.info(
         f"Fibonacci: Swing High={swing_high:.2f}, Swing Low={swing_low:.2f}, "
-        f"Trend={trend}, Near Level={nearest_level[0]}, Signal={signal}"
+        f"Range={price_range:.2f}, Trend={trend}, Current={current_price:.2f}, "
+        f"Nearest Level={nearest_level[0]} @ {nearest_level[1]:.2f}, Signal={signal}"
     )
+
+    metadata = {
+        "swing_high": round(swing_high, 2),
+        "swing_low": round(swing_low, 2),
+        "range": round(price_range, 2),
+        "trend": trend,
+        "retracement": {k: round(v, 2) for k, v in retracement_levels.items()},
+        "extension": {k: round(v, 2) for k, v in extension_levels.items()},
+        "nearest_level": nearest_level[0],
+        "nearest_price": round(nearest_level[1], 2),
+        "near_fib_level": near_fib,
+        "at_entry_level": at_entry_level,
+        "current_price": round(current_price, 2),
+        "trade_type": trade_type,
+        "lookback_used": lookback_used,
+    }
+
+    # Add 3-point extensions if calculated
+    if three_point_extensions:
+        metadata["3point_extension"] = {k: round(v, 2) for k, v in three_point_extensions.items()}
 
     return Indicator(
         name="Fibonacci",
         value=round(current_price, 2),
         signal=signal,
-        metadata={
-            "swing_high": round(swing_high, 2),
-            "swing_low": round(swing_low, 2),
-            "trend": trend,
-            "retracement": {k: round(v, 2) for k, v in retracement_levels.items()},
-            "extension": {k: round(v, 2) for k, v in extension_levels.items()},
-            "nearest_level": nearest_level[0],
-            "nearest_price": round(nearest_level[1], 2),
-            "near_fib_level": near_fib,
-            "at_entry_level": at_entry_level,
-            "current_price": round(current_price, 2),
-        },
+        metadata=metadata,
     )
 
 

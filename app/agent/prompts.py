@@ -255,23 +255,50 @@ For every analysis, you MUST provide:
    - Upcoming events (earnings, Fed, etc.)
    - Technical weaknesses in the setup
 
+## Fibonacci Level Strategy for Precision Trading
+Fibonacci levels are institutional-grade tools - algorithms and professional traders watch these levels religiously, creating self-fulfilling prophecies.
+
+**ENTRIES - Look for entries at key retracement levels:**
+- 38.2%: Shallow retracement in strong trends (requires strong confirmation)
+- 50%: The psychological midpoint, most commonly used retracement
+- 61.8%: The "golden ratio", optimal risk/reward for swing trades
+- 78.6%: Deep retracement, higher risk but often marks major reversals
+
+**STOP LOSSES - Place stops beyond the next Fibonacci level with 5-10% buffer:**
+- If entering at 61.8%, stop goes below 78.6% or the swing low (whichever is further)
+- If entering at 50%, stop goes below 61.8%
+- If entering at 38.2%, stop goes below 50%
+- Never place stops exactly at Fibonacci levels - they get hunted by algos
+
+**TARGETS - Use Fibonacci extension levels for profit targets:**
+- Target 1: 1.272 extension (conservative, high probability)
+- Target 2: 1.618 extension (moderate, the golden extension)
+- Target 3: 2.618 extension (aggressive, trend extension plays)
+
+**VALIDATION - Always validate Fib levels against structural support/resistance:**
+- Fibonacci + volume node = highest probability zone
+- Fibonacci + prior swing high/low = strong confluence
+- Fibonacci + EMA convergence = institutional interest zone
+- Isolated Fibonacci levels without confluence = lower reliability
+
 ## Response Guidelines - Level Placement by Bias
 
 ### For BULLISH (Long) Plans:
-- Entry should be at support or on pullback, NEVER chasing extended moves
-- Stop loss MUST be BELOW entry (below support, swing low, or EMA)
-- Targets should be ABOVE entry (at resistance levels or Fib extensions)
+- Entry should be at support, Fibonacci retracement, or on pullback - NEVER chasing extended moves
+- Stop loss MUST be BELOW entry (below next Fib level, swing low, or support)
+- Targets should be ABOVE entry (at Fib extensions, resistance levels, or measured moves)
 
 ### For BEARISH (Short) Plans:
-- Entry should be at resistance or on a bounce into overhead supply
-- Stop loss MUST be ABOVE entry (above resistance, swing high, or EMA)
-- Targets should be BELOW entry (at support levels where you cover)
+- Entry should be at resistance, Fibonacci retracement, or on a bounce into overhead supply
+- Stop loss MUST be ABOVE entry (above next Fib level, swing high, or resistance)
+- Targets should be BELOW entry (at Fib extensions or support levels where you cover)
 - Risk/reward calculation: reward = |entry - target|, risk = |stop - entry|
 
 ### For Both:
 - Risk/reward should be at least 2:1 for swing trades, 1.5:1 for day trades
 - Position size should account for volatility (higher ATR = smaller size)
 - If the setup is poor, recommend NO TRADE and explain why
+- When Fibonacci levels are available, USE THEM for precise level placement
 """
 
 
@@ -285,6 +312,9 @@ SMART_PLAN_GENERATION_PROMPT = """Analyze {symbol} and create a comprehensive tr
 
 ## Key Levels
 {levels_data}
+
+## Fibonacci Levels
+{fibonacci_data}
 
 ## Volume Analysis
 {volume_data}
@@ -328,12 +358,15 @@ You MUST respond with valid JSON in this exact format:
     "confidence": 0-100,
     "entry_zone_low": price_or_null,
     "entry_zone_high": price_or_null,
+    "fib_entry_level": "38.2%" | "50%" | "61.8%" | "78.6%" | null (if entry aligns with a Fib retracement),
     "stop_loss": price_or_null,
-    "stop_reasoning": "Why this stop level",
+    "stop_reasoning": "Why this stop level (mention Fibonacci level if applicable)",
+    "fib_stop_level": "50%" | "61.8%" | "78.6%" | "100%" | null (Fib level below/above stop),
     "targets": [
-        {{"price": target_price, "reasoning": "Why this target"}},
-        {{"price": target_price, "reasoning": "Why this target"}}
+        {{"price": target_price, "reasoning": "Why this target (mention if it's a Fib extension)"}},
+        {{"price": target_price, "reasoning": "Why this target (mention if it's a Fib extension)"}}
     ],
+    "fib_target_levels": ["1.272", "1.618", "2.618"] or [] (Fib extensions used for targets),
     "risk_reward": ratio_number,
     "position_size_pct": 1-5,
     "key_supports": [price, price, price],
