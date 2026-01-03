@@ -74,6 +74,50 @@ class TradePlanOrchestrator:
             self._provider = await get_user_provider(uid)
         return self._provider
 
+    def _calculate_risk_reward(
+        self,
+        ai_plan: Dict[str, Any],
+        entry: float,
+        stop: float,
+        targets: List,
+        bias: str,
+    ) -> float:
+        """Calculate risk/reward ratio from AI response or fallback to calculation.
+
+        Args:
+            ai_plan: AI response dict (may contain risk_reward)
+            entry: Entry price
+            stop: Stop loss price
+            targets: List of target prices
+            bias: Trade bias (bullish/bearish)
+
+        Returns:
+            Risk/reward ratio
+        """
+        # Use AI-provided value if available
+        ai_rr = ai_plan.get("risk_reward")
+        if ai_rr:
+            try:
+                return float(ai_rr)
+            except (ValueError, TypeError):
+                pass
+
+        # Calculate from entry/stop/targets
+        try:
+            if entry and stop and targets:
+                risk = abs(entry - stop)
+                if risk > 0:
+                    # For bullish: target is above entry
+                    # For bearish: target is below entry
+                    first_target = targets[0].price if hasattr(targets[0], 'price') else targets[0]
+                    reward = abs(first_target - entry)
+                    return round(reward / risk, 2)
+        except (TypeError, AttributeError, IndexError):
+            pass
+
+        # Default fallback
+        return 2.0
+
     async def gather_common_context(
         self,
         symbol: str,
@@ -243,6 +287,7 @@ class TradePlanOrchestrator:
                 alternatives=alternative_dicts,
                 selected_style=final_response.selected_style,
                 selection_reasoning=final_response.selection_reasoning,
+                all_citations=final_response.all_citations,
             )
 
             yield StreamEvent.orchestrator_step(
@@ -379,13 +424,14 @@ class TradePlanOrchestrator:
                 self.subagent_progress[agent_name].current_step = "Analyzing chart with Vision"
                 self.subagent_progress[agent_name].status = SubAgentStatus.ANALYZING_CHART
 
-                # Step 3: Vision analysis
+                # Step 3: Vision analysis (uses user's selected provider - Claude or Grok)
                 vision_result = {}
                 if chart_result.get("chart_image_base64"):
                     vision_result = await sdk_tools.analyze_chart_vision(
                         symbol,
                         chart_result["chart_image_base64"],
-                        trade_style
+                        trade_style,
+                        provider,  # Pass user's selected provider for vision analysis
                     )
 
                 self.subagent_progress[agent_name].current_step = "Generating trade plan"
@@ -395,14 +441,16 @@ class TradePlanOrchestrator:
                 current_price = bars.get("current_price", context.current_price)
                 atr_pct = bars.get("atr_pct", 2.0)
 
-                # Determine suitability based on ATR
+                # Determine suitability based on ATR (aligned with prompt thresholds)
                 suitable = False
-                if trade_style == "day" and atr_pct > 2.5:
+                if trade_style == "day" and atr_pct > 3.0:  # Day trades need high volatility (>3%)
                     suitable = True
-                elif trade_style == "swing" and 1.0 <= atr_pct <= 3.5:
+                elif trade_style == "swing" and 1.0 <= atr_pct <= 3.0:  # Swing trades need moderate volatility (1-3%)
                     suitable = True
-                elif trade_style == "position" and atr_pct < 2.0:
-                    suitable = True
+                elif trade_style == "position" and atr_pct < 1.5:  # Position trades need low volatility (<1.5%)
+                    # Position trades also require EMA alignment for trending conditions
+                    ema_trend = indicators.get("ema_trend", "unknown")
+                    suitable = ema_trend in ["bullish_aligned", "bearish_aligned"]
 
                 # Build confidence from indicators
                 base_confidence = 50
@@ -416,8 +464,9 @@ class TradePlanOrchestrator:
                 if 40 <= rsi <= 60:
                     base_confidence += 5
 
-                # Add vision modifier
-                vision_modifier = vision_result.get("confidence_modifier", 0)
+                # Add vision modifier (range matches vision prompt: -20 to +20)
+                raw_vision_modifier = vision_result.get("confidence_modifier", 0)
+                vision_modifier = max(-20, min(20, raw_vision_modifier))
                 confidence = min(100, max(0, base_confidence + vision_modifier))
 
                 # Determine bias
@@ -432,8 +481,9 @@ class TradePlanOrchestrator:
                 supports = [s["price"] for s in sr_levels.get("support", [])[:3]]
                 resistances = [r["price"] for r in sr_levels.get("resistance", [])[:3]]
 
-                # Calculate entry/stop/targets
+                # Calculate entry/stop/targets based on bias
                 if bias == "bullish" and supports:
+                    # Bullish setup: entry near support, stop below, targets above
                     entry_low = supports[0] if supports else current_price * 0.98
                     entry_high = current_price * 0.995
                     stop_loss = entry_low * 0.97
@@ -441,7 +491,17 @@ class TradePlanOrchestrator:
                         PriceTargetWithReasoning(price=round(current_price * 1.03, 2), reasoning="First resistance"),
                         PriceTargetWithReasoning(price=round(current_price * 1.06, 2), reasoning="Second resistance"),
                     ]
+                elif bias == "bearish" and resistances:
+                    # Bearish/short setup: entry near resistance, stop above, targets below
+                    entry_low = current_price * 1.005
+                    entry_high = resistances[0] if resistances else current_price * 1.02
+                    stop_loss = entry_high * 1.03  # Stop above resistance for shorts
+                    targets = [
+                        PriceTargetWithReasoning(price=round(current_price * 0.97, 2), reasoning="First support target"),
+                        PriceTargetWithReasoning(price=round(current_price * 0.94, 2), reasoning="Second support target"),
+                    ]
                 else:
+                    # Neutral or missing levels - use conservative defaults
                     entry_low = current_price * 0.98
                     entry_high = current_price * 0.995
                     stop_loss = current_price * 0.95
@@ -575,11 +635,11 @@ Based on this data, provide your {trade_style} trade analysis.
                 )
 
                 if trade_style == "day":
-                    system_prompt = build_day_trade_prompt(symbol, context.to_prompt_context())
+                    system_prompt = build_day_trade_prompt(symbol, context.to_prompt_context(), news_context)
                 elif trade_style == "swing":
-                    system_prompt = build_swing_trade_prompt(symbol, context.to_prompt_context())
+                    system_prompt = build_swing_trade_prompt(symbol, context.to_prompt_context(), news_context)
                 else:
-                    system_prompt = build_position_trade_prompt(symbol, context.to_prompt_context())
+                    system_prompt = build_position_trade_prompt(symbol, context.to_prompt_context(), news_context)
 
                 # Build the user message for analysis
                 user_message = f"""Analyze {symbol} for a {trade_style} trade setup.
@@ -623,6 +683,20 @@ Return ONLY the JSON object, no other text."""
                     max_tokens=2000,
                     search_parameters=search_params,
                 )
+
+                # Capture X/social citations from Grok response
+                x_citations = []
+                logger.debug(f"[{agent_name}] Raw citations from response: {plan_response.citations}")
+                logger.debug(f"[{agent_name}] Raw response keys: {list(plan_response.raw_response.keys()) if plan_response.raw_response else 'None'}")
+                if plan_response.citations:
+                    for citation in plan_response.citations:
+                        if isinstance(citation, str):
+                            x_citations.append(citation)
+                        elif isinstance(citation, dict) and "url" in citation:
+                            x_citations.append(citation["url"])
+                    logger.info(f"[{agent_name}] Captured {len(x_citations)} X/social citations")
+                else:
+                    logger.warning(f"[{agent_name}] No citations returned from Grok X search")
 
                 # Parse the AI response
                 ai_text = plan_response.content.strip()
@@ -700,7 +774,7 @@ Return ONLY the JSON object, no other text."""
                     stop_loss=round(float(final_stop), 2) if final_stop else round(current_price * 0.95, 2),
                     stop_reasoning=ai_plan.get("stop_reasoning") or "Below recent support",
                     targets=targets,
-                    risk_reward=float(ai_plan.get("risk_reward") or 2.0),
+                    risk_reward=self._calculate_risk_reward(ai_plan, final_entry_high, final_stop, targets, bias),
                     position_size_pct=2.0,
                     holding_period=final_holding,
                     key_supports=supports or [],
@@ -713,6 +787,7 @@ Return ONLY the JSON object, no other text."""
                     risk_warnings=risk_warnings or [],
                     atr_percent=atr_pct,
                     technical_summary=f"RSI: {rsi:.1f}, EMA trend: {ema_trend}",
+                    x_citations=x_citations,
                 )
 
             except Exception as e:
@@ -1064,6 +1139,14 @@ Return ONLY the JSON object, no other text."""
 {position_context}
 {news_context}
 
+## REAL-TIME SENTIMENT (You have X/Twitter search - USE IT!)
+You have access to real-time X (Twitter) search. **Search X for {symbol} right now** to find:
+- Current trader sentiment and social buzz
+- Breaking news or rumors being discussed
+- Key influencer opinions
+
+**Incorporate X sentiment into your synthesis**, especially in the thesis and news_impact fields.
+
 ## ALL ANALYSES:
 {''.join(analyses_summary)}
 
@@ -1071,18 +1154,18 @@ Return ONLY the JSON object, no other text."""
 
 Create a comprehensive trading plan synthesis. Respond with JSON:
 {{
-    "thesis": "A detailed 3-4 sentence thesis explaining the selected trade setup, why this timeframe was chosen over others, and what makes this setup compelling. Be SPECIFIC about the technical pattern, key price levels, and any news/catalysts. If there's an existing position, explicitly address whether to add, hold, trim, or exit.",
+    "thesis": "A detailed 3-4 sentence thesis explaining the selected trade setup, why this timeframe was chosen over others, and what makes this setup compelling. Be SPECIFIC about the technical pattern, key price levels, and any news/catalysts. INCLUDE any relevant X/social sentiment you found. If there's an existing position, explicitly address whether to add, hold, trim, or exit.",
     "selection_reasoning": "2-3 sentences explaining why {best_report.trade_style} was selected over the alternatives, comparing confidence levels and setup quality.",
     "targets": [
         {{"price": <number>, "reasoning": "Why this is a valid target level based on resistance/technicals"}},
         {{"price": <number>, "reasoning": "Second target reasoning"}},
         {{"price": <number>, "reasoning": "Third target reasoning (if applicable)"}}
     ],
-    "what_to_watch": ["5-7 specific, actionable items to monitor - include exact price levels like 'Break above $XXX triggers acceleration', volume thresholds, time-based triggers, and any relevant news catalysts"],
-    "risk_warnings": ["3-5 specific risks - technical invalidation levels, market risks, news/earnings risks, position-specific warnings"],
+    "what_to_watch": ["5-7 specific, actionable items to monitor - include exact price levels like 'Break above $XXX triggers acceleration', volume thresholds, time-based triggers, and any relevant news catalysts or social sentiment shifts"],
+    "risk_warnings": ["3-5 specific risks - technical invalidation levels, market risks, news/earnings risks, social sentiment risks, position-specific warnings"],
     "entry_reasoning": "Why this specific entry zone makes sense based on support levels and the technical setup",
     "stop_reasoning": "Why this stop level is appropriate - reference specific support/ATR/pattern invalidation",
-    "news_impact": "Brief assessment of how recent news/sentiment affects this trade thesis (1-2 sentences)"
+    "news_impact": "Assessment of how recent news AND real-time X sentiment affects this trade thesis (2-3 sentences). Reference specific sentiment trends you found."
 }}
 
 Return ONLY valid JSON."""
@@ -1187,6 +1270,20 @@ Return ONLY valid JSON."""
             logger.warning(f"[Orchestrator] Synthesis call failed, using agent output: {e}")
             # Continue with the best_report as-is
 
+        # Aggregate all X/social citations from all sub-agent reports
+        all_citations = set()
+        if best_report.x_citations:
+            all_citations.update(best_report.x_citations)
+        for alt in alternatives:
+            if alt.x_citations:
+                all_citations.update(alt.x_citations)
+        # Prioritize actual X posts (x.com URLs)
+        sorted_citations = sorted(
+            all_citations,
+            key=lambda url: (0 if "x.com" in url else 1, url)
+        )
+        logger.info(f"[Orchestrator] Aggregated {len(sorted_citations)} unique citations")
+
         return FinalPlanResponse(
             selected_plan=best_report,
             selected_style=best_report.trade_style,
@@ -1202,4 +1299,5 @@ Return ONLY valid JSON."""
             day_trade_analyzed="day-trade-analyzer" in self.subagent_reports,
             swing_trade_analyzed="swing-trade-analyzer" in self.subagent_reports,
             position_trade_analyzed="position-trade-analyzer" in self.subagent_reports,
+            all_citations=sorted_citations,
         )

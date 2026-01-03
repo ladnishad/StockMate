@@ -150,6 +150,10 @@ class StreamEvent(BaseModel):
         default=None,
         description="For final_result: why this plan was selected."
     )
+    all_citations: Optional[List[str]] = Field(
+        default=None,
+        description="For final_result: X/social citations used across all analyses."
+    )
 
     # Error
     error_message: Optional[str] = Field(
@@ -213,6 +217,7 @@ class StreamEvent(BaseModel):
         selected_style: str,
         selection_reasoning: str,
         analysis_id: str = None,
+        all_citations: List[str] = None,
         timestamp: float = None,
     ) -> "StreamEvent":
         """Create a final result event."""
@@ -225,6 +230,7 @@ class StreamEvent(BaseModel):
             alternatives=alternatives,
             selected_style=selected_style,
             selection_reasoning=selection_reasoning,
+            all_citations=all_citations or [],
         )
 
     @classmethod

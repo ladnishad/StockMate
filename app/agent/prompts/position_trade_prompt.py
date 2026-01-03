@@ -19,7 +19,6 @@ When gathering data, use these EXACT parameters for position trading:
 
 ### 1. Price Bars
 Call: get_price_bars(symbol, "1w", 52)  # 52 weeks of weekly bars
-Also call: get_price_bars(symbol, "1d", 200)  # 200 days for more detail
 - This gives you multi-month structure
 - Look for: Major trend direction, weekly patterns, institutional accumulation
 
@@ -53,6 +52,15 @@ Call: analyze_chart_vision(symbol, chart_image, "position")
 
 ## NEWS & MARKET CONTEXT
 {news_context}
+
+## REAL-TIME SENTIMENT (You have X/Twitter search - USE IT!)
+You have access to real-time X (Twitter) search. **Actively search X for this stock** to find:
+- Current institutional and retail sentiment discussions
+- Breaking news, macro trends, or sector rotation being discussed
+- Long-term thesis discussions and fundamental debates
+- Key analyst/influencer opinions on the longer-term outlook
+
+**You MUST incorporate real-time X sentiment into your analysis.** Mention specific sentiment trends you find (e.g., "X discussions show growing institutional interest" or "Long-term investors on X are debating the growth trajectory").
 
 Consider macro news, sector trends, and company fundamentals for position trades - these long-term holds are affected by earnings cycles, industry trends, and macro economic factors.
 

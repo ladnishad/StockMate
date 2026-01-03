@@ -53,6 +53,15 @@ Call: analyze_chart_vision(symbol, chart_image, "day")
 ## NEWS & MARKET CONTEXT
 {news_context}
 
+## REAL-TIME SENTIMENT (You have X/Twitter search - USE IT!)
+You have access to real-time X (Twitter) search. **Actively search X for this stock** to find:
+- Current trader sentiment and positioning discussions
+- Breaking news, rumors, or catalysts being discussed
+- Social media buzz and unusual activity
+- Key trader/influencer opinions on the setup
+
+**You MUST incorporate real-time X sentiment into your analysis.** Mention specific sentiment trends you find (e.g., "X sentiment is bullish with traders discussing the breakout" or "Social chatter is cautious ahead of earnings").
+
 Consider news/catalysts when assessing risk - upcoming earnings, FDA decisions, or high-impact news can make day trading more volatile and unpredictable.
 
 If user has a LONG position:
