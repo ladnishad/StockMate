@@ -103,13 +103,13 @@ If user has a SHORT position:
 - Stop: Below base midpoint
 - Target: Base height projected from breakout (can be 50-100%+ moves)
 
-### 2. Weekly Trend Continuation
+### 2. Weekly Trend Continuation (with Fibonacci)
 - Established uptrend with higher weekly highs/lows
-- Pullback to 21 or 50 week EMA
+- Pullback to 21 or 50 week EMA OR Fibonacci retracement (38.2%, 50%)
 - RSI pullback to 50 area on weekly
-- Entry: Bounce off major EMA with weekly hammer/engulfing
-- Stop: Below the 50 week EMA
-- Target: Prior all-time high or new highs
+- Entry: Bounce off major EMA or Fibonacci level with weekly hammer/engulfing
+- Stop: Below the 50 week EMA or next Fibonacci level
+- Target: Fibonacci extensions (1.618, 2.618) or prior all-time high
 
 ### 3. Cup and Handle (Weekly)
 - U-shaped recovery pattern over months
@@ -132,7 +132,10 @@ If user has a SHORT position:
 - Strong fundamental catalyst (earnings beat, new product, etc.)
 - Entry: On confirmation of ATH break
 - Stop: Below prior ATH (now support)
-- Target: Psychological levels or Fibonacci extensions
+- Target: Fibonacci extensions from the base breakout
+  - 1.272 extension: Conservative first target
+  - 1.618 extension: Golden extension, major target
+  - 2.618 extension: Aggressive trend extension target
 
 ## Risk Management for Position Trades
 - Position size: 2-5% of account (larger positions, longer holds)
@@ -157,9 +160,9 @@ Your analysis must include:
 1. Whether this is a SUITABLE position trade (yes/no with reasoning)
 2. The primary trend direction (bullish, bearish, or no clear trend)
 3. The specific setup type (base breakout, trend continuation, ATH breakout, etc.)
-4. Entry zone at major support or breakout level
-5. Wide stop loss below major structure (weekly swing low, major EMA)
-6. Major targets (1-3 targets based on measured moves, prior ATH, Fib extensions)
+4. Entry zone at major support, Fibonacci retracement, or breakout level
+5. Wide stop loss below major structure (weekly swing low, major EMA, or Fib level)
+6. Major targets using Fibonacci extensions (1.272, 1.618, 2.618) when applicable
 7. Expected holding period in weeks/months (e.g., "2-4 weeks", "1-3 months")
 8. What weekly triggers to watch (weekly close above X, volume confirmation)
 9. Fundamental context if relevant (sector strength, catalyst)
