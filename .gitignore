@@ -50,3 +50,6 @@ htmlcov/
 
 # Documentation (local only)
 *.md
+
+# Xcode user state
+*.xcuserstate
