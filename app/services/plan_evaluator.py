@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 PERIODIC_EVAL_MINUTES = 15  # Per-plan evaluation interval in minutes
 LOOP_CHECK_INTERVAL = 60  # How often to check for plans due (seconds)
 KEY_LEVEL_THRESHOLD_PCT = 0.02  # 2% from key level triggers evaluation
+DELAY_BETWEEN_EVALUATIONS = 3  # Seconds to wait between evaluations (rate limit protection)
 
 
 @dataclass
@@ -92,6 +93,9 @@ class PlanEvaluator:
                     all_active_plans = await self._plan_store.get_all_active_plans()
                     for plan in all_active_plans:
                         await self._evaluate_plan(plan, plan.user_id, "market_close")
+                        # Rate limit protection: wait between evaluations
+                        if DELAY_BETWEEN_EVALUATIONS > 0:
+                            await asyncio.sleep(DELAY_BETWEEN_EVALUATIONS)
                     self._was_market_open = False
 
                 # If market is closed, wait before checking again
@@ -116,6 +120,9 @@ class PlanEvaluator:
                     self._monitored_symbols.add(plan.symbol)
                     await self._evaluate_plan(plan, plan.user_id, "periodic")
                     evaluated_plan_ids.add(plan.id)
+                    # Rate limit protection: wait between evaluations to avoid API throttling
+                    if DELAY_BETWEEN_EVALUATIONS > 0:
+                        await asyncio.sleep(DELAY_BETWEEN_EVALUATIONS)
 
                 # Also check for key level proximity on all active plans
                 # (only for plans we didn't just evaluate)
@@ -128,6 +135,9 @@ class PlanEvaluator:
 
                     if await self._is_near_key_level(plan):
                         await self._evaluate_plan(plan, plan.user_id, "key_level")
+                        # Rate limit protection: wait between evaluations
+                        if DELAY_BETWEEN_EVALUATIONS > 0:
+                            await asyncio.sleep(DELAY_BETWEEN_EVALUATIONS)
 
                 # Sleep before next check
                 await asyncio.sleep(LOOP_CHECK_INTERVAL)
@@ -223,6 +233,20 @@ class PlanEvaluator:
 
         except Exception as e:
             logger.error(f"Error evaluating plan for {plan.symbol}: {e}")
+            # IMPORTANT: Update last_evaluation even on failure to prevent infinite retry loops.
+            # Without this, failed plans remain "due" and get re-evaluated every loop iteration,
+            # causing a cascade of failures (especially with rate limits).
+            try:
+                await self._plan_store.update_evaluation(
+                    user_id,
+                    plan.symbol,
+                    f"Evaluation failed: {str(e)[:200]}",
+                    None,  # Don't change status
+                    None   # No adjustments
+                )
+                logger.info(f"Updated last_evaluation for {plan.symbol} after failure (prevents retry loop)")
+            except Exception as update_error:
+                logger.error(f"Failed to update last_evaluation for {plan.symbol}: {update_error}")
             return None
 
     async def evaluate_now(self, symbol: str, user_id: str) -> Optional[EvaluationResult]:
