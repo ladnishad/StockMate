@@ -30,6 +30,22 @@ class OrchestratorStepType(str, Enum):
     WAITING_FOR_SUBAGENTS = "waiting_for_subagents"
     SELECTING_BEST = "selecting_best"
     COMPLETE = "complete"
+    # New agentic mode steps
+    AGENTIC_ANALYSIS = "agentic_analysis"
+
+
+class StreamEventType(str, Enum):
+    """Types of streaming events for iOS consumption."""
+    # Legacy multi-agent events
+    ORCHESTRATOR_STEP = "orchestrator_step"
+    SUBAGENT_PROGRESS = "subagent_progress"
+    SUBAGENT_COMPLETE = "subagent_complete"
+    FINAL_RESULT = "final_result"
+    ERROR = "error"
+    # New agentic mode events
+    AGENT_THINKING = "agent_thinking"
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT = "tool_result"
 
 
 class SubAgentProgress(BaseModel):
@@ -161,6 +177,36 @@ class StreamEvent(BaseModel):
         description="For error events: the error message."
     )
 
+    # Agentic mode fields
+    thinking: Optional[str] = Field(
+        default=None,
+        description="For agent_thinking: AI's reasoning/thinking text."
+    )
+    tool_name: Optional[str] = Field(
+        default=None,
+        description="For tool_call/tool_result: name of the tool."
+    )
+    tool_arguments: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="For tool_call: arguments passed to the tool."
+    )
+    tool_result: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="For tool_result: result returned by the tool."
+    )
+    iteration: Optional[int] = Field(
+        default=None,
+        description="For agentic events: which iteration this occurred in."
+    )
+    data: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Generic data field for flexible event payloads."
+    )
+    agentic_plan: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="For agentic final_result: the full plan with day/swing/position_trade_plan structure."
+    )
+
     @classmethod
     def orchestrator_step(
         cls,
@@ -241,6 +287,58 @@ class StreamEvent(BaseModel):
             type="error",
             timestamp=timestamp or time.time(),
             error_message=message,
+        )
+
+    @classmethod
+    def agent_thinking(
+        cls,
+        thinking: str,
+        iteration: int = None,
+        timestamp: float = None,
+    ) -> "StreamEvent":
+        """Create an agent thinking event (AI's reasoning)."""
+        import time
+        return cls(
+            type=StreamEventType.AGENT_THINKING.value,
+            timestamp=timestamp or time.time(),
+            thinking=thinking,
+            iteration=iteration,
+        )
+
+    @classmethod
+    def tool_call(
+        cls,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        iteration: int = None,
+        timestamp: float = None,
+    ) -> "StreamEvent":
+        """Create a tool call event."""
+        import time
+        return cls(
+            type=StreamEventType.TOOL_CALL.value,
+            timestamp=timestamp or time.time(),
+            tool_name=tool_name,
+            tool_arguments=arguments,
+            iteration=iteration,
+        )
+
+    @classmethod
+    def tool_result_event(
+        cls,
+        tool_name: str,
+        result: Dict[str, Any],
+        iteration: int = None,
+        timestamp: float = None,
+    ) -> "StreamEvent":
+        """Create a tool result event."""
+        import time
+        return cls(
+            type=StreamEventType.TOOL_RESULT.value,
+            timestamp=timestamp or time.time(),
+            tool_name=tool_name,
+            tool_result=result,
+            iteration=iteration,
         )
 
     def to_sse(self) -> str:

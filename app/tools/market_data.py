@@ -21,7 +21,8 @@ from alpaca.trading.client import TradingClient
 from alpaca.common.exceptions import APIError
 
 from app.config import get_settings
-from app.models.data import PriceBar, Fundamentals, Sentiment
+from app.models.data import PriceBar, Fundamentals, Sentiment, NewsArticle, NewsContext
+from app.tools.finnhub_client import fetch_company_news as finnhub_fetch_news
 
 logger = logging.getLogger(__name__)
 
@@ -158,68 +159,162 @@ def fetch_price_bars(
         raise
 
 
-def fetch_fundamentals(symbol: str) -> Fundamentals:
-    """Fetch fundamental data for a stock symbol.
+async def fetch_fundamentals(symbol: str) -> Fundamentals:
+    """Fetch comprehensive fundamental data from Finnhub API.
 
-    This tool retrieves fundamental financial metrics. Since Alpaca's free tier
-    has limited fundamental data, this function provides a best-effort approach
-    using available data and sensible defaults.
+    This tool retrieves fundamental financial metrics including:
+    - Valuation (P/E, P/B, P/S, PEG)
+    - Growth (EPS growth, revenue growth)
+    - Profitability (margins, ROE, ROA)
+    - Financial health (debt ratios, liquidity)
+    - Earnings calendar (upcoming earnings risk!)
+    - Earnings history (beat rate, surprises)
 
     Args:
         symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
 
     Returns:
-        Fundamentals object containing financial metrics
-
-    Raises:
-        ValueError: If symbol is invalid
-        Exception: If API request fails
+        Fundamentals object with comprehensive financial data
 
     Example:
-        >>> fundamentals = fetch_fundamentals("AAPL")
-        >>> print(f"Market Cap: ${fundamentals.market_cap:,.0f}")
-        >>> print(f"P/E Ratio: {fundamentals.pe_ratio}")
+        >>> fundamentals = await fetch_fundamentals("AAPL")
+        >>> print(f"P/E: {fundamentals.pe_ratio}, Valuation: {fundamentals.get_valuation_assessment()}")
+        >>> if fundamentals.has_earnings_risk():
+        ...     print(f"WARNING: Earnings in {fundamentals.next_earnings.days_until} days!")
     """
-    logger.info(f"Fetching fundamentals for {symbol}")
+    import asyncio
+    from app.tools.finnhub_client import (
+        fetch_basic_financials,
+        fetch_earnings_calendar,
+        fetch_earnings_history,
+    )
+    from app.models.data import EarningsEvent, EarningsSurprise
+
+    logger.info(f"Fetching Finnhub fundamentals for {symbol}")
 
     try:
-        # For this implementation, we'll use Alpaca's asset info
-        # and derive some metrics from recent price action
-        client = _get_alpaca_client()
-        trading_client = _get_trading_client()
+        # Fetch all Finnhub data in parallel
+        basic_task = fetch_basic_financials(symbol)
+        calendar_task = fetch_earnings_calendar(symbol)
+        history_task = fetch_earnings_history(symbol)
 
-        # Fetch recent daily bars to calculate 52-week high/low
-        price_bars = fetch_price_bars(symbol, timeframe="1d", days_back=365)
-
-        if not price_bars:
-            raise ValueError(f"No price data available for {symbol}")
-
-        # Calculate 52-week high and low
-        highs = [bar.high for bar in price_bars]
-        lows = [bar.low for bar in price_bars]
-
-        fifty_two_week_high = max(highs) if highs else None
-        fifty_two_week_low = min(lows) if lows else None
-
-        # Note: Full fundamental data would require a dedicated financial data API
-        # For production, integrate with services like Financial Modeling Prep,
-        # Alpha Vantage, or IEX Cloud
-        fundamentals = Fundamentals(
-            market_cap=None,  # Would need external API
-            pe_ratio=None,    # Would need external API
-            eps=None,         # Would need external API
-            dividend_yield=None,  # Would need external API
-            beta=None,        # Would need external API
-            fifty_two_week_high=fifty_two_week_high,
-            fifty_two_week_low=fifty_two_week_low,
+        basic, calendar, history = await asyncio.gather(
+            basic_task, calendar_task, history_task
         )
 
-        logger.info(f"Successfully fetched fundamentals for {symbol}")
+        # Also get 52-week high/low from price bars as backup
+        fallback_52w_high = None
+        fallback_52w_low = None
+        range_position = None
+        try:
+            price_bars = fetch_price_bars(symbol, timeframe="1d", days_back=365)
+            if price_bars:
+                highs = [bar.high for bar in price_bars]
+                lows = [bar.low for bar in price_bars]
+                current_price = price_bars[-1].close
+
+                fallback_52w_high = max(highs) if highs else None
+                fallback_52w_low = min(lows) if lows else None
+
+                # Calculate position in 52w range
+                if fallback_52w_high and fallback_52w_low and current_price:
+                    range_size = fallback_52w_high - fallback_52w_low
+                    if range_size > 0:
+                        range_position = (
+                            (current_price - fallback_52w_low) / range_size
+                        ) * 100
+        except Exception as price_err:
+            logger.warning(f"Could not fetch price data for 52w range: {price_err}")
+
+        # Build EarningsEvent if available
+        next_earnings = None
+        if calendar.get("next_earnings"):
+            ne = calendar["next_earnings"]
+            next_earnings = EarningsEvent(
+                date=ne.get("date"),
+                days_until=ne.get("days_until"),
+                eps_estimate=ne.get("eps_estimate"),
+                revenue_estimate=ne.get("revenue_estimate"),
+                hour=ne.get("hour"),
+            )
+
+        # Build last earnings surprise if available
+        last_earnings = None
+        if history.get("last_earnings"):
+            le = history["last_earnings"]
+            last_earnings = EarningsSurprise(
+                period=le.get("period", "unknown"),
+                actual=le.get("actual"),
+                estimate=le.get("estimate"),
+                surprise_percent=le.get("surprise_percent"),
+            )
+
+        # Build Fundamentals object
+        fundamentals = Fundamentals(
+            # Valuation
+            market_cap=(
+                basic.get("market_cap") * 1_000_000
+                if basic.get("market_cap")
+                else None
+            ),
+            pe_ratio=basic.get("pe_ratio"),
+            pe_forward=basic.get("pe_forward"),
+            pb_ratio=basic.get("pb_ratio"),
+            ps_ratio=basic.get("ps_ratio"),
+            peg_ratio=basic.get("peg_ratio"),
+            # Per-share
+            eps=basic.get("eps"),
+            eps_growth_qoq=basic.get("eps_growth_qoq"),
+            eps_growth_yoy=basic.get("eps_growth_yoy"),
+            revenue_per_share=basic.get("revenue_per_share"),
+            book_value_per_share=basic.get("book_value_per_share"),
+            # Growth
+            revenue_growth_qoq=basic.get("revenue_growth_qoq"),
+            revenue_growth_yoy=basic.get("revenue_growth_yoy"),
+            revenue_growth_3y=basic.get("revenue_growth_3y"),
+            # Profitability
+            gross_margin=basic.get("gross_margin"),
+            operating_margin=basic.get("operating_margin"),
+            net_margin=basic.get("net_margin"),
+            roe=basic.get("roe"),
+            roa=basic.get("roa"),
+            roic=basic.get("roic"),
+            # Health
+            debt_to_equity=basic.get("debt_to_equity"),
+            current_ratio=basic.get("current_ratio"),
+            quick_ratio=basic.get("quick_ratio"),
+            interest_coverage=basic.get("interest_coverage"),
+            # Dividends
+            dividend_yield=basic.get("dividend_yield"),
+            payout_ratio=basic.get("payout_ratio"),
+            # Risk
+            beta=basic.get("beta"),
+            fifty_two_week_high=basic.get("52_week_high") or fallback_52w_high,
+            fifty_two_week_low=basic.get("52_week_low") or fallback_52w_low,
+            fifty_two_week_range_position=range_position,
+            # Earnings
+            next_earnings=next_earnings,
+            last_earnings=last_earnings,
+            earnings_beat_rate=history.get("earnings_beat_rate"),
+            avg_earnings_surprise=history.get("avg_earnings_surprise"),
+            # Meta
+            data_timestamp=datetime.utcnow().isoformat(),
+            data_source="finnhub",
+        )
+
+        logger.info(
+            f"Successfully fetched fundamentals for {symbol}: "
+            f"P/E={fundamentals.pe_ratio}, Health={fundamentals.get_financial_health_score()}"
+        )
         return fundamentals
 
     except Exception as e:
-        logger.error(f"Error fetching fundamentals for {symbol}: {str(e)}")
-        raise
+        logger.error(f"Error fetching fundamentals for {symbol}: {e}")
+        # Return empty fundamentals on error
+        return Fundamentals(
+            data_source="error",
+            data_timestamp=datetime.utcnow().isoformat(),
+        )
 
 
 def fetch_sentiment(symbol: str) -> Sentiment:
@@ -304,242 +399,175 @@ def fetch_sentiment(symbol: str) -> Sentiment:
         raise
 
 
-def fetch_news_sentiment(
+async def fetch_news_sentiment(
     symbol: str,
     days_back: int = 7,
-    limit: int = 50,
-) -> dict:
-    """Fetch real news sentiment from Alpaca News API.
+    limit: int = 20,
+) -> NewsContext:
+    """Fetch news sentiment from Finnhub News API.
 
-    This tool retrieves actual news articles and sentiment scores from Alpaca's News API,
-    providing comprehensive news-based sentiment analysis including:
-    - Sentiment scores from news articles
+    This tool retrieves news articles and calculates sentiment scores from Finnhub's
+    free News API, providing comprehensive news-based sentiment analysis including:
+    - Sentiment scores from news article content
     - Article headlines and summaries
-    - News volume and recency
-    - Source credibility
+    - Key themes from article categories
+    - Breaking news detection
 
-    Note: Alpaca News API is available on paid plans. Free tier users will get
-    a graceful fallback to the basic sentiment analysis.
+    Finnhub free tier includes company news (60 API calls/minute).
 
     Args:
         symbol: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
         days_back: Number of days of news to fetch (default: 7)
-        limit: Maximum number of articles to retrieve (default: 50)
+        limit: Maximum number of articles to retrieve (default: 20)
 
     Returns:
-        Dictionary containing:
+        NewsContext object containing:
+        - articles: List of NewsArticle objects
+        - overall_sentiment: "bullish", "bearish", or "neutral"
         - sentiment_score: Aggregated sentiment (-1 to 1)
-        - sentiment_label: "bullish", "bearish", or "neutral"
         - article_count: Number of articles analyzed
-        - average_sentiment: Average sentiment from articles
-        - recent_headlines: List of recent headlines with sentiment
-        - news_volume_trend: "increasing", "stable", or "decreasing"
-
-    Raises:
-        ValueError: If symbol is invalid
-        Exception: If API request fails
+        - key_themes: Common topics from article categories
+        - has_breaking_news: Whether recent news exists
 
     Example:
-        >>> news = fetch_news_sentiment("AAPL", days_back=7)
-        >>> print(f"News Sentiment: {news['sentiment_label']} ({news['sentiment_score']:.2f})")
-        >>> print(f"Analyzed {news['article_count']} articles")
-        >>> for headline in news['recent_headlines'][:5]:
-        >>>     print(f"  - {headline['title']} (sentiment: {headline['sentiment']})")
+        >>> news = await fetch_news_sentiment("AAPL", days_back=7)
+        >>> print(f"News Sentiment: {news.overall_sentiment} ({news.sentiment_score:.2f})")
+        >>> print(f"Analyzed {news.article_count} articles")
+        >>> for article in news.articles[:5]:
+        >>>     print(f"  - {article.title} ({article.sentiment_label})")
     """
-    logger.info(f"Fetching news sentiment for {symbol} (last {days_back} days)")
+
+    logger.info(f"Fetching news sentiment for {symbol} from Finnhub (last {days_back} days)")
 
     try:
-        client = _get_alpaca_client()
+        # Fetch from Finnhub
+        news_data = await finnhub_fetch_news(symbol, days_back=days_back, limit=limit)
 
-        # Calculate date range
-        end_date = datetime.utcnow()
-        start_date = end_date - timedelta(days=days_back)
+        # Check for error
+        if news_data.get("error"):
+            logger.warning(f"Finnhub API error: {news_data['error']}. Using fallback.")
+            basic_sentiment = fetch_sentiment(symbol)
+            return NewsContext(
+                articles=[],
+                overall_sentiment=basic_sentiment.label,
+                sentiment_score=basic_sentiment.score,
+                article_count=0,
+                key_themes=[],
+                has_breaking_news=False,
+                data_source="price_based_fallback",
+            )
 
-        # Create news request
-        news_request = NewsRequest(
-            symbols=symbol,
-            start=start_date,
-            end=end_date,
-            limit=limit,
-            sort="desc",  # Most recent first
+        # Convert to NewsArticle objects
+        articles = [
+            NewsArticle(
+                title=a.get("title", ""),
+                description=a.get("description", ""),
+                url=a.get("url", ""),
+                source=a.get("source", ""),
+                published_date=a.get("published_date", ""),
+                tickers=a.get("tickers", []),
+                tags=a.get("tags", []),
+                sentiment_score=a.get("sentiment_score", 0.0),
+                sentiment_label=a.get("sentiment_label", "neutral"),
+            )
+            for a in news_data.get("articles", [])
+        ]
+
+        news_context = NewsContext(
+            articles=articles,
+            overall_sentiment=news_data.get("overall_sentiment", "neutral"),
+            sentiment_score=news_data.get("sentiment_score", 0.0),
+            article_count=news_data.get("article_count", 0),
+            key_themes=news_data.get("key_themes", []),
+            has_breaking_news=news_data.get("has_breaking_news", False),
+            data_source="finnhub",
         )
-
-        # Fetch news articles
-        try:
-            news_data = client.get_news(news_request)
-            articles = list(news_data) if news_data else []
-        except AttributeError:
-            # News API might not be available in all alpaca-py versions or subscription tiers
-            logger.warning(
-                f"Alpaca News API not available. "
-                f"This may require a paid subscription or newer alpaca-py version. "
-                f"Falling back to basic sentiment analysis."
-            )
-            # Fallback to basic sentiment
-            basic_sentiment = fetch_sentiment(symbol)
-            return {
-                "sentiment_score": basic_sentiment.score,
-                "sentiment_label": basic_sentiment.label,
-                "article_count": 0,
-                "average_sentiment": basic_sentiment.score,
-                "recent_headlines": [],
-                "news_volume_trend": "unavailable",
-                "source": "price_based_fallback",
-            }
-        except APIError as e:
-            logger.warning(f"Alpaca News API error: {str(e)}. Falling back to basic sentiment.")
-            basic_sentiment = fetch_sentiment(symbol)
-            return {
-                "sentiment_score": basic_sentiment.score,
-                "sentiment_label": basic_sentiment.label,
-                "article_count": 0,
-                "average_sentiment": basic_sentiment.score,
-                "recent_headlines": [],
-                "news_volume_trend": "unavailable",
-                "source": "price_based_fallback",
-            }
-
-        if not articles:
-            logger.warning(f"No news articles found for {symbol}. Using basic sentiment.")
-            basic_sentiment = fetch_sentiment(symbol)
-            return {
-                "sentiment_score": basic_sentiment.score,
-                "sentiment_label": basic_sentiment.label,
-                "article_count": 0,
-                "average_sentiment": basic_sentiment.score,
-                "recent_headlines": [],
-                "news_volume_trend": "no_news",
-                "source": "price_based_fallback",
-            }
-
-        # Extract headlines and sentiment scores
-        headlines_with_sentiment = []
-        sentiment_scores = []
-
-        for article in articles:
-            # Alpaca news articles may have sentiment attached
-            # If not available, we'll analyze based on headline tone
-            article_sentiment = 0.0
-
-            # Try to get sentiment from article metadata
-            # Note: Exact field names may vary by Alpaca API version
-            if hasattr(article, 'sentiment'):
-                article_sentiment = float(article.sentiment)
-            elif hasattr(article, 'sentiment_score'):
-                article_sentiment = float(article.sentiment_score)
-            else:
-                # Fallback: Simple keyword-based sentiment
-                headline = article.headline.lower() if hasattr(article, 'headline') else ""
-                summary = article.summary.lower() if hasattr(article, 'summary') else ""
-                text = headline + " " + summary
-
-                # Bullish keywords
-                bullish_keywords = [
-                    'surge', 'gain', 'rise', 'jump', 'rally', 'beat', 'exceed',
-                    'growth', 'profit', 'strong', 'up', 'high', 'record', 'upgrade',
-                    'buy', 'outperform', 'positive', 'breakthrough', 'success'
-                ]
-
-                # Bearish keywords
-                bearish_keywords = [
-                    'fall', 'drop', 'decline', 'loss', 'miss', 'weak', 'down',
-                    'low', 'concern', 'worry', 'risk', 'cut', 'downgrade', 'sell',
-                    'underperform', 'negative', 'struggle', 'fail', 'lawsuit'
-                ]
-
-                bullish_count = sum(1 for word in bullish_keywords if word in text)
-                bearish_count = sum(1 for word in bearish_keywords if word in text)
-
-                # Calculate sentiment score (-1 to 1)
-                if bullish_count + bearish_count > 0:
-                    article_sentiment = (bullish_count - bearish_count) / (bullish_count + bearish_count)
-                else:
-                    article_sentiment = 0.0
-
-            sentiment_scores.append(article_sentiment)
-
-            # Store headline info
-            headlines_with_sentiment.append({
-                "title": article.headline if hasattr(article, 'headline') else "Unknown",
-                "sentiment": round(article_sentiment, 2),
-                "created_at": article.created_at if hasattr(article, 'created_at') else None,
-                "url": article.url if hasattr(article, 'url') else None,
-                "source": article.source if hasattr(article, 'source') else "Unknown",
-            })
-
-        # Calculate aggregated sentiment
-        if sentiment_scores:
-            average_sentiment = sum(sentiment_scores) / len(sentiment_scores)
-
-            # Weight recent news more heavily (exponential decay)
-            weighted_scores = []
-            for i, score in enumerate(sentiment_scores):
-                # More recent articles get higher weight (decay factor)
-                recency_weight = 1.0 / (1.0 + (i * 0.1))
-                weighted_scores.append(score * recency_weight)
-
-            weighted_average = sum(weighted_scores) / sum(
-                1.0 / (1.0 + (i * 0.1)) for i in range(len(weighted_scores))
-            )
-
-            sentiment_score = round(weighted_average, 2)
-        else:
-            average_sentiment = 0.0
-            sentiment_score = 0.0
-
-        # Determine sentiment label
-        if sentiment_score > 0.2:
-            sentiment_label = "bullish"
-        elif sentiment_score < -0.2:
-            sentiment_label = "bearish"
-        else:
-            sentiment_label = "neutral"
-
-        # Calculate news volume trend
-        if len(articles) > 10:
-            recent_count = len([a for a in articles[:len(articles)//2]])
-            older_count = len([a for a in articles[len(articles)//2:]])
-
-            if recent_count > older_count * 1.5:
-                news_volume_trend = "increasing"
-            elif recent_count < older_count * 0.67:
-                news_volume_trend = "decreasing"
-            else:
-                news_volume_trend = "stable"
-        else:
-            news_volume_trend = "low_volume"
 
         logger.info(
-            f"News Sentiment for {symbol}: {sentiment_label} ({sentiment_score:.2f}) "
-            f"based on {len(articles)} articles"
+            f"News Sentiment for {symbol}: {news_context.overall_sentiment} "
+            f"({news_context.sentiment_score:.2f}) based on {news_context.article_count} articles"
         )
 
-        return {
-            "sentiment_score": sentiment_score,
-            "sentiment_label": sentiment_label,
-            "article_count": len(articles),
-            "average_sentiment": round(average_sentiment, 2),
-            "recent_headlines": headlines_with_sentiment[:10],  # Top 10 most recent
-            "news_volume_trend": news_volume_trend,
-            "source": "alpaca_news_api",
-            "days_analyzed": days_back,
-        }
+        return news_context
 
     except Exception as e:
         logger.error(f"Error fetching news sentiment for {symbol}: {str(e)}")
-        # Graceful fallback
+        # Graceful fallback to price-based sentiment
         logger.info("Falling back to price-based sentiment analysis")
         basic_sentiment = fetch_sentiment(symbol)
-        return {
-            "sentiment_score": basic_sentiment.score,
-            "sentiment_label": basic_sentiment.label,
-            "article_count": 0,
-            "average_sentiment": basic_sentiment.score,
-            "recent_headlines": [],
-            "news_volume_trend": "unavailable",
-            "source": "price_based_fallback",
-            "error": str(e),
-        }
+        return NewsContext(
+            articles=[],
+            overall_sentiment=basic_sentiment.label,
+            sentiment_score=basic_sentiment.score,
+            article_count=0,
+            key_themes=[],
+            has_breaking_news=False,
+            data_source="price_based_fallback",
+        )
+
+
+async def fetch_news_for_trade_style(
+    symbol: str,
+    trade_style: str,
+) -> NewsContext:
+    """Fetch news optimized for a specific trade style.
+
+    Different trade styles need different news time windows:
+    - Day trades: Last 2 days, focus on breaking news
+    - Swing trades: Last 7 days, balance of recency and context
+    - Position trades: Last 30 days, comprehensive view
+
+    Args:
+        symbol: Stock ticker symbol
+        trade_style: One of 'day', 'swing', 'position'
+
+    Returns:
+        NewsContext with trade-style appropriate data
+    """
+    from app.tools.finnhub_client import fetch_news_for_trade_style as finnhub_fetch_for_style
+
+    logger.info(f"Fetching {trade_style} trade news for {symbol}")
+
+    try:
+        news_data = await finnhub_fetch_for_style(symbol, trade_style)
+
+        # Convert to NewsContext
+        articles = [
+            NewsArticle(
+                title=a.get("title", ""),
+                description=a.get("description", ""),
+                url=a.get("url", ""),
+                source=a.get("source", ""),
+                published_date=a.get("published_date", ""),
+                tickers=a.get("tickers", []),
+                tags=a.get("tags", []),
+                sentiment_score=a.get("sentiment_score", 0.0),
+                sentiment_label=a.get("sentiment_label", "neutral"),
+            )
+            for a in news_data.get("articles", [])
+        ]
+
+        return NewsContext(
+            articles=articles,
+            overall_sentiment=news_data.get("overall_sentiment", "neutral"),
+            sentiment_score=news_data.get("sentiment_score", 0.0),
+            article_count=news_data.get("article_count", 0),
+            key_themes=news_data.get("key_themes", []),
+            has_breaking_news=news_data.get("has_breaking_news", False),
+            data_source="finnhub",
+        )
+
+    except Exception as e:
+        logger.error(f"Error fetching trade-style news for {symbol}: {str(e)}")
+        return NewsContext(
+            articles=[],
+            overall_sentiment="neutral",
+            sentiment_score=0.0,
+            article_count=0,
+            key_themes=[],
+            has_breaking_news=False,
+            data_source="error",
+        )
 
 
 def fetch_latest_quote(symbol: str) -> dict:

@@ -53,6 +53,54 @@ Call: analyze_chart_vision(symbol, chart_image, "position")
 ## NEWS & MARKET CONTEXT
 {news_context}
 
+## FUNDAMENTALS CONTEXT (HIGH Weight for Position Trades)
+{fundamentals_context}
+
+**Fundamentals are CRITICAL for position trades** - with weeks/months holding period, you are exposed to fundamental risk.
+
+### Fundamental Requirements for Position Trades:
+
+**REQUIRED for LONG Position Trades:**
+- Positive EPS or clear path to profitability
+- Revenue growth (YoY > 0% minimum)
+- Manageable debt (Debt/Equity < 2.0)
+- Net margin stability or improvement
+- Strong or moderate financial health score
+
+**REQUIRED for SHORT Position Trades:**
+- Deteriorating fundamentals (declining margins, rising debt)
+- Negative earnings surprises trend
+- Extreme overvaluation (P/E > 60 without growth justification)
+- Industry headwinds reflected in fundamentals
+
+### How Fundamentals Affect Position Trade Confidence:
+
+**STRONG Fundamentals (boost confidence +10-20%):**
+- ROE > 15%, growing earnings, low debt
+- Beat earnings consistently (> 80% beat rate)
+- Valuation reasonable for growth rate (PEG < 2)
+- Strong free cash flow generation
+
+**WEAK Fundamentals (reduce confidence -15-30% or mark unsuitable):**
+- Negative margins, high debt (D/E > 2)
+- Declining revenue and earnings
+- Poor earnings track record
+- Extreme valuation without growth support
+
+### CRITICAL EARNINGS RISK FOR POSITION TRADES:
+
+If earnings are within the holding period:
+- This is EXTREME RISK - you WILL experience an earnings event
+- Earnings can cause 10-30% gaps in either direction
+- Options:
+  1. Wait until AFTER earnings to enter
+  2. Accept the risk and size position smaller
+  3. Add explicit earnings risk warning
+
+If earnings beat rate is < 60%:
+- Additional risk factor - company may disappoint
+- Weight fundamentals even more heavily
+
 ## REAL-TIME SENTIMENT (You have X/Twitter search - USE IT!)
 You have access to real-time X (Twitter) search. **Actively search X for this stock** to find:
 - Current institutional and retail sentiment discussions
@@ -103,13 +151,13 @@ If user has a SHORT position:
 - Stop: Below base midpoint
 - Target: Base height projected from breakout (can be 50-100%+ moves)
 
-### 2. Weekly Trend Continuation
+### 2. Weekly Trend Continuation (with Fibonacci)
 - Established uptrend with higher weekly highs/lows
-- Pullback to 21 or 50 week EMA
+- Pullback to 21 or 50 week EMA OR Fibonacci retracement (38.2%, 50%)
 - RSI pullback to 50 area on weekly
-- Entry: Bounce off major EMA with weekly hammer/engulfing
-- Stop: Below the 50 week EMA
-- Target: Prior all-time high or new highs
+- Entry: Bounce off major EMA or Fibonacci level with weekly hammer/engulfing
+- Stop: Below the 50 week EMA or next Fibonacci level
+- Target: Fibonacci extensions (1.618, 2.618) or prior all-time high
 
 ### 3. Cup and Handle (Weekly)
 - U-shaped recovery pattern over months
@@ -132,7 +180,10 @@ If user has a SHORT position:
 - Strong fundamental catalyst (earnings beat, new product, etc.)
 - Entry: On confirmation of ATH break
 - Stop: Below prior ATH (now support)
-- Target: Psychological levels or Fibonacci extensions
+- Target: Fibonacci extensions from the base breakout
+  - 1.272 extension: Conservative first target
+  - 1.618 extension: Golden extension, major target
+  - 2.618 extension: Aggressive trend extension target
 
 ## Risk Management for Position Trades
 - Position size: 2-5% of account (larger positions, longer holds)
@@ -157,9 +208,9 @@ Your analysis must include:
 1. Whether this is a SUITABLE position trade (yes/no with reasoning)
 2. The primary trend direction (bullish, bearish, or no clear trend)
 3. The specific setup type (base breakout, trend continuation, ATH breakout, etc.)
-4. Entry zone at major support or breakout level
-5. Wide stop loss below major structure (weekly swing low, major EMA)
-6. Major targets (1-3 targets based on measured moves, prior ATH, Fib extensions)
+4. Entry zone at major support, Fibonacci retracement, or breakout level
+5. Wide stop loss below major structure (weekly swing low, major EMA, or Fib level)
+6. Major targets using Fibonacci extensions (1.272, 1.618, 2.618) when applicable
 7. Expected holding period in weeks/months (e.g., "2-4 weeks", "1-3 months")
 8. What weekly triggers to watch (weekly close above X, volume confirmation)
 9. Fundamental context if relevant (sector strength, catalyst)
@@ -172,6 +223,7 @@ def build_position_trade_prompt(
     symbol: str,
     position_context: str = "No existing position.",
     news_context: str = "No recent news available.",
+    fundamentals_context: str = "No fundamental data available.",
 ) -> str:
     """Build the position trade agent prompt with context.
 
@@ -179,6 +231,7 @@ def build_position_trade_prompt(
         symbol: Stock ticker symbol
         position_context: Formatted position context string
         news_context: News and sentiment context string
+        fundamentals_context: Fundamental data context string
 
     Returns:
         Complete position trade agent prompt
@@ -186,4 +239,5 @@ def build_position_trade_prompt(
     return POSITION_TRADE_SYSTEM_PROMPT.format(
         position_context=position_context,
         news_context=news_context,
+        fundamentals_context=fundamentals_context,
     )

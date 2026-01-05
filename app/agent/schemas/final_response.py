@@ -4,7 +4,7 @@ The orchestrator runs all 3 sub-agents in parallel, collects their reports,
 and synthesizes a final response with the best plan selected.
 """
 
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Any
 from pydantic import BaseModel, Field
 
 from app.agent.schemas.subagent_report import (
@@ -12,6 +12,9 @@ from app.agent.schemas.subagent_report import (
     TradeStyleLiteral,
     BiasLiteral,
 )
+
+# Import Fundamentals for runtime use with Pydantic
+from app.models.data import Fundamentals
 
 
 class AlternativePlan(BaseModel):
@@ -224,6 +227,51 @@ class DataContext(BaseModel):
         default=None,
         description="Recent news headlines about the stock."
     )
+    news_score: Optional[float] = Field(
+        default=None,
+        description="Numeric news sentiment score from -1 (bearish) to 1 (bullish)."
+    )
+    news_article_count: int = Field(
+        default=0,
+        description="Number of news articles analyzed."
+    )
+    news_has_breaking: bool = Field(
+        default=False,
+        description="Whether there's breaking news (< 2 hours old)."
+    )
+    news_key_themes: Optional[List[str]] = Field(
+        default=None,
+        description="Key topics/themes from news articles."
+    )
+
+    # X/Social Sentiment (gathered once, shared with all sub-agents)
+    x_sentiment: Optional[str] = Field(
+        default=None,
+        description="X/Twitter sentiment: 'bullish', 'bearish', 'neutral', 'mixed'."
+    )
+    x_sentiment_summary: Optional[str] = Field(
+        default=None,
+        description="Summary of X/social discussion about the stock."
+    )
+    x_citations: Optional[List[str]] = Field(
+        default=None,
+        description="URLs of X posts used in sentiment analysis."
+    )
+
+    # Fundamentals (gathered once, shared with all sub-agents)
+    # Using Any to avoid circular import, actual type is Fundamentals
+    fundamentals: Optional[Fundamentals] = Field(
+        default=None,
+        description="Fundamental financial data for the stock."
+    )
+    has_earnings_risk: bool = Field(
+        default=False,
+        description="True if earnings announcement is within 7 days."
+    )
+    days_until_earnings: Optional[int] = Field(
+        default=None,
+        description="Days until next earnings announcement."
+    )
 
     def to_prompt_context(self) -> str:
         """Format context for inclusion in sub-agent prompts."""
@@ -246,13 +294,57 @@ class DataContext(BaseModel):
             lines.append("\nNo existing position.")
 
         # News context
-        if self.news_sentiment or self.news_summary:
-            lines.append(f"\nNews Sentiment: {self.news_sentiment or 'Unknown'}")
-            if self.news_summary:
-                lines.append(f"News Summary: {self.news_summary}")
+        if self.news_sentiment or self.news_score is not None:
+            lines.append(f"\n## NEWS CONTEXT:")
+            lines.append(f"Sentiment: {self.news_sentiment or 'Unknown'}")
+            if self.news_score is not None:
+                lines.append(f"Sentiment Score: {self.news_score:+.2f} (-1 to +1 scale)")
+            if self.news_article_count > 0:
+                lines.append(f"Articles Analyzed: {self.news_article_count}")
+            if self.news_has_breaking:
+                lines.append("** BREAKING NEWS DETECTED - increased volatility risk **")
+            if self.news_key_themes:
+                lines.append(f"Key Themes: {', '.join(self.news_key_themes[:5])}")
             if self.recent_headlines:
                 lines.append("Recent Headlines:")
-                for headline in self.recent_headlines[:3]:
+                for headline in self.recent_headlines[:5]:
                     lines.append(f"  - {headline}")
+
+        # X/Social sentiment context
+        if self.x_sentiment or self.x_sentiment_summary:
+            lines.append(f"\nX/Social Sentiment: {self.x_sentiment or 'Unknown'}")
+            if self.x_sentiment_summary:
+                lines.append(f"X Discussion: {self.x_sentiment_summary}")
+
+        # Fundamentals context
+        if self.fundamentals:
+            f = self.fundamentals
+            lines.append("\n## FUNDAMENTALS:")
+
+            # Valuation
+            if f.pe_ratio is not None:
+                lines.append(f"P/E Ratio: {f.pe_ratio:.1f} ({f.get_valuation_assessment()})")
+            if f.pb_ratio is not None:
+                lines.append(f"P/B Ratio: {f.pb_ratio:.2f}")
+            if f.ps_ratio is not None:
+                lines.append(f"P/S Ratio: {f.ps_ratio:.2f}")
+
+            # Growth
+            if f.eps_growth_yoy is not None:
+                lines.append(f"EPS Growth (YoY): {f.eps_growth_yoy:+.1f}%")
+            if f.revenue_growth_yoy is not None:
+                lines.append(f"Revenue Growth (YoY): {f.revenue_growth_yoy:+.1f}%")
+
+            # Health
+            lines.append(f"Financial Health: {f.get_financial_health_score()}")
+            if f.debt_to_equity is not None:
+                lines.append(f"Debt/Equity: {f.debt_to_equity:.2f}")
+
+            # Earnings Risk - CRITICAL
+            if self.has_earnings_risk and self.days_until_earnings is not None:
+                lines.append(f"\n** EARNINGS WARNING: {self.days_until_earnings} DAYS UNTIL EARNINGS **")
+                lines.append("HIGH RISK for swing/position trades - earnings can cause 10-30% gaps!")
+                if f.earnings_beat_rate is not None:
+                    lines.append(f"Beat rate (last 4Q): {f.earnings_beat_rate:.0f}%")
 
         return "\n".join(lines)

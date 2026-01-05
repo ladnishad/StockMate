@@ -1,0 +1,68 @@
+# Render.com Blueprint Configuration - Staging Environment
+# Deploy with: Connect GitHub repo → New Blueprint → Select render-staging.yaml
+
+services:
+  # StockMate API Backend - Staging
+  - type: web
+    name: stockmate-api-staging
+    env: docker
+    plan: free  # Free tier - spins down after 15min inactivity
+    healthCheckPath: /health
+    autoDeploy: true
+
+    # Docker configuration
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+
+    # Environment variables
+    envVars:
+      # Application
+      - key: APP_ENV
+        value: staging
+      - key: LOG_LEVEL
+        value: DEBUG
+
+      # CORS - Update with your actual domains
+      - key: CORS_ORIGINS
+        value: "capacitor://localhost,ionic://localhost"
+
+      # Alpaca API (set in Render dashboard - sensitive)
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
+      - key: ALPACA_BASE_URL
+        value: "https://api.alpaca.markets"
+      - key: ALPACA_DATA_FEED
+        value: "iex"  # Use "sip" if you have AlgoTrader Plus
+
+      # Claude API (set in Render dashboard - sensitive)
+      - key: CLAUDE_API_KEY
+        sync: false
+
+      # Supabase Auth (set in Render dashboard - sensitive)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+
+      # Database URL from Supabase (set in Render dashboard)
+      - key: DATABASE_URL
+        sync: false
+
+      # APNs Configuration (set in Render dashboard if using push notifications)
+      - key: APNS_KEY_ID
+        sync: false
+      - key: APNS_TEAM_ID
+        sync: false
+      - key: APNS_BUNDLE_ID
+        sync: false
+      - key: APNS_USE_SANDBOX
+        value: "true"  # Use sandbox for staging/TestFlight
+
+# Note: Database is hosted on Supabase (shared with production)
+# This keeps costs lower and uses Supabase's managed PostgreSQL

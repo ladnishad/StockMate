@@ -118,6 +118,143 @@ class TradePlanOrchestrator:
         # Default fallback
         return 2.0
 
+    async def _fetch_x_sentiment(self, symbol: str, user_id: str) -> Dict[str, Any]:
+        """Fetch X/Twitter sentiment for the symbol using Grok.
+
+        This is called once during common data gathering, and the results
+        are shared with all sub-agents to avoid rate limiting.
+
+        Args:
+            symbol: Stock ticker symbol
+            user_id: User ID for provider lookup
+
+        Returns:
+            Dict with x_sentiment, x_sentiment_summary, and x_citations
+        """
+        try:
+            provider = await self._get_provider(user_id)
+
+            # Only Grok supports X search
+            if not provider.supports_x_search:
+                logger.info(f"[Orchestrator] Provider doesn't support X search, skipping")
+                return {}
+
+            # Simple prompt to get X sentiment
+            prompt = f"""Analyze the current X/Twitter sentiment for ${symbol} stock.
+
+Search X for recent posts about ${symbol} and provide:
+1. Overall sentiment: bullish, bearish, neutral, or mixed
+2. A brief 2-3 sentence summary of what traders are saying
+3. Key themes or catalysts being discussed
+
+Respond in JSON format:
+{{
+    "sentiment": "bullish" or "bearish" or "neutral" or "mixed",
+    "summary": "Brief summary of X discussion...",
+    "key_themes": ["theme1", "theme2"]
+}}
+
+Return ONLY the JSON object."""
+
+            search_params = get_x_search_parameters()
+
+            response = await provider.create_message(
+                messages=[AIMessage(role="user", content=prompt)],
+                system="You are a financial sentiment analyst. Analyze X/Twitter posts about stocks and provide objective sentiment assessment.",
+                model_type="quick",  # Use faster model for sentiment
+                max_tokens=500,
+                search_parameters=search_params,
+            )
+
+            # Extract citations
+            x_citations = []
+            if response.citations:
+                for citation in response.citations:
+                    if isinstance(citation, str):
+                        x_citations.append(citation)
+                    elif isinstance(citation, dict) and "url" in citation:
+                        x_citations.append(citation["url"])
+
+            # Parse response
+            import json
+            response_text = response.content.strip()
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+                response_text = response_text.strip()
+
+            try:
+                parsed = json.loads(response_text)
+                return {
+                    "x_sentiment": parsed.get("sentiment", "unknown"),
+                    "x_sentiment_summary": parsed.get("summary", ""),
+                    "x_citations": x_citations[:20],  # Limit to 20 citations
+                }
+            except json.JSONDecodeError:
+                # If JSON parsing fails, try to extract sentiment from text
+                text_lower = response_text.lower()
+                if "bullish" in text_lower:
+                    sentiment = "bullish"
+                elif "bearish" in text_lower:
+                    sentiment = "bearish"
+                elif "mixed" in text_lower:
+                    sentiment = "mixed"
+                else:
+                    sentiment = "neutral"
+
+                return {
+                    "x_sentiment": sentiment,
+                    "x_sentiment_summary": response_text[:500],
+                    "x_citations": x_citations[:20],
+                }
+
+        except Exception as e:
+            logger.warning(f"[Orchestrator] Error fetching X sentiment: {e}")
+            return {}
+
+    async def _fetch_fundamentals(self, symbol: str) -> Dict[str, Any]:
+        """Fetch fundamental data for the symbol using Finnhub API.
+
+        This is called once during common data gathering, and the results
+        are shared with all sub-agents.
+
+        Args:
+            symbol: Stock ticker symbol
+
+        Returns:
+            Dict with fundamentals object and derived flags
+        """
+        try:
+            from app.tools.market_data import fetch_fundamentals
+
+            fundamentals = await fetch_fundamentals(symbol)
+
+            # Derive earnings risk flag
+            has_earnings_risk = fundamentals.has_earnings_risk(days_threshold=7)
+            days_until = None
+            if fundamentals.next_earnings and fundamentals.next_earnings.days_until is not None:
+                days_until = fundamentals.next_earnings.days_until
+
+            logger.info(
+                f"[Orchestrator] Fundamentals: P/E={fundamentals.pe_ratio}, "
+                f"Health={fundamentals.get_financial_health_score()}, "
+                f"EarningsRisk={has_earnings_risk}"
+            )
+
+            return {
+                "fundamentals": fundamentals,
+                "has_earnings_risk": has_earnings_risk,
+                "days_until_earnings": days_until,
+            }
+        except Exception as e:
+            logger.warning(f"[Orchestrator] Error fetching fundamentals: {e}")
+            return {
+                "fundamentals": None,
+                "has_earnings_risk": False,
+                "days_until_earnings": None,
+            }
+
     async def gather_common_context(
         self,
         symbol: str,
@@ -126,25 +263,43 @@ class TradePlanOrchestrator:
         """Gather common data that all sub-agents need.
 
         This is called once at the start, then passed to all sub-agents.
+        Includes X/social sentiment fetched once and shared with all agents
+        to avoid rate limiting from parallel X search requests.
 
         Args:
             symbol: Stock ticker symbol
             user_id: User ID for position lookup
 
         Returns:
-            DataContext with shared data
+            DataContext with shared data including X sentiment
         """
-        # Gather in parallel
+        # Gather market data in parallel (fast, local API calls)
         price_task = asyncio.create_task(get_current_price(symbol))
         position_task = asyncio.create_task(get_position_status(symbol, user_id))
         market_task = asyncio.create_task(get_market_context())
         news_task = asyncio.create_task(get_news_sentiment(symbol))
+        fundamentals_task = asyncio.create_task(self._fetch_fundamentals(symbol))
 
-        price_data, position_data, market_data, news_data = await asyncio.gather(
-            price_task, position_task, market_task, news_task
+        price_data, position_data, market_data, news_data, fundamentals_data = await asyncio.gather(
+            price_task, position_task, market_task, news_task, fundamentals_task
         )
 
-        # Build context
+        # Fetch X sentiment separately (uses Grok API with X search)
+        # This is done ONCE here instead of in each sub-agent to avoid rate limiting
+        logger.info(f"[Orchestrator] Fetching X/social sentiment for {symbol}")
+        x_data = await self._fetch_x_sentiment(symbol, user_id)
+        if x_data:
+            logger.info(f"[Orchestrator] X sentiment: {x_data.get('x_sentiment', 'unknown')}, {len(x_data.get('x_citations', []))} citations")
+
+        # Log news results
+        logger.info(
+            f"[Orchestrator] News sentiment for {symbol}: {news_data.get('sentiment', 'neutral')} "
+            f"(score: {news_data.get('sentiment_score', 0):.2f}, {news_data.get('article_count', 0)} articles)"
+        )
+        if news_data.get("has_breaking_news"):
+            logger.info(f"[Orchestrator] Breaking news detected for {symbol}!")
+
+        # Build context with all gathered data
         context = DataContext(
             symbol=symbol.upper(),
             user_id=user_id,
@@ -159,10 +314,22 @@ class TradePlanOrchestrator:
             market_direction=market_data.get("market_direction", "mixed"),
             bullish_indices=market_data.get("bullish_indices", 0),
             timestamp=datetime.utcnow().isoformat(),
-            # News data
+            # News data (from Finnhub)
             news_sentiment=news_data.get("sentiment"),
             news_summary=news_data.get("summary"),
             recent_headlines=news_data.get("headlines", []),
+            news_score=news_data.get("sentiment_score"),
+            news_article_count=news_data.get("article_count", 0),
+            news_has_breaking=news_data.get("has_breaking_news", False),
+            news_key_themes=news_data.get("key_themes"),
+            # X/Social sentiment (gathered once, shared with all sub-agents)
+            x_sentiment=x_data.get("x_sentiment"),
+            x_sentiment_summary=x_data.get("x_sentiment_summary"),
+            x_citations=x_data.get("x_citations"),
+            # Fundamentals (gathered once, shared with all sub-agents)
+            fundamentals=fundamentals_data.get("fundamentals"),
+            has_earnings_risk=fundamentals_data.get("has_earnings_risk", False),
+            days_until_earnings=fundamentals_data.get("days_until_earnings"),
         )
 
         self.context = context
@@ -177,11 +344,46 @@ class TradePlanOrchestrator:
         self.subagent_progress = progress
         return progress
 
+    async def _generate_plan_agentic(
+        self,
+        symbol: str,
+        user_id: str,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Generate trading plan using the agentic tool-calling approach.
+
+        This method uses the AgenticStockAnalyzer which:
+        1. Gives the AI access to tools (price, chart, fundamentals, news, X search)
+        2. Lets the AI decide what to investigate based on what it discovers
+        3. Iteratively calls tools and reasons about results
+        4. Provides transparent reasoning visible to the user in real-time
+
+        Args:
+            symbol: Stock ticker symbol
+            user_id: User ID for provider preferences
+
+        Yields:
+            StreamEvent objects for real-time progress updates
+        """
+        from app.agent.sdk.agentic_analyzer import create_agentic_analyzer
+
+        try:
+            # Create the agentic analyzer with user's preferred providers
+            analyzer = await create_agentic_analyzer(user_id)
+
+            # Run the agentic analysis
+            async for event in analyzer.analyze(symbol, user_id):
+                yield event
+
+        except Exception as e:
+            logger.error(f"[Agentic] Error in agentic analysis: {e}", exc_info=True)
+            yield StreamEvent.error(f"Agentic analysis failed: {str(e)}")
+
     async def generate_plan_stream(
         self,
         symbol: str,
         user_id: str,
         force_new: bool = True,
+        agentic_mode: bool = False,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Generate trading plan with streaming progress.
 
@@ -191,12 +393,21 @@ class TradePlanOrchestrator:
             symbol: Stock ticker symbol
             user_id: User ID
             force_new: Force new plan generation
+            agentic_mode: If True, use new agentic tool-calling approach.
+                         If False (default), use legacy multi-agent approach.
 
         Yields:
             StreamEvent objects for each progress update
         """
         self._start_time = time.time()
         self._user_id = user_id  # Store for provider lookup
+
+        if agentic_mode:
+            logger.info(f"[Orchestrator] Starting AGENTIC plan generation for {symbol}")
+            async for event in self._generate_plan_agentic(symbol, user_id):
+                yield event
+            return
+
         logger.info(f"[Orchestrator] Starting plan generation for {symbol}")
 
         try:
@@ -221,9 +432,23 @@ class TradePlanOrchestrator:
             else:
                 findings.append("Position: None")
 
-            # Add news sentiment
+            # Add news sentiment with details
             if context.news_sentiment:
-                findings.append(f"News: {context.news_sentiment.capitalize()}")
+                news_str = f"News: {context.news_sentiment.capitalize()}"
+                if context.news_article_count > 0:
+                    news_str += f" ({context.news_article_count} articles)"
+                if context.news_has_breaking:
+                    news_str += " [BREAKING]"
+                findings.append(news_str)
+
+            # Add fundamentals summary
+            if context.fundamentals:
+                f = context.fundamentals
+                if f.pe_ratio is not None:
+                    findings.append(f"P/E: {f.pe_ratio:.1f} ({f.get_valuation_assessment()})")
+                findings.append(f"Health: {f.get_financial_health_score().capitalize()}")
+                if context.has_earnings_risk and context.days_until_earnings is not None:
+                    findings.append(f"EARNINGS IN {context.days_until_earnings} DAYS!")
 
             yield StreamEvent.orchestrator_step(
                 OrchestratorStepType.GATHERING_COMMON_DATA,
@@ -405,16 +630,23 @@ class TradePlanOrchestrator:
                     indicators = await sdk_tools.get_technical_indicators(symbol, [9, 21, 50], 14)
                     sr_levels = await sdk_tools.get_support_resistance(symbol, "daily")
                 else:  # position
-                    bars = await sdk_tools.get_price_bars(symbol, "1w", 52)
+                    bars = await sdk_tools.get_price_bars(symbol, "1w", 364)  # 52 weeks = 364 days
                     indicators = await sdk_tools.get_technical_indicators(symbol, [21, 50, 200], 14)
                     sr_levels = await sdk_tools.get_support_resistance(symbol, "weekly")
+
+                # Step 1.5: Calculate Fibonacci levels for this timeframe
+                fib_result = await sdk_tools.get_fibonacci_levels(
+                    symbol,
+                    bars.get("bars", []),
+                    trade_style
+                )
 
                 self.subagent_progress[agent_name].current_step = "Generating chart"
                 self.subagent_progress[agent_name].status = SubAgentStatus.GENERATING_CHART
 
                 # Step 2: Generate chart
                 timeframe_map = {"day": "5m", "swing": "1d", "position": "1w"}
-                days_map = {"day": 3, "swing": 100, "position": 52}
+                days_map = {"day": 3, "swing": 100, "position": 364}  # 52 weeks = 364 days
                 chart_result = await sdk_tools.generate_chart(
                     symbol,
                     timeframe_map[trade_style],
@@ -441,14 +673,21 @@ class TradePlanOrchestrator:
                 current_price = bars.get("current_price", context.current_price)
                 atr_pct = bars.get("atr_pct", 2.0)
 
-                # Determine suitability based on ATR (aligned with prompt thresholds)
-                suitable = False
-                if trade_style == "day" and atr_pct > 3.0:  # Day trades need high volatility (>3%)
-                    suitable = True
-                elif trade_style == "swing" and 1.0 <= atr_pct <= 3.0:  # Swing trades need moderate volatility (1-3%)
-                    suitable = True
-                elif trade_style == "position" and atr_pct < 1.5:  # Position trades need low volatility (<1.5%)
-                    # Position trades also require EMA alignment for trending conditions
+                # Determine suitability based on ATR with TIMEFRAME-SPECIFIC thresholds
+                # Each timeframe produces different ATR% values that can't be compared directly:
+                # - Day (5m bars): Low ATR% is normal (0.2-0.5% typical)
+                # - Swing (1d bars): Moderate ATR% expected (1-5% typical)
+                # - Position (1w bars): Higher ATR% expected (5-25% typical for growth stocks)
+                ATR_THRESHOLDS = {
+                    "day":      {"min": 0.2, "max": 100},   # 5m bars - any reasonable intraday volatility
+                    "swing":    {"min": 1.0, "max": 5.0},   # 1d bars - moderate daily volatility
+                    "position": {"min": 0,   "max": 25.0},  # 1w bars - allow growth stock volatility
+                }
+                threshold = ATR_THRESHOLDS.get(trade_style, {"min": 0, "max": 100})
+                suitable = threshold["min"] <= atr_pct <= threshold["max"]
+
+                # Position trades also require EMA alignment for trending conditions
+                if trade_style == "position" and suitable:
                     ema_trend = indicators.get("ema_trend", "unknown")
                     suitable = ema_trend in ["bullish_aligned", "bearish_aligned"]
 
@@ -469,7 +708,54 @@ class TradePlanOrchestrator:
                 vision_modifier = max(-20, min(20, raw_vision_modifier))
                 confidence = min(100, max(0, base_confidence + vision_modifier))
 
-                # Determine bias
+                # ============================================================
+                # FUNDAMENTAL INFLUENCE ON CONFIDENCE (Timeframe-Weighted)
+                # ============================================================
+                fundamental_modifier = 0
+                if context.fundamentals:
+                    f = context.fundamentals
+
+                    # Weight by trade style: day=0.2, swing=0.5, position=1.0
+                    weight_map = {"day": 0.2, "swing": 0.5, "position": 1.0}
+                    weight = weight_map.get(trade_style, 0.5)
+
+                    # Valuation factor (-10 to +5)
+                    if f.pe_ratio is not None:
+                        if f.pe_ratio < 0:
+                            fundamental_modifier -= 5 * weight  # Unprofitable
+                        elif f.pe_ratio < 15:
+                            fundamental_modifier += 3 * weight  # Undervalued
+                        elif f.pe_ratio > 50:
+                            fundamental_modifier -= 5 * weight  # Very expensive
+
+                    # Financial health factor (-5 to +5)
+                    health = f.get_financial_health_score()
+                    if health == "strong":
+                        fundamental_modifier += 5 * weight
+                    elif health == "weak":
+                        fundamental_modifier -= 5 * weight
+
+                    # Growth factor (-5 to +5)
+                    if f.eps_growth_yoy is not None:
+                        if f.eps_growth_yoy > 20:
+                            fundamental_modifier += 5 * weight
+                        elif f.eps_growth_yoy < -10:
+                            fundamental_modifier -= 5 * weight
+
+                    # Earnings risk penalty (CRITICAL - affects all styles)
+                    if context.has_earnings_risk:
+                        if trade_style == "day":
+                            fundamental_modifier -= 10  # High risk even for day trades
+                        elif trade_style == "swing":
+                            fundamental_modifier -= 20  # Very high risk
+                        else:  # position
+                            fundamental_modifier -= 25  # Extreme risk
+
+                    # Apply fundamental modifier
+                    confidence = min(100, max(0, confidence + int(fundamental_modifier)))
+                    logger.info(f"[{agent_name}] Fundamental modifier: {fundamental_modifier:.1f} (weight: {weight})")
+
+                # Determine bias from EMA trend
                 if ema_trend == "bullish_aligned":
                     bias = "bullish"
                 elif ema_trend == "bearish_aligned":
@@ -477,37 +763,194 @@ class TradePlanOrchestrator:
                 else:
                     bias = "neutral"
 
+                # ============================================================
+                # VISION PATTERN INFLUENCE ON BIAS
+                # If chart patterns conflict with EMA-based bias, adjust accordingly
+                # ============================================================
+                visual_patterns = [p.lower() for p in vision_result.get("visual_patterns", [])]
+                pattern_string = " ".join(visual_patterns)
+
+                bearish_patterns = ["descending channel", "bear flag", "head and shoulders", "double top", "breakdown", "rising wedge"]
+                bullish_patterns = ["ascending channel", "bull flag", "inverse head and shoulders", "double bottom", "breakout", "falling wedge"]
+
+                has_bearish_pattern = any(bp in pattern_string for bp in bearish_patterns)
+                has_bullish_pattern = any(bp in pattern_string for bp in bullish_patterns)
+
+                # Adjust bias when vision patterns conflict with EMA-based bias
+                if has_bearish_pattern and not has_bullish_pattern:
+                    if bias == "bullish":
+                        # Conflicting signals: EMA bullish but chart bearish → downgrade to neutral
+                        bias = "neutral"
+                        confidence = max(0, confidence - 10)  # Reduce confidence for mixed signals
+                    elif bias == "neutral":
+                        # Neutral EMA + bearish patterns → lean bearish
+                        bias = "bearish"
+                elif has_bullish_pattern and not has_bearish_pattern:
+                    if bias == "bearish":
+                        # Conflicting signals: EMA bearish but chart bullish → downgrade to neutral
+                        bias = "neutral"
+                        confidence = max(0, confidence - 10)
+                    elif bias == "neutral":
+                        # Neutral EMA + bullish patterns → lean bullish
+                        bias = "bullish"
+                # If both patterns present or neither, keep EMA-based bias
+
+                # ============================================================
+                # NEWS INFLUENCE ON CONFIDENCE (Timeframe-Weighted)
+                # News impacts trades differently based on holding period
+                # Day trades: 20% weight (intraday momentum dominates)
+                # Swing trades: 50% weight (catalysts affect multi-day holds)
+                # Position trades: 100% weight (news critical for weeks/months)
+                # ============================================================
+                news_modifier = 0
+                if context.news_score is not None and context.news_article_count > 0:
+                    # Weight by trade style
+                    news_weight_map = {"day": 0.2, "swing": 0.5, "position": 1.0}
+                    news_weight = news_weight_map.get(trade_style, 0.5)
+
+                    # Sentiment alignment factor (-10 to +5)
+                    # If news aligns with bias: boost confidence
+                    # If news conflicts with bias: reduce confidence
+                    if bias == "bullish":
+                        if context.news_score > 0.2:
+                            news_modifier += 5 * news_weight  # Bullish news + bullish bias = aligned
+                        elif context.news_score < -0.2:
+                            news_modifier -= 10 * news_weight  # Bearish news + bullish bias = conflict
+                    elif bias == "bearish":
+                        if context.news_score < -0.2:
+                            news_modifier += 5 * news_weight  # Bearish news + bearish bias = aligned
+                        elif context.news_score > 0.2:
+                            news_modifier -= 10 * news_weight  # Bullish news + bearish bias = conflict
+
+                    # Breaking news risk penalty (especially for day trades)
+                    if context.news_has_breaking:
+                        if trade_style == "day":
+                            news_modifier -= 10  # High volatility risk for intraday
+                        elif trade_style == "swing":
+                            news_modifier -= 5  # Moderate risk for swing
+                        # Position trades can absorb breaking news better
+
+                    confidence = min(100, max(0, confidence + int(news_modifier)))
+                    logger.info(f"[{agent_name}] News modifier: {news_modifier:.1f} (weight: {news_weight}, score: {context.news_score:.2f})")
+
                 # Build support/resistance
                 supports = [s["price"] for s in sr_levels.get("support", [])[:3]]
                 resistances = [r["price"] for r in sr_levels.get("resistance", [])[:3]]
 
-                # Calculate entry/stop/targets based on bias
-                if bias == "bullish" and supports:
-                    # Bullish setup: entry near support, stop below, targets above
-                    entry_low = supports[0] if supports else current_price * 0.98
-                    entry_high = current_price * 0.995
-                    stop_loss = entry_low * 0.97
+                # ============================================================
+                # HYBRID FIBONACCI + S/R LOGIC (Like a Real Trader)
+                # Use Fibonacci when conditions are right, otherwise fall back to S/R
+                # ============================================================
+
+                # Extract Fibonacci data
+                retracements = fib_result.get("retracement_levels", {})
+                extensions = fib_result.get("extension_levels", {})
+                fib_trend = fib_result.get("trend", "unknown")
+                swing_range = fib_result.get("swing_range", 0) or 0
+
+                # Calculate ATR for comparison
+                atr_value = bars.get("atr", current_price * 0.02)  # fallback 2%
+
+                # DECISION: Should we use Fibonacci for this setup?
+                # A real trader asks: "Is there a clear trend with a meaningful swing?"
+                use_fib_for_levels = (
+                    # 1. Clear trend direction (EMA alignment matches)
+                    fib_trend in ["uptrend", "downtrend"] and
+                    ema_trend in ["bullish_aligned", "bearish_aligned"] and
+                    # 2. Meaningful swing range (not choppy noise)
+                    swing_range > atr_value * 2 and
+                    # 3. Trend direction matches bias
+                    ((fib_trend == "uptrend" and bias == "bullish") or
+                     (fib_trend == "downtrend" and bias == "bearish"))
+                )
+
+                # Track which method was used
+                levels_method = "fibonacci" if use_fib_for_levels else "support_resistance"
+
+                # ============================================================
+                # FIBONACCI-BASED LEVELS (When trend is clear)
+                # ============================================================
+                if use_fib_for_levels and bias == "bullish":
+                    # Bullish setup in uptrend: Buy pullbacks to Fib support
+                    entry_low = retracements.get("0.618", supports[0] if supports else current_price * 0.98)
+                    entry_high = retracements.get("0.382", current_price * 0.995)
+                    # Stop below 0.786 with 5% buffer (avoid stop hunts at exact Fib)
+                    fib_786 = retracements.get("0.786", entry_low * 0.95)
+                    stop_loss = fib_786 * 0.95
+                    # Targets at Fib extensions beyond swing high
                     targets = [
-                        PriceTargetWithReasoning(price=round(current_price * 1.03, 2), reasoning="First resistance"),
-                        PriceTargetWithReasoning(price=round(current_price * 1.06, 2), reasoning="Second resistance"),
+                        PriceTargetWithReasoning(
+                            price=round(extensions.get("1.272", current_price * 1.05), 2),
+                            reasoning="Fibonacci 1.272 extension"
+                        ),
+                        PriceTargetWithReasoning(
+                            price=round(extensions.get("1.618", current_price * 1.10), 2),
+                            reasoning="Fibonacci 1.618 extension (golden ratio)"
+                        ),
                     ]
-                elif bias == "bearish" and resistances:
-                    # Bearish/short setup: entry near resistance, stop above, targets below
+                    logger.info(f"[{agent_name}] Using FIBONACCI levels (bullish uptrend)")
+
+                elif use_fib_for_levels and bias == "bearish":
+                    # Bearish setup in downtrend: Short rallies to Fib resistance
                     entry_low = current_price * 1.005
-                    entry_high = resistances[0] if resistances else current_price * 1.02
-                    stop_loss = entry_high * 1.03  # Stop above resistance for shorts
+                    entry_high = retracements.get("0.382", resistances[0] if resistances else current_price * 1.02)
+                    # Stop above 0.786 with buffer
+                    fib_786 = retracements.get("0.786", entry_high * 1.05)
+                    stop_loss = fib_786 * 1.05
+                    # Downside Fib extension targets
                     targets = [
-                        PriceTargetWithReasoning(price=round(current_price * 0.97, 2), reasoning="First support target"),
-                        PriceTargetWithReasoning(price=round(current_price * 0.94, 2), reasoning="Second support target"),
+                        PriceTargetWithReasoning(
+                            price=round(extensions.get("1.272", current_price * 0.95), 2),
+                            reasoning="Fibonacci 1.272 extension (downside)"
+                        ),
+                        PriceTargetWithReasoning(
+                            price=round(extensions.get("1.618", current_price * 0.90), 2),
+                            reasoning="Fibonacci 1.618 extension (downside)"
+                        ),
                     ]
+                    logger.info(f"[{agent_name}] Using FIBONACCI levels (bearish downtrend)")
+
+                # ============================================================
+                # S/R + ATR-BASED LEVELS (When Fibonacci isn't appropriate)
+                # Used for: choppy markets, neutral bias, day trades, small swings
+                # ============================================================
                 else:
-                    # Neutral or missing levels - use conservative defaults
-                    entry_low = current_price * 0.98
-                    entry_high = current_price * 0.995
-                    stop_loss = current_price * 0.95
-                    targets = [
-                        PriceTargetWithReasoning(price=round(current_price * 1.05, 2), reasoning="Target 1"),
-                    ]
+                    if bias == "bullish" and supports:
+                        entry_low = supports[0] if supports else current_price * 0.98
+                        entry_high = current_price * 0.995
+                        stop_loss = entry_low * 0.97  # ATR-based stop
+                        targets = [
+                            PriceTargetWithReasoning(
+                                price=round(resistances[0] if resistances else current_price * 1.03, 2),
+                                reasoning="First resistance level"
+                            ),
+                            PriceTargetWithReasoning(
+                                price=round(resistances[1] if len(resistances) > 1 else current_price * 1.06, 2),
+                                reasoning="Second resistance level"
+                            ),
+                        ]
+                    elif bias == "bearish" and resistances:
+                        entry_low = current_price * 1.005
+                        entry_high = resistances[0] if resistances else current_price * 1.02
+                        stop_loss = entry_high * 1.03
+                        targets = [
+                            PriceTargetWithReasoning(
+                                price=round(supports[0] if supports else current_price * 0.97, 2),
+                                reasoning="First support target"
+                            ),
+                        ]
+                    else:
+                        # Neutral - conservative defaults
+                        entry_low = current_price * 0.98
+                        entry_high = current_price * 0.995
+                        stop_loss = current_price * 0.95
+                        targets = [
+                            PriceTargetWithReasoning(
+                                price=round(current_price * 1.05, 2),
+                                reasoning="Conservative target"
+                            ),
+                        ]
+                    logger.info(f"[{agent_name}] Using S/R levels (fib_trend={fib_trend}, ema_trend={ema_trend})")
 
                 holding_periods = {"day": "1-4 hours", "swing": "3-7 days", "position": "2-6 weeks"}
 
@@ -518,6 +961,21 @@ class TradePlanOrchestrator:
                 position_aligned = True
                 risk_warnings = []
                 what_to_watch = ["Volume confirmation", "Break of key levels"]
+
+                # Auto-add earnings risk warning if applicable (CRITICAL)
+                if context.has_earnings_risk and context.days_until_earnings is not None:
+                    earnings_warning = f"EARNINGS IN {context.days_until_earnings} DAYS - High gap risk!"
+                    if context.fundamentals and context.fundamentals.next_earnings:
+                        ne = context.fundamentals.next_earnings
+                        if ne.hour:
+                            timing = {
+                                "bmo": "before market open",
+                                "amc": "after close",
+                                "dmh": "during hours"
+                            }.get(ne.hour, ne.hour)
+                            earnings_warning += f" ({timing})"
+                    risk_warnings.insert(0, earnings_warning)  # Make it first warning
+                    what_to_watch.insert(0, f"Earnings date: {context.fundamentals.next_earnings.date if context.fundamentals and context.fundamentals.next_earnings else 'upcoming'}")
 
                 if context.has_position and context.position_entry:
                     entry_price = context.position_entry
@@ -614,7 +1072,14 @@ class TradePlanOrchestrator:
 ## Key Levels:
 - Support: {', '.join([f'${s:.2f}' for s in supports]) if supports else 'None identified'}
 - Resistance: {', '.join([f'${r:.2f}' for r in resistances]) if resistances else 'None identified'}
-
+{f'''
+## Fibonacci Analysis:
+- Trend: {fib_trend}
+- Swing Range: ${fib_result.get("swing_low", 0):.2f} to ${fib_result.get("swing_high", 0):.2f}
+- Key Retracements: {", ".join([f"{k}: ${v:.2f}" for k, v in sorted(retracements.items())[:4]]) if retracements else "None"}
+- Key Extensions: {", ".join([f"{k}: ${v:.2f}" for k, v in sorted(extensions.items())[:3]]) if extensions else "None"}
+- Using Fibonacci for levels: {levels_method == "fibonacci"}
+''' if fib_trend in ["uptrend", "downtrend"] else ""}
 ## Vision Analysis:
 {vision_result.get('summary', 'No chart analysis available')}
 - Patterns: {', '.join(vision_result.get('visual_patterns', [])) or 'None'}
@@ -671,32 +1136,21 @@ Respond with a JSON object containing:
 Return ONLY the JSON object, no other text."""
 
                 # Call the provider for real analysis
-                # Use search if provider supports X search (Grok), otherwise no search for sub-agents
-                search_params = None
-                if provider.supports_x_search:
-                    search_params = get_x_search_parameters()
-
+                # NOTE: X search is DISABLED for sub-agents to avoid rate limiting
+                # X/social sentiment is fetched ONCE in gather_common_context and shared via DataContext
+                # This prevents 3 parallel X search requests which caused timeouts
                 plan_response = await provider.create_message(
                     messages=[AIMessage(role="user", content=user_message)],
                     system=system_prompt,
                     model_type="planning",
                     max_tokens=2000,
-                    search_parameters=search_params,
+                    search_parameters=None,  # No X search - data already in context
                 )
 
-                # Capture X/social citations from Grok response
-                x_citations = []
-                logger.debug(f"[{agent_name}] Raw citations from response: {plan_response.citations}")
-                logger.debug(f"[{agent_name}] Raw response keys: {list(plan_response.raw_response.keys()) if plan_response.raw_response else 'None'}")
-                if plan_response.citations:
-                    for citation in plan_response.citations:
-                        if isinstance(citation, str):
-                            x_citations.append(citation)
-                        elif isinstance(citation, dict) and "url" in citation:
-                            x_citations.append(citation["url"])
-                    logger.info(f"[{agent_name}] Captured {len(x_citations)} X/social citations")
-                else:
-                    logger.warning(f"[{agent_name}] No citations returned from Grok X search")
+                # Use X citations from the shared context (fetched once in common step)
+                x_citations = context.x_citations or []
+                if x_citations:
+                    logger.info(f"[{agent_name}] Using {len(x_citations)} pre-fetched X/social citations from context")
 
                 # Parse the AI response
                 ai_text = plan_response.content.strip()
@@ -786,7 +1240,9 @@ Return ONLY the JSON object, no other text."""
                     what_to_watch=what_to_watch or ["Monitor price action", "Watch for volume confirmation"],
                     risk_warnings=risk_warnings or [],
                     atr_percent=atr_pct,
-                    technical_summary=f"RSI: {rsi:.1f}, EMA trend: {ema_trend}",
+                    technical_summary=f"RSI: {rsi:.1f}, EMA trend: {ema_trend}, Levels: {levels_method}" + (
+                        f", Fib trend: {fib_trend}" if levels_method == "fibonacci" else ""
+                    ),
                     x_citations=x_citations,
                 )
 
