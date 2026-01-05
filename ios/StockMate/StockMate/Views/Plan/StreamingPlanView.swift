@@ -1,16 +1,46 @@
 import SwiftUI
 
 /// Shows the AI's analysis as it streams in during plan generation
-/// Uses the terminal-style AgentStreamingView for Claude Code-like experience
+/// Supports both agentic mode (new AI-driven tool loop) and legacy V2 mode (sub-agents)
 struct StreamingPlanView: View {
     @ObservedObject var viewModel: TradingPlanViewModel
+    @ObservedObject var manager: PlanGenerationManager
 
     var body: some View {
-        AgentStreamingView(
-            symbol: viewModel.symbol,
-            steps: $viewModel.analysisSteps,
-            isComplete: $viewModel.isAnalysisComplete
-        )
+        if manager.isAgenticMode {
+            // New agentic mode: AI-driven tool-use loop with visible reasoning
+            AgenticStreamingView(
+                symbol: manager.activeSymbol ?? viewModel.symbol,
+                streamItems: Binding(
+                    get: { manager.agenticStreamItems },
+                    set: { _ in }  // Read-only from view
+                ),
+                isComplete: Binding(
+                    get: { !manager.isGenerating && manager.agenticFinalPlan != nil },
+                    set: { _ in }
+                ),
+                finalPlan: Binding(
+                    get: { manager.agenticFinalPlan },
+                    set: { _ in }
+                ),
+                expandedToolResults: $manager.expandedToolResults
+            )
+        } else {
+            // Legacy V2 mode: sub-agent orchestration view
+            AgentStreamingView(
+                symbol: viewModel.symbol,
+                steps: $viewModel.analysisSteps,
+                isComplete: $viewModel.isAnalysisComplete
+            )
+        }
+    }
+}
+
+/// Simplified initializer for backward compatibility
+extension StreamingPlanView {
+    init(viewModel: TradingPlanViewModel) {
+        self.viewModel = viewModel
+        self.manager = PlanGenerationManager.shared
     }
 }
 

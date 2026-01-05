@@ -299,7 +299,7 @@ async def get_fibonacci_levels(symbol: str, trade_type: str = "swing") -> Dict[s
         if trade_type == "day":
             swing_lookback = 10
             days_back = 30
-            timeframe = "5min"  # Intraday for day trades
+            timeframe = "5m"  # Intraday for day trades
         elif trade_type == "position":
             swing_lookback = 50
             days_back = 200

@@ -25,6 +25,20 @@ final class PlanGenerationManager: ObservableObject {
     /// Orchestrator-level progress (shown before sub-agents)
     @Published private(set) var orchestratorSteps: [OrchestratorStep] = []
 
+    // MARK: - Agentic Mode State
+
+    /// Whether we're in agentic mode (AI-driven tool-use loop) vs legacy V2 mode
+    @Published private(set) var isAgenticMode: Bool = true
+
+    /// Stream of agentic events (thinking, tool calls, results)
+    @Published private(set) var agenticStreamItems: [AgenticStreamItem] = []
+
+    /// Final plan from agentic mode (raw dictionary before conversion)
+    @Published private(set) var agenticFinalPlan: [String: Any]?
+
+    /// Expanded tool results in agentic view
+    @Published var expandedToolResults: Set<UUID> = []
+
     /// Whether the "Starting Analyzers" section is expanded to show sub-agents
     @Published var isAnalyzersSectionExpanded: Bool = true
 
@@ -46,7 +60,16 @@ final class PlanGenerationManager: ObservableObject {
 
     /// Check if generation completed for a symbol (not still generating)
     func hasCompletedPlan(for symbol: String) -> Bool {
-        activeSymbol?.uppercased() == symbol.uppercased() && generatedPlan != nil && !isGenerating
+        guard activeSymbol?.uppercased() == symbol.uppercased() && !isGenerating else {
+            return false
+        }
+        // Check either V2 plan or agentic plan
+        return generatedPlan != nil || agenticFinalPlan != nil
+    }
+
+    /// Check if agentic mode completed (has agentic plan, not V2 plan)
+    func hasCompletedAgenticPlan(for symbol: String) -> Bool {
+        activeSymbol?.uppercased() == symbol.uppercased() && agenticFinalPlan != nil && !isGenerating
     }
 
     /// Start plan generation for a symbol
@@ -63,7 +86,13 @@ final class PlanGenerationManager: ObservableObject {
         orchestratorSteps = []
         isAnalyzersSectionExpanded = true
 
-        // Initialize sub-agents with pending state
+        // Reset agentic mode state
+        isAgenticMode = true  // Assume agentic until we see V2 events
+        agenticStreamItems = []
+        agenticFinalPlan = nil
+        expandedToolResults = []
+
+        // Initialize sub-agents with pending state (for V2 fallback)
         initializeSubagents()
 
         // Start the generation task
@@ -84,6 +113,10 @@ final class PlanGenerationManager: ObservableObject {
         subagentProgress = [:]
         orchestratorSteps = []
         error = nil
+        // Clear agentic state
+        agenticStreamItems = []
+        agenticFinalPlan = nil
+        expandedToolResults = []
     }
 
     /// Clear completed generation data
@@ -95,6 +128,10 @@ final class PlanGenerationManager: ObservableObject {
         subagentProgress = [:]
         orchestratorSteps = []
         error = nil
+        // Clear agentic state
+        agenticStreamItems = []
+        agenticFinalPlan = nil
+        expandedToolResults = []
     }
 
     /// Approve the analysis and create a trading plan from it
@@ -226,8 +263,55 @@ final class PlanGenerationManager: ObservableObject {
 
     private func handleStreamEvent(_ event: APIService.PlanStreamEvent) {
         switch event.type {
+        // MARK: - Agentic Mode Events
+        case "agent_thinking":
+            // AI is reasoning about what to do next
+            if let thinking = event.thinking {
+                let item = AgentThinking(
+                    text: thinking,
+                    iteration: event.iteration ?? 0,
+                    timestamp: Date()
+                )
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    agenticStreamItems.append(.thinking(item))
+                }
+            }
+
+        case "tool_call":
+            // AI is calling a tool
+            if let toolName = event.toolName {
+                let arguments = event.toolArguments?.mapValues { $0.value } ?? [:]
+                let item = ToolCall(
+                    name: toolName,
+                    arguments: arguments,
+                    iteration: event.iteration ?? 0,
+                    timestamp: Date()
+                )
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    agenticStreamItems.append(.toolCall(item))
+                }
+            }
+
+        case "tool_result":
+            // Tool returned a result
+            if let toolName = event.toolName,
+               let result = event.toolResult {
+                let resultDict = result.mapValues { $0.value }
+                let item = ToolResult(
+                    toolName: toolName,
+                    result: resultDict,
+                    iteration: event.iteration ?? 0,
+                    timestamp: Date()
+                )
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    agenticStreamItems.append(.toolResult(item))
+                }
+            }
+
+        // MARK: - V2/Legacy Mode Events
         case "orchestrator_step":
-            // V2: Orchestrator-level progress (gathering common data, spawning subagents, etc.)
+            // V2: Orchestrator-level progress - switch to V2 mode
+            isAgenticMode = false
             handleOrchestratorStep(
                 stepType: event.stepType,
                 status: event.stepStatus,
@@ -235,20 +319,33 @@ final class PlanGenerationManager: ObservableObject {
             )
 
         case "subagent_progress":
+            isAgenticMode = false
             if let subagentsData = event.subagents {
                 handleSubagentProgress(subagentsData)
             }
 
         case "subagent_complete":
+            isAgenticMode = false
             if let agentName = event.agentName {
                 handleSubagentComplete(agentName, findings: event.agentFindings ?? [])
             }
 
         case "plan_complete", "plan", "final_result":
-            if let newPlan = event.plan {
+            // Handle agentic mode vs V2 mode differently
+            if isAgenticMode, let rawPlan = event.agenticPlan {
+                // Agentic mode: use raw agentic_plan dictionary
+                let planDict = rawPlan.mapValues { $0.value }
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    self.agenticFinalPlan = planDict
+                    self.analysisId = event.analysisId
+                    self.lastUpdated = Date()
+                    // Don't set generatedPlan for agentic - it has different structure
+                }
+            } else if let newPlan = event.plan {
+                // V2/Legacy mode: use TradingPlanResponse
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                     self.generatedPlan = newPlan
-                    self.analysisId = event.analysisId  // Store for later approval
+                    self.analysisId = event.analysisId
                     self.lastUpdated = Date()
                     self.markAllSubagentsComplete()
                 }
@@ -334,6 +431,53 @@ final class PlanGenerationManager: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Convert TradingPlanResponse to dictionary for agentic view
+    private func convertPlanToDictionary(_ plan: TradingPlanResponse) -> [String: Any] {
+        let selectedStyle = plan.tradeStyle ?? "swing"
+
+        var dict: [String: Any] = [
+            "symbol": plan.symbol,
+            "recommended_style": selectedStyle,
+            "recommendation_reasoning": plan.tradeStyleReasoning ?? plan.thesis
+        ]
+
+        // Build the selected plan
+        let selectedPlan: [String: Any] = [
+            "conviction": convictionFromInt(plan.confidence),
+            "conviction_reasoning": plan.tradeStyleReasoning ?? "",
+            "suitable": true,
+            "bias": plan.bias,
+            "thesis": plan.thesis
+        ]
+        dict["\(selectedStyle)_trade_plan"] = selectedPlan
+
+        // Build alternative plans
+        for alt in plan.alternatives {
+            let altPlan: [String: Any] = [
+                "conviction": convictionFromInt(alt.confidence),
+                "conviction_reasoning": alt.whyNotSelected,
+                "suitable": alt.suitable,
+                "bias": alt.bias,
+                "thesis": alt.briefThesis
+            ]
+            dict["\(alt.tradeStyle)_trade_plan"] = altPlan
+        }
+
+        // Add risk warnings and what to watch
+        dict["risk_warnings"] = plan.riskWarnings
+        dict["what_to_watch"] = plan.whatToWatch
+
+        return dict
+    }
+
+    /// Convert integer confidence (0-100) to string conviction level
+    private func convictionFromInt(_ confidence: Int?) -> String {
+        guard let conf = confidence else { return "medium" }
+        if conf >= 70 { return "high" }
+        if conf >= 40 { return "medium" }
+        return "low"
     }
 }
 

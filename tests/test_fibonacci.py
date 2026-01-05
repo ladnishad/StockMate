@@ -520,7 +520,7 @@ class TestGetFibonacciLevelsAgentTool:
             # Verify fetch was called with correct parameters for day trade
             mock_fetch.assert_called_once()
             call_args = mock_fetch.call_args
-            assert call_args[1]["timeframe"] == "5min"
+            assert call_args[1]["timeframe"] == "5m"
             assert call_args[1]["days_back"] == 30
 
             # Should still return valid structure
