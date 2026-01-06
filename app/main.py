@@ -1101,26 +1101,6 @@ async def add_to_watchlist(
     """Add ticker to user's watchlist."""
     user_id = user.id
     try:
-        # Check subscription limits before adding
-        subscription_service = get_subscription_service()
-        can_add, current_count, limit = await subscription_service.can_add_to_watchlist(user_id)
-
-        if not can_add:
-            # Get tier info for the error message
-            user_subscription = await subscription_service.get_user_subscription(user_id)
-            tier_name = user_subscription.tier_info.name
-
-            if limit == -1:
-                limit_text = "unlimited"
-            else:
-                limit_text = str(limit)
-
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Watchlist limit reached. Your {tier_name} subscription allows {limit_text} stocks. "
-                       f"You currently have {current_count}. Remove a stock or upgrade your subscription to add more.",
-            )
-
         store = get_watchlist_store()
 
         # Check if symbol already exists (don't count as new addition)
@@ -1128,6 +1108,27 @@ async def add_to_watchlist(
             already_exists = await store.has_symbol_async(user_id, symbol.upper())
         else:
             already_exists = store.has_symbol(user_id, symbol.upper())
+
+        # Only check subscription limits for NEW symbols
+        if not already_exists:
+            subscription_service = get_subscription_service()
+            can_add, current_count, limit = await subscription_service.can_add_to_watchlist(user_id)
+
+            if not can_add:
+                # Get tier info for the error message
+                user_subscription = await subscription_service.get_user_subscription(user_id)
+                tier_name = user_subscription.tier_info.name
+
+                if limit == -1:
+                    limit_text = "unlimited"
+                else:
+                    limit_text = str(limit)
+
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Watchlist limit reached. Your {tier_name} subscription allows {limit_text} stocks. "
+                           f"You currently have {current_count}. Remove a stock or upgrade your subscription to add more.",
+                )
 
         item = store.add_symbol(user_id, symbol.upper(), notes=notes)
         if hasattr(item, '__await__'):
