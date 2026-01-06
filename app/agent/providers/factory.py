@@ -130,28 +130,46 @@ def clear_provider_cache() -> None:
 
 
 async def get_user_provider(user_id: str) -> AIProvider:
-    """Get the AI provider for a specific user based on their preferences.
+    """Get the AI provider for a specific user based on their preferences and subscription tier.
 
     This function looks up the user's preferred AI provider from their
-    settings and returns the appropriate provider instance.
+    settings, validates it against their subscription tier, and returns
+    the appropriate provider instance.
 
     Args:
         user_id: The user's ID
 
     Returns:
-        The user's preferred AIProvider instance
+        The user's preferred AIProvider instance (tier-validated)
     """
     from app.storage.user_settings_store import get_user_settings_store
+    from app.services.subscription_service import get_subscription_service
+
+    subscription_service = get_subscription_service()
 
     try:
+        # Get user's subscription tier to determine available providers
+        has_multi_model = await subscription_service.has_multi_model_access(user_id)
+        available_provider_names = await subscription_service.get_available_providers(user_id)
+
         settings_store = get_user_settings_store()
         user_settings = await settings_store.get_settings(user_id)
 
         if user_settings and user_settings.model_provider:
             provider_name = user_settings.model_provider
+
+            # Check if user's selected provider is allowed by their subscription tier
+            if provider_name not in available_provider_names:
+                logger.warning(
+                    f"User {user_id} selected {provider_name} but their subscription "
+                    f"tier only allows: {available_provider_names}. Falling back to Claude."
+                )
+                # Force Claude for users without multi-model access trying to use Grok
+                provider_name = "claude"
+
             try:
                 provider = ModelProvider(provider_name)
-                # Check if the provider is actually configured
+                # Check if the provider is actually configured (has API key)
                 if is_provider_available(provider):
                     logger.debug(f"Using user-selected {provider.value} provider for user {user_id}")
                     return get_provider(provider)
@@ -163,13 +181,21 @@ async def get_user_provider(user_id: str) -> AIProvider:
             except ValueError:
                 logger.warning(f"Unknown provider '{provider_name}' for user {user_id}")
     except Exception as e:
-        logger.warning(f"Error fetching user settings for {user_id}: {e}")
+        logger.warning(f"Error fetching user settings/subscription for {user_id}: {e}")
 
-    # Fall back to the default provider
-    default_provider = get_default_provider()
-    logger.debug(f"Using default {default_provider.value} provider for user {user_id}")
+    # Fall back to the tier-aware default provider
+    try:
+        default_name = await subscription_service.get_default_provider(user_id)
+        default_provider = ModelProvider(default_name)
+        if is_provider_available(default_provider):
+            logger.debug(f"Using tier-default {default_provider.value} provider for user {user_id}")
+            return get_provider(default_provider)
+    except Exception as e:
+        logger.warning(f"Error getting tier-default provider for {user_id}: {e}")
 
-    return get_provider(default_provider)
+    # Ultimate fallback: Claude (always safe for any tier)
+    logger.debug(f"Using ultimate fallback (Claude) provider for user {user_id}")
+    return get_provider(ModelProvider.CLAUDE)
 
 
 def get_default_provider() -> ModelProvider:
