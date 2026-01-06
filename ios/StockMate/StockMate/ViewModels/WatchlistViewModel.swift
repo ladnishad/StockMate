@@ -78,16 +78,69 @@ class WatchlistViewModel: ObservableObject {
 
     // MARK: - Add Symbol
 
+    /// Error type for watchlist operations
+    enum WatchlistError: LocalizedError {
+        case limitReached(message: String)
+        case networkError(String)
+        case unknown(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .limitReached(let message):
+                return message
+            case .networkError(let message):
+                return message
+            case .unknown(let message):
+                return message
+            }
+        }
+
+        var isLimitError: Bool {
+            if case .limitReached = self { return true }
+            return false
+        }
+    }
+
+    @Published var lastError: WatchlistError?
+
     /// Add a symbol to the watchlist
     func addSymbol(_ symbol: String) async -> Bool {
         isAdding = true
         addError = nil
+        lastError = nil
 
         do {
             _ = try await service.addSymbol(symbol)
             isAdding = false
             return true
+        } catch let error as APIServiceError {
+            isAdding = false
+
+            switch error {
+            case .serverError(let detail):
+                // Check if it's a tier limit error (403)
+                if detail.contains("limit reached") || detail.contains("Watchlist limit") {
+                    lastError = .limitReached(message: detail)
+                    addError = detail
+                } else {
+                    lastError = .networkError(detail)
+                    addError = detail
+                }
+            case .httpError(let code):
+                if code == 403 {
+                    lastError = .limitReached(message: "Watchlist limit reached. Upgrade your subscription to add more stocks.")
+                    addError = "Watchlist limit reached. Upgrade your subscription to add more stocks."
+                } else {
+                    lastError = .networkError("Server error (code: \(code))")
+                    addError = "Server error (code: \(code))"
+                }
+            default:
+                lastError = .unknown(error.localizedDescription)
+                addError = error.localizedDescription
+            }
+            return false
         } catch {
+            lastError = .unknown(error.localizedDescription)
             addError = error.localizedDescription
             isAdding = false
             return false

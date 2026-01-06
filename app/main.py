@@ -39,6 +39,16 @@ from app.storage.position_store import get_position_store, Position
 from app.storage.alert_history import get_alert_history, Alert
 from app.storage.device_store import get_device_store, DeviceToken
 from app.services.plan_evaluator import get_plan_evaluator
+from app.services.subscription_service import get_subscription_service
+from app.models.subscription import (
+    SubscriptionTier,
+    TierInfo,
+    UserSubscription,
+    SubscriptionUpdateRequest,
+    SubscriptionUpdateResponse,
+    get_tier_info,
+    get_all_tiers,
+)
 from app.models.watchlist import (
     WatchlistItem,
     WatchlistResponse,
@@ -1091,7 +1101,34 @@ async def add_to_watchlist(
     """Add ticker to user's watchlist."""
     user_id = user.id
     try:
+        # Check subscription limits before adding
+        subscription_service = get_subscription_service()
+        can_add, current_count, limit = await subscription_service.can_add_to_watchlist(user_id)
+
+        if not can_add:
+            # Get tier info for the error message
+            user_subscription = await subscription_service.get_user_subscription(user_id)
+            tier_name = user_subscription.tier_info.name
+
+            if limit == -1:
+                limit_text = "unlimited"
+            else:
+                limit_text = str(limit)
+
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Watchlist limit reached. Your {tier_name} subscription allows {limit_text} stocks. "
+                       f"You currently have {current_count}. Remove a stock or upgrade your subscription to add more.",
+            )
+
         store = get_watchlist_store()
+
+        # Check if symbol already exists (don't count as new addition)
+        if hasattr(store, 'has_symbol_async'):
+            already_exists = await store.has_symbol_async(user_id, symbol.upper())
+        else:
+            already_exists = store.has_symbol(user_id, symbol.upper())
+
         item = store.add_symbol(user_id, symbol.upper(), notes=notes)
         if hasattr(item, '__await__'):
             item = await item
@@ -1109,6 +1146,8 @@ async def add_to_watchlist(
         logger.info(f"Added {symbol.upper()} to watchlist for user {user_id}")
         return WatchlistItem(**item)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error adding to watchlist: {str(e)}")
         raise HTTPException(
@@ -4619,11 +4658,34 @@ async def clear_chat_history(
 # =============================================================================
 
 
+class SubscriptionTierResponse(BaseModel):
+    """Response model for subscription tier info."""
+
+    tier: str
+    name: str
+    description: str
+    price_per_month: int
+    watchlist_limit: int  # -1 for unlimited
+    multi_model_access: bool
+    features: List[str]
+
+
+class UserSubscriptionResponse(BaseModel):
+    """Response model for user subscription status."""
+
+    tier: str
+    tier_info: SubscriptionTierResponse
+    watchlist_count: int
+    watchlist_remaining: int  # -1 for unlimited
+    can_add_to_watchlist: bool
+
+
 class UserSettingsResponse(BaseModel):
     """Response model for user settings."""
 
     model_provider: str
     available_providers: List[str]
+    subscription: Optional[UserSubscriptionResponse] = None
 
 
 class UpdateProviderRequest(BaseModel):
@@ -4631,11 +4693,19 @@ class UpdateProviderRequest(BaseModel):
 
     provider: str
 
-    @field_validator("provider")
+
+class AdminUpdateSubscriptionRequest(BaseModel):
+    """Request model for admin to update user subscription tier."""
+
+    user_id: str
+    tier: str  # base, premium, pro, unlimited
+
+    @field_validator("tier")
     @classmethod
-    def validate_provider(cls, v):
-        if v not in ["claude", "grok"]:
-            raise ValueError("Provider must be 'claude' or 'grok'")
+    def validate_tier(cls, v):
+        valid_tiers = ["base", "premium", "pro", "unlimited"]
+        if v not in valid_tiers:
+            raise ValueError(f"Tier must be one of: {', '.join(valid_tiers)}")
         return v
 
 
@@ -4646,7 +4716,7 @@ class UpdateProviderRequest(BaseModel):
     description="Get the current user's AI provider settings. Requires authentication.",
 )
 async def get_user_settings(user: User = Depends(get_current_user)):
-    """Get user settings including AI provider preference."""
+    """Get user settings including AI provider preference and subscription info."""
     from app.storage.user_settings_store import get_user_settings_store
 
     user_id = user.id
@@ -4654,9 +4724,38 @@ async def get_user_settings(user: User = Depends(get_current_user)):
         store = get_user_settings_store()
         settings = await store.get_settings(user_id)
 
+        # Get subscription info
+        subscription_service = get_subscription_service()
+        user_subscription = await subscription_service.get_user_subscription(user_id)
+        available_providers = await subscription_service.get_available_providers(user_id)
+
+        # Build subscription response
+        tier_info = user_subscription.tier_info
+        subscription_response = UserSubscriptionResponse(
+            tier=user_subscription.tier.value,
+            tier_info=SubscriptionTierResponse(
+                tier=tier_info.tier.value,
+                name=tier_info.name,
+                description=tier_info.description,
+                price_per_month=tier_info.price_per_month,
+                watchlist_limit=tier_info.watchlist_limit,
+                multi_model_access=tier_info.multi_model_access,
+                features=tier_info.features,
+            ),
+            watchlist_count=user_subscription.watchlist_count,
+            watchlist_remaining=user_subscription.watchlist_remaining,
+            can_add_to_watchlist=user_subscription.can_add_to_watchlist,
+        )
+
+        # For base tier, force Claude as provider
+        model_provider = settings.model_provider
+        if not tier_info.multi_model_access and model_provider != "claude":
+            model_provider = "claude"
+
         return UserSettingsResponse(
-            model_provider=settings.model_provider,
-            available_providers=["claude", "grok"],
+            model_provider=model_provider,
+            available_providers=available_providers,
+            subscription=subscription_response,
         )
 
     except Exception as e:
@@ -4681,16 +4780,139 @@ async def update_provider_setting(
 
     user_id = user.id
     try:
+        # Check if user has access to the requested provider
+        subscription_service = get_subscription_service()
+        has_multi_model = await subscription_service.has_multi_model_access(user_id)
+
+        if request.provider == "grok" and not has_multi_model:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Grok is only available for Premium, Pro, and Unlimited subscribers. Upgrade your subscription to access Grok.",
+            )
+
         store = get_user_settings_store()
         await store.update_provider(user_id, request.provider)
 
         return {"status": "ok", "provider": request.provider}
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating provider setting: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update provider setting: {str(e)}",
+        )
+
+
+# =============================================================================
+# Subscription Endpoints
+# =============================================================================
+
+
+@app.get(
+    "/subscription",
+    response_model=UserSubscriptionResponse,
+    summary="Get user subscription",
+    description="Get the current user's subscription tier and usage. Requires authentication.",
+)
+async def get_user_subscription_endpoint(user: User = Depends(get_current_user)):
+    """Get user's subscription tier and current usage."""
+    user_id = user.id
+    try:
+        subscription_service = get_subscription_service()
+        user_subscription = await subscription_service.get_user_subscription(user_id)
+
+        tier_info = user_subscription.tier_info
+        return UserSubscriptionResponse(
+            tier=user_subscription.tier.value,
+            tier_info=SubscriptionTierResponse(
+                tier=tier_info.tier.value,
+                name=tier_info.name,
+                description=tier_info.description,
+                price_per_month=tier_info.price_per_month,
+                watchlist_limit=tier_info.watchlist_limit,
+                multi_model_access=tier_info.multi_model_access,
+                features=tier_info.features,
+            ),
+            watchlist_count=user_subscription.watchlist_count,
+            watchlist_remaining=user_subscription.watchlist_remaining,
+            can_add_to_watchlist=user_subscription.can_add_to_watchlist,
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting subscription: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get subscription: {str(e)}",
+        )
+
+
+@app.get(
+    "/subscription/tiers",
+    summary="Get all subscription tiers",
+    description="Get information about all available subscription tiers.",
+)
+async def get_subscription_tiers():
+    """Get information about all available subscription tiers."""
+    tiers = get_all_tiers()
+    return [
+        SubscriptionTierResponse(
+            tier=tier.tier.value,
+            name=tier.name,
+            description=tier.description,
+            price_per_month=tier.price_per_month,
+            watchlist_limit=tier.watchlist_limit,
+            multi_model_access=tier.multi_model_access,
+            features=tier.features,
+        )
+        for tier in tiers
+    ]
+
+
+@app.put(
+    "/subscription/admin",
+    summary="Admin: Update user subscription",
+    description="Admin endpoint to update a user's subscription tier. Used for manual tier assignment.",
+)
+async def admin_update_subscription(
+    request: AdminUpdateSubscriptionRequest,
+    admin_user: User = Depends(get_current_user),
+):
+    """Admin endpoint to update a user's subscription tier.
+
+    Note: In production, this should be restricted to admin users only.
+    For now, any authenticated user can update any user's subscription.
+    This is for testing purposes.
+    """
+    try:
+        subscription_service = get_subscription_service()
+        tier = SubscriptionTier(request.tier)
+
+        old_tier, new_tier = await subscription_service.set_user_tier(
+            user_id=request.user_id,
+            tier=tier,
+            admin_id=admin_user.id,
+        )
+
+        return {
+            "success": True,
+            "user_id": request.user_id,
+            "old_tier": old_tier.value,
+            "new_tier": new_tier.value,
+            "message": f"Subscription updated from {old_tier.value} to {new_tier.value}",
+        }
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid tier: {str(e)}",
+        )
+    except Exception as e:
+        logger.error(f"Error updating subscription: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update subscription: {str(e)}",
         )
 
 

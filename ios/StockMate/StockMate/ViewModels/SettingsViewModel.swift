@@ -15,6 +15,10 @@ class SettingsViewModel: ObservableObject {
     @Published var error: String?
     @Published var showSuccessAnimation: Bool = false
 
+    // Subscription
+    @Published var subscription: UserSubscription?
+    @Published var allTiers: [SubscriptionTierInfo] = []
+
     // MARK: - Computed Properties
 
     /// Returns a description for the currently selected AI provider
@@ -27,6 +31,21 @@ class SettingsViewModel: ObservableObject {
         default:
             return "Select an AI provider to power your trading insights."
         }
+    }
+
+    /// Whether Grok is available based on subscription tier
+    var isGrokAvailable: Bool {
+        subscription?.tierInfo.multiModelAccess ?? false
+    }
+
+    /// Current tier display name
+    var currentTierName: String {
+        subscription?.tierInfo.name ?? "Base"
+    }
+
+    /// Current tier price display
+    var currentTierPrice: String {
+        subscription?.tierInfo.priceDisplay ?? "Free"
     }
 
     /// Returns the display name for a provider
@@ -127,6 +146,23 @@ class SettingsViewModel: ObservableObject {
         }
     }
 
+    /// Check if a provider is enabled for selection
+    func isProviderEnabled(_ provider: String) -> Bool {
+        // Grok requires multi-model access (Premium+ subscription)
+        if provider == "grok" {
+            return isGrokAvailable
+        }
+        return true
+    }
+
+    /// Get badge text for a disabled provider
+    func providerBadge(for provider: String) -> String? {
+        if provider == "grok" && !isGrokAvailable {
+            return "Premium"
+        }
+        return nil
+    }
+
     // MARK: - API Methods
 
     /// Load user settings from the server
@@ -138,6 +174,7 @@ class SettingsViewModel: ObservableObject {
             let settings = try await APIService.shared.getUserSettings()
             selectedProvider = settings.modelProvider
             availableProviders = settings.availableProviders
+            subscription = settings.subscription
         } catch {
             self.error = "Failed to load settings"
             print("SettingsViewModel: Error loading settings - \(error)")
@@ -146,9 +183,24 @@ class SettingsViewModel: ObservableObject {
         isLoading = false
     }
 
+    /// Load all subscription tiers
+    func loadAllTiers() async {
+        do {
+            allTiers = try await APIService.shared.getSubscriptionTiers()
+        } catch {
+            print("SettingsViewModel: Error loading tiers - \(error)")
+        }
+    }
+
     /// Update the user's AI provider preference
     func updateProvider(_ provider: String) async {
         guard provider != selectedProvider else { return }
+
+        // Check if provider is available for this subscription
+        if provider == "grok" && !isGrokAvailable {
+            self.error = "Upgrade to Premium to access Grok"
+            return
+        }
 
         let previousProvider = selectedProvider
         selectedProvider = provider // Optimistic update

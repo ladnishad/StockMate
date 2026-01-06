@@ -172,10 +172,19 @@ class Database:
                 CREATE TABLE IF NOT EXISTS user_settings (
                     user_id TEXT PRIMARY KEY,
                     model_provider TEXT DEFAULT 'grok',
+                    subscription_tier TEXT DEFAULT 'base',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
             """)
+
+            # Migration: Add subscription_tier column if it doesn't exist
+            try:
+                await conn.execute(
+                    "ALTER TABLE user_settings ADD COLUMN subscription_tier TEXT DEFAULT 'base'"
+                )
+            except Exception:
+                pass  # Column already exists
 
             await conn.commit()
             logger.info(f"Database initialized at {self.db_path}")
