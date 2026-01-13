@@ -915,12 +915,30 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                 visual_analysis = await self._perform_visual_analysis()
 
                 if visual_analysis:
-                    # Apply visual confidence modifier to the plan
+                    # Apply visual confidence modifier to the plan with confidence-based scaling
                     original_confidence = plan_data.get("confidence", 0)
-                    visual_modifier = visual_analysis.get("visual_confidence_modifier", 0)
+                    raw_visual_modifier = visual_analysis.get("visual_confidence_modifier", 0)
 
-                    # Clamp modifier to reasonable range
-                    visual_modifier = max(-20, min(20, visual_modifier))
+                    # Clamp raw modifier to reasonable range
+                    raw_visual_modifier = max(-20, min(20, raw_visual_modifier))
+
+                    # Confidence-based scaling of visual modifier:
+                    # - Low confidence (0-30%): reduce visual impact (may be noise)
+                    # - Medium confidence (30-60%): neutral, apply as-is
+                    # - High confidence (60-100%): enhance visual impact (confirms signal)
+                    if original_confidence < 30:
+                        modifier_scale = 0.7  # Reduce visual weight when technical is weak
+                        scale_reason = "low_confidence"
+                    elif original_confidence <= 60:
+                        modifier_scale = 1.0  # Neutral
+                        scale_reason = "medium_confidence"
+                    else:
+                        modifier_scale = 1.2  # Enhance visual weight when technical is strong
+                        scale_reason = "high_confidence"
+
+                    # Apply scaling
+                    scaled_modifier = int(raw_visual_modifier * modifier_scale)
+                    visual_modifier = max(-20, min(20, scaled_modifier))
 
                     # Apply modifier and clamp final confidence to 0-100
                     adjusted_confidence = max(0, min(100, original_confidence + visual_modifier))
@@ -929,6 +947,9 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                     # Store visual analysis data in the plan
                     plan_data["visual_analysis"] = {
                         "confidence_modifier": visual_modifier,
+                        "raw_modifier": raw_visual_modifier,
+                        "modifier_scale": modifier_scale,
+                        "scale_reason": scale_reason,
                         "original_confidence": original_confidence,
                         "trend_quality": visual_analysis.get("trend_quality", {}),
                         "patterns_identified": visual_analysis.get("visual_patterns_identified", []),
@@ -939,7 +960,7 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                     logger.info(
                         f"Visual analysis applied for {self.symbol}: "
                         f"confidence {original_confidence} -> {adjusted_confidence} "
-                        f"(modifier: {visual_modifier:+d})"
+                        f"(raw modifier: {raw_visual_modifier:+d}, scaled: {visual_modifier:+d} at {modifier_scale:.1f}x)"
                     )
 
                 # Build the EnhancedTradePlan
@@ -1009,28 +1030,67 @@ QQQ: {market_ctx.get('qqq_direction', 'N/A')}
             atr_value = atr.get('value', 0)
             atr_pct = (atr_value / current_price * 100) if current_price > 0 else 0
 
-            tech_str = f"""RSI (14): {rsi.get('value', 0):.1f} - {rsi.get('signal', 'N/A')}
+            # Get new institutional-grade indicators
+            ichimoku = tech.get("ichimoku", {})
+            williams = tech.get("williams_r", {})
+            psar = tech.get("parabolic_sar", {})
+            cmf = tech.get("cmf", {})
+            adl = tech.get("adl", {})
+
+            tech_str = f"""=== CORE MOMENTUM ===
+RSI (14): {rsi.get('value', 0):.1f} - {rsi.get('signal', 'N/A')}
 MACD: {macd.get('signal', 'N/A')} | Histogram: {macd.get('histogram', 0):.3f}
 Histogram Trend: {macd.get('histogram_trend', 'N/A')}
 
+=== TREND ANALYSIS ===
 EMA Alignment:
 - Price vs 9 EMA: {'Above' if emas.get('above_9') else 'Below'}
 - Price vs 21 EMA: {'Above' if emas.get('above_21') else 'Below'}
 - Price vs 50 EMA: {'Above' if emas.get('above_50') else 'Below'}
-- EMA Trend: {emas.get('trend', 'N/A')}
+- Overall EMA Trend: {emas.get('trend', 'N/A')} ({emas.get('bullish_count', 0)}/3 bullish)
 
-Volume:
+=== VOLUME ANALYSIS ===
 - Relative Volume: {vol.get('relative', 0):.2f}x average
-- Volume Trend: {vol.get('trend', 'N/A')}
+- Volume Signal: {vol.get('signal', 'N/A')}
 
+=== VOLATILITY ===
 Bollinger Bands:
 - Position: {bb.get('position', 'N/A')}
 - Width: {bb.get('width', 'N/A')}
 - %B: {bb.get('percent_b', 'N/A')}
 
-Volatility:
+ATR Volatility:
 - ATR (14): ${atr_value:.2f}
-- ATR %: {atr_pct:.2f}% (of price)
+- ATR %: {atr.get('percentage', atr_pct):.2f}%
+- Volatility Regime: {atr.get('volatility_regime', 'moderate').upper()}
+
+=== INSTITUTIONAL-GRADE INDICATORS ===
+Ichimoku Cloud:
+- Signal: {ichimoku.get('signal', 'N/A')}
+- Price vs Cloud: {ichimoku.get('price_vs_cloud', 'N/A')}
+- TK Cross: {ichimoku.get('tk_cross', 'none')}
+- Cloud Color: {ichimoku.get('cloud_color', 'N/A')}
+
+Williams %R:
+- Value: {williams.get('value', 'N/A')}
+- Signal: {williams.get('signal', 'N/A')}
+- Overbought: {williams.get('overbought', False)} | Oversold: {williams.get('oversold', False)}
+
+Parabolic SAR:
+- Signal: {psar.get('signal', 'N/A')}
+- SAR Position: {psar.get('sar_position', 'N/A')}
+- Trend Direction: {psar.get('trend_direction', 'N/A')}
+
+Chaikin Money Flow (CMF):
+- Value: {cmf.get('value', 'N/A')}
+- Signal: {cmf.get('signal', 'N/A')}
+- Interpretation: {cmf.get('interpretation', 'N/A')}
+
+Accumulation/Distribution:
+- Signal: {adl.get('signal', 'N/A')}
+- ADL Trend: {adl.get('trend', 'N/A')}
+- Price Confirmation: {adl.get('price_confirmation', 'N/A')}
+- Divergence Detected: {adl.get('divergence', False)}
 """
 
         # Key levels with more detail
@@ -1216,7 +1276,7 @@ ATR (14): ${levels.get('atr', 0):.2f}
             return {"visual_confidence_modifier": 0, "visual_summary": "Analysis parsing failed"}
 
     def _parse_smart_plan_response(self, response_text: str) -> Dict[str, Any]:
-        """Parse the smart plan JSON response."""
+        """Parse the smart plan JSON response with enhanced error recovery."""
         try:
             # Look for JSON block
             if "```json" in response_text:
@@ -1258,19 +1318,74 @@ ATR (14): ${levels.get('atr', 0):.2f}
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse smart plan JSON: {e}")
             logger.error(f"Response was: {response_text[:1000]}")
-            # Return a minimal valid structure
+
+            # Enhanced error recovery: try regex extraction of key fields
+            import re
+
+            extracted_data = {}
+            extraction_notes = []
+
+            # Try to extract bias
+            bias_match = re.search(r'"bias"\s*:\s*"(bullish|bearish|neutral)"', response_text, re.IGNORECASE)
+            if bias_match:
+                extracted_data["bias"] = bias_match.group(1).lower()
+                extraction_notes.append("bias extracted")
+
+            # Try to extract confidence
+            conf_match = re.search(r'"confidence"\s*:\s*(\d+)', response_text)
+            if conf_match:
+                extracted_data["confidence"] = int(conf_match.group(1))
+                extraction_notes.append("confidence extracted")
+
+            # Try to extract entry zones
+            entry_low_match = re.search(r'"entry_zone_low"\s*:\s*\$?([\d.]+)', response_text)
+            if entry_low_match:
+                extracted_data["entry_zone_low"] = float(entry_low_match.group(1))
+                extraction_notes.append("entry_zone_low extracted")
+
+            entry_high_match = re.search(r'"entry_zone_high"\s*:\s*\$?([\d.]+)', response_text)
+            if entry_high_match:
+                extracted_data["entry_zone_high"] = float(entry_high_match.group(1))
+                extraction_notes.append("entry_zone_high extracted")
+
+            # Try to extract stop loss
+            stop_match = re.search(r'"stop_loss"\s*:\s*\$?([\d.]+)', response_text)
+            if stop_match:
+                extracted_data["stop_loss"] = float(stop_match.group(1))
+                extraction_notes.append("stop_loss extracted")
+
+            # Try to extract thesis
+            thesis_match = re.search(r'"thesis"\s*:\s*"([^"]+)"', response_text)
+            if thesis_match:
+                extracted_data["thesis"] = thesis_match.group(1)
+                extraction_notes.append("thesis extracted")
+
+            # Try to extract trade style
+            style_match = re.search(r'"recommended_style"\s*:\s*"(day|swing|position)"', response_text, re.IGNORECASE)
+            if style_match:
+                extracted_data["trade_style"] = {
+                    "recommended_style": style_match.group(1).lower(),
+                    "reasoning": "Extracted from partial response",
+                    "holding_period": "See full analysis"
+                }
+                extraction_notes.append("trade_style extracted")
+
+            if extraction_notes:
+                logger.info(f"Partial extraction succeeded: {', '.join(extraction_notes)}")
+
+            # Build response with extracted data or defaults
             return {
-                "trade_style": {
+                "trade_style": extracted_data.get("trade_style", {
                     "recommended_style": "swing",
-                    "reasoning": "Unable to parse response",
+                    "reasoning": "Unable to parse full response",
                     "holding_period": "Unknown"
-                },
-                "bias": "neutral",
-                "thesis": f"Analysis parsing failed: {str(e)[:100]}",
-                "confidence": 0,
-                "entry_zone_low": None,
-                "entry_zone_high": None,
-                "stop_loss": None,
+                }),
+                "bias": extracted_data.get("bias", "neutral"),
+                "thesis": extracted_data.get("thesis", f"Partial analysis - JSON parsing failed: {str(e)[:100]}"),
+                "confidence": extracted_data.get("confidence", 0),
+                "entry_zone_low": extracted_data.get("entry_zone_low"),
+                "entry_zone_high": extracted_data.get("entry_zone_high"),
+                "stop_loss": extracted_data.get("stop_loss"),
                 "stop_reasoning": "",
                 "targets": [],
                 "risk_reward": None,
@@ -1279,13 +1394,18 @@ ATR (14): ${levels.get('atr', 0):.2f}
                 "key_resistances": [],
                 "invalidation_criteria": "",
                 "educational": {
-                    "setup_explanation": "Analysis could not be completed",
+                    "setup_explanation": "Partial analysis recovered from parsing failure",
                     "level_explanations": {},
                     "what_to_watch": [],
                     "scenarios": [],
-                    "risk_warnings": ["Analysis parsing failed - please retry"],
+                    "risk_warnings": [
+                        "Analysis parsing partially failed - some data may be incomplete",
+                        "Please retry for a complete analysis"
+                    ],
                     "chart_annotations": []
-                }
+                },
+                "_parsing_status": "partial" if extraction_notes else "failed",
+                "_extraction_notes": extraction_notes,
             }
 
     def _build_enhanced_plan(self, plan_data: Dict[str, Any]) -> EnhancedTradePlan:
