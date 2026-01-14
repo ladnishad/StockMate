@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
-"""Detailed test to show ALL data gathered and sent for ALCY analysis."""
+"""Detailed test to show ALL data gathered and sent for stock analysis.
 
+Usage:
+    python tests/test_detailed_workflow.py          # Default: AAPL
+    python tests/test_detailed_workflow.py TSLA     # Test with TSLA
+    python tests/test_detailed_workflow.py NVDA     # Test with NVDA
+"""
+
+import argparse
 import asyncio
 import os
 import sys
@@ -9,8 +16,13 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-async def test_detailed_workflow():
-    """Test with detailed output of all data gathered."""
+
+async def test_detailed_workflow(symbol: str):
+    """Test with detailed output of all data gathered.
+
+    Args:
+        symbol: Stock ticker to test
+    """
     from app.agent.sdk import tools as sdk_tools
     from app.agent.sdk.orchestrator import TradePlanOrchestrator
     from app.agent.providers.factory import get_provider_config, get_user_provider
@@ -20,7 +32,6 @@ async def test_detailed_workflow():
     from app.agent.prompts.swing_trade_prompt import build_swing_trade_prompt
     from app.agent.prompts.position_trade_prompt import build_position_trade_prompt
 
-    symbol = "ALCY"
     user_id = "test_user"
 
     print("=" * 80)
@@ -291,4 +302,22 @@ async def test_detailed_workflow():
     print("=" * 80)
 
 if __name__ == "__main__":
-    asyncio.run(test_detailed_workflow())
+    parser = argparse.ArgumentParser(
+        description="Detailed orchestrator workflow test for a stock",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python tests/test_detailed_workflow.py AAPL
+    python tests/test_detailed_workflow.py TSLA
+    python tests/test_detailed_workflow.py NVDA
+        """
+    )
+    parser.add_argument(
+        "symbol",
+        nargs="?",
+        default="AAPL",
+        help="Stock ticker symbol (default: AAPL)"
+    )
+    args = parser.parse_args()
+
+    asyncio.run(test_detailed_workflow(args.symbol.upper()))
