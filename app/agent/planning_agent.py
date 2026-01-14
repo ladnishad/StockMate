@@ -365,22 +365,29 @@ Respond in this exact JSON format:
     "thesis": "2-3 sentence explanation of why this trade makes sense or why you're passing. Include any relevant news/catalyst info.",
     "entry_zone_low": <price or null if no trade>,
     "entry_zone_high": <price or null>,
-    "stop_loss": <price or null>,
-    "stop_reasoning": "Why this stop level",
-    "target_1": <price - conservative target>,
+    "stop_loss": <price or null - MUST be at STRONG/INSTITUTIONAL level with bounce_quality > 50>,
+    "stop_reasoning": "MUST reference level reliability: e.g., 'Below $145.50 [STRONG] - 4 touches, 2 high-vol, bounce: 72'",
+    "target_1": <price - conservative target at STRONG/INSTITUTIONAL level>,
     "target_2": <price - moderate target>,
     "target_3": <price - aggressive target or null>,
-    "target_reasoning": "Why these targets",
+    "target_reasoning": "MUST reference level reliability for targets",
     "risk_reward": <ratio like 2.5>,
     "position_size_pct": <1-5, percentage of account>,
-    "key_supports": [<price>, <price>],
-    "key_resistances": [<price>, <price>],
-    "invalidation_criteria": "What would invalidate this plan",
+    "key_supports": [<price>, <price> - prioritize STRONG/INSTITUTIONAL levels],
+    "key_resistances": [<price>, <price> - prioritize STRONG/INSTITUTIONAL levels],
+    "invalidation_criteria": "What would invalidate this plan - reference specific level breaks",
     "technical_summary": "Brief summary of key technical factors",
     "news_summary": "Brief summary of recent news/catalysts (from search). Empty string if no news found or search unavailable.",
     "social_sentiment": "bullish" | "bearish" | "neutral" | "mixed" | "none",
     "social_buzz": "Summary of social discussion (X/Twitter, Reddit, etc.) if found. Empty string if none."
 }}
+
+**CRITICAL LEVEL QUALITY RULES:**
+1. NEVER place stop loss at a "WEAK" level (1 touch, low bounce_quality) - high risk of stop hunt
+2. ALWAYS prefer levels marked [RECLAIMED] - these have proven institutional defense
+3. For stops: REQUIRE bounce_quality > 50 and preferably high_volume_touches > 0
+4. For targets: Use levels with high_volume_touches > 0 (institutions will defend/react)
+5. Reduce confidence by 10-15 points if forced to use MODERATE levels for critical decisions
 
 If this is NOT a good setup, still provide your analysis but set entry_zone, stop_loss, and targets to null and explain in the thesis why you're passing. Set confidence to how confident you are that there's no good trade here.
 """
