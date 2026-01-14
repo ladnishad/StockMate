@@ -145,11 +145,13 @@ def _count_level_touches(
     level_type: str,
     tolerance_pct: float = 0.5,
 ) -> dict:
-    """Count how many times price has touched a given level.
+    """Count how many times price has touched a given level with institutional-grade analysis.
 
-    This function analyzes historical price data to determine how many times
-    the price has tested a specific support/resistance level, providing
-    insight into the level's reliability and institutional significance.
+    This function performs comprehensive level analysis including:
+    - Touch counting with volume weighting
+    - Bounce quality assessment (wick rejection strength)
+    - Break and reclaim detection (reclaimed levels are stronger)
+    - Hold rate calculation
 
     Args:
         price_bars: List of PriceBar objects
@@ -164,7 +166,10 @@ def _count_level_touches(
         - last_touch_bars_ago: How many bars ago the last touch occurred
         - held: Number of times the level held (didn't break through)
         - broke: Number of times price broke through the level
-        - strength: Score 0-100 based on touches, recency, and hold rate
+        - high_volume_touches: Touches with above-average volume (institutional)
+        - bounce_quality: Average bounce strength (0-100, higher = stronger rejections)
+        - reclaimed: True if level was broken then reclaimed (very strong)
+        - strength: Score 0-100 based on all factors
         - reliability: "weak", "moderate", "strong", or "institutional"
     """
     if not price_bars or level <= 0:
@@ -174,6 +179,9 @@ def _count_level_touches(
             "last_touch_bars_ago": None,
             "held": 0,
             "broke": 0,
+            "high_volume_touches": 0,
+            "bounce_quality": 0,
+            "reclaimed": False,
             "strength": 0,
             "reliability": "weak",
         }
@@ -182,15 +190,42 @@ def _count_level_touches(
     total_bars = len(price_bars)
     recent_window = min(20, total_bars)
 
+    # Calculate average volume for comparison
+    volumes = [bar.volume for bar in price_bars if bar.volume > 0]
+    avg_volume = sum(volumes) / len(volumes) if volumes else 1
+
     touches = 0
     recent_touches = 0
     held_count = 0
     broke_count = 0
+    high_volume_touches = 0
+    bounce_strengths = []
     last_touch_idx = None
+
+    # Track break and reclaim
+    was_broken = False
+    was_reclaimed = False
+    previous_side = None  # Track which side of level price was on
 
     for i, bar in enumerate(price_bars):
         bars_from_end = total_bars - 1 - i
         is_recent = bars_from_end < recent_window
+
+        # Track break and reclaim
+        if level_type == "support":
+            current_side = "above" if bar.close > level else "below"
+            if previous_side == "above" and current_side == "below":
+                was_broken = True
+            elif was_broken and previous_side == "below" and current_side == "above":
+                was_reclaimed = True
+            previous_side = current_side
+        else:  # resistance
+            current_side = "below" if bar.close < level else "above"
+            if previous_side == "below" and current_side == "above":
+                was_broken = True
+            elif was_broken and previous_side == "above" and current_side == "below":
+                was_reclaimed = True
+            previous_side = current_side
 
         # Check for touch based on level type
         if level_type == "support":
@@ -200,6 +235,16 @@ def _count_level_touches(
                 if is_recent:
                     recent_touches += 1
                 last_touch_idx = i
+
+                # High volume touch?
+                if bar.volume > avg_volume * 1.5:
+                    high_volume_touches += 1
+
+                # Bounce quality: how far did price close from the level?
+                # Stronger bounce = closed further above support
+                if bar.high > bar.low:  # Avoid division by zero
+                    wick_ratio = (bar.close - bar.low) / (bar.high - bar.low)
+                    bounce_strengths.append(wick_ratio * 100)
 
                 # Did it hold? (close above level)
                 if bar.close > level:
@@ -214,6 +259,16 @@ def _count_level_touches(
                     recent_touches += 1
                 last_touch_idx = i
 
+                # High volume touch?
+                if bar.volume > avg_volume * 1.5:
+                    high_volume_touches += 1
+
+                # Bounce quality: how far did price close from the level?
+                # Stronger bounce = closed further below resistance
+                if bar.high > bar.low:  # Avoid division by zero
+                    wick_ratio = (bar.high - bar.close) / (bar.high - bar.low)
+                    bounce_strengths.append(wick_ratio * 100)
+
                 # Did it hold? (close below level)
                 if bar.close < level:
                     held_count += 1
@@ -225,19 +280,38 @@ def _count_level_touches(
     if last_touch_idx is not None:
         last_touch_bars_ago = total_bars - 1 - last_touch_idx
 
-    # Calculate strength score (0-100)
-    # Factors: touch count, recency, hold rate
-    touch_score = min(40, touches * 10)  # Max 40 points from touches
-    recency_score = min(30, recent_touches * 15)  # Max 30 points from recent touches
-    hold_rate = held_count / max(1, touches)
-    hold_score = min(30, hold_rate * 30)  # Max 30 points from hold rate
+    # Calculate average bounce quality
+    bounce_quality = round(sum(bounce_strengths) / len(bounce_strengths), 1) if bounce_strengths else 0
 
-    strength = round(touch_score + recency_score + hold_score, 1)
+    # Calculate strength score (0-100) with enhanced factors
+    # Base: touch count (max 25 points)
+    touch_score = min(25, touches * 6)
+
+    # Recency bonus (max 20 points)
+    recency_score = min(20, recent_touches * 10)
+
+    # Hold rate bonus (max 20 points)
+    hold_rate = held_count / max(1, touches)
+    hold_score = min(20, hold_rate * 20)
+
+    # Volume bonus: high volume touches indicate institutional activity (max 15 points)
+    volume_ratio = high_volume_touches / max(1, touches)
+    volume_score = min(15, volume_ratio * 15)
+
+    # Bounce quality bonus (max 10 points)
+    bounce_score = min(10, bounce_quality / 10)
+
+    # Reclaim bonus: broken and reclaimed levels are very strong (10 points)
+    reclaim_score = 10 if was_reclaimed else 0
+
+    strength = round(touch_score + recency_score + hold_score + volume_score + bounce_score + reclaim_score, 1)
 
     # Determine reliability classification
-    if touches >= 6:
+    # Consider both touch count AND quality factors
+    effective_touches = touches + (2 if was_reclaimed else 0) + high_volume_touches
+    if effective_touches >= 8 or (touches >= 4 and was_reclaimed):
         reliability = "institutional"
-    elif touches >= 4:
+    elif effective_touches >= 5 or (touches >= 3 and high_volume_touches >= 1):
         reliability = "strong"
     elif touches >= 2:
         reliability = "moderate"
@@ -250,6 +324,9 @@ def _count_level_touches(
         "last_touch_bars_ago": last_touch_bars_ago,
         "held": held_count,
         "broke": broke_count,
+        "high_volume_touches": high_volume_touches,
+        "bounce_quality": bounce_quality,
+        "reclaimed": was_reclaimed,
         "strength": strength,
         "reliability": reliability,
     }

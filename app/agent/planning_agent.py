@@ -213,27 +213,46 @@ Focus on recent, relevant information. Ignore outdated articles or old posts.
 - Consider the broader market direction
 - Factor in any news catalysts or social sentiment into your thesis
 
-## Level Reliability Assessment (Touch Count Analysis)
+## Level Reliability Assessment (Institutional-Grade Analysis)
 
-Each support/resistance level includes touch count metrics - USE THESE to assess reliability:
+Each support/resistance level includes comprehensive metrics - USE THESE to assess reliability:
 
-### Touch Count Classifications:
-- **INSTITUTIONAL (6+ touches)**: Heavily watched by institutions. Highest reliability. Price action here is significant.
-- **STRONG (4-5 touches)**: Well-established level. High probability of reaction. Good for stops/targets.
-- **MODERATE (2-3 touches)**: Confirmed level. Reasonable reliability. Use with other confluence.
-- **WEAK (1 touch)**: Unconfirmed level. Low reliability. Needs additional validation.
+### Key Metrics Explained:
+- **touches**: Total times price tested the level
+- **high_volume_touches**: Tests with 1.5x+ average volume (institutional activity)
+- **bounce_quality**: 0-100 score of how strongly price rejected the level (higher = cleaner bounces)
+- **reclaimed**: TRUE if level was broken then reclaimed (VERY bullish/bearish signal)
+- **strength**: Composite 0-100 score weighing all factors
+- **reliability**: Classification based on effective touch quality
 
-### How to Use Touch Count:
-1. **Stop Loss Placement**: ALWAYS prefer levels with 3+ touches. A stop below a "strong" support is more reliable than one below a "weak" level.
-2. **Target Selection**: Prioritize "institutional" or "strong" resistance levels as profit targets - they're more likely to cause a reaction.
-3. **Entry Zones**: Look for "moderate" or better support levels for long entries, resistance for shorts.
-4. **Confluence**: When a level is both a swing point AND near a round number or EMA, reliability increases.
-5. **Recent Touches**: Levels touched recently (last_touch_bars_ago < 10) are more relevant than stale levels.
+### Reliability Classifications:
+- **INSTITUTIONAL**: 8+ effective touches OR reclaimed with 4+ touches. Heavily defended by big money.
+- **STRONG**: 5+ effective touches OR 3+ with high volume. Well-established, reliable for stops/targets.
+- **MODERATE**: 2-3 touches. Confirmed but needs confluence for high confidence.
+- **WEAK**: 1 touch only. Unconfirmed - avoid for critical decisions.
+
+### How to Use This Data:
+1. **Stop Loss Placement**:
+   - BEST: "INSTITUTIONAL" or "STRONG" levels with high bounce_quality (>60)
+   - GOOD: "reclaimed: true" levels (broken and reclaimed = strong)
+   - AVOID: "WEAK" levels with low bounce_quality
+
+2. **Target Selection**:
+   - Prioritize levels with high_volume_touches > 0 (institutions defend these)
+   - "reclaimed" resistance = likely to cause major reaction
+
+3. **Entry Zones**:
+   - Look for "MODERATE" or better with recent touches (last_touch_bars_ago < 10)
+   - High bounce_quality at support = cleaner entries
+
+4. **Volume Confirmation**:
+   - high_volume_touches > 0 = institutional participation confirmed
+   - Use these levels for key decisions
 
 ### Red Flags:
-- Stop loss at a "weak" (1 touch) level - HIGH RISK of being run
-- Target at an untested level - may blow right through
-- Entry at a level that recently broke (last touched 1-2 bars ago with break)
+- Stop loss at "WEAK" level with bounce_quality < 40 - HIGH RISK of stop hunt
+- Target at level with 0 high_volume_touches - may not hold
+- Ignoring "reclaimed" levels - these are among the most significant
 
 ## When Evaluating a Plan
 - Has price moved toward entry? Away from it?
@@ -559,7 +578,7 @@ Volume: {vol.get('relative', 'N/A')}x average ({vol.get('trend', 'N/A')})
 Bollinger: {bb.get('position', 'N/A')} (Width: {bb.get('width', 'N/A')})
 """
 
-        # Key levels with touch count analysis
+        # Key levels with institutional-grade touch count analysis
         levels = self._levels_data
         if levels.get("error"):
             levels_str = f"Error: {levels['error']}"
@@ -567,33 +586,53 @@ Bollinger: {bb.get('position', 'N/A')} (Width: {bb.get('width', 'N/A')})
             supports = levels.get("support", levels.get("support_levels", []))[:5]
             resistances = levels.get("resistance", levels.get("resistance_levels", []))[:5]
 
-            # Format support levels with touch count
+            # Format support levels with full institutional data
             support_lines = []
             for s in supports:
                 if isinstance(s, dict):
                     price = s.get("price", 0)
                     touches = s.get("touches", 0)
+                    hv_touches = s.get("high_volume_touches", 0)
+                    bounce_q = s.get("bounce_quality", 0)
+                    reclaimed = s.get("reclaimed", False)
                     reliability = s.get("reliability", "weak").upper()
                     strength = s.get("strength", 0)
                     last_touch = s.get("last_touch_bars_ago")
                     level_type = s.get("type", "unknown")
-                    recency = f", last tested {last_touch} bars ago" if last_touch else ""
-                    support_lines.append(f"  ${price:.2f} [{reliability}] - {touches} touches, strength: {strength:.0f}, type: {level_type}{recency}")
+
+                    # Build descriptive line
+                    vol_note = f", {hv_touches} high-vol" if hv_touches > 0 else ""
+                    reclaim_note = " [RECLAIMED]" if reclaimed else ""
+                    recency = f", last {last_touch} bars ago" if last_touch is not None else ""
+                    support_lines.append(
+                        f"  ${price:.2f} [{reliability}]{reclaim_note} - {touches} touches{vol_note}, "
+                        f"bounce: {bounce_q:.0f}, strength: {strength:.0f}, type: {level_type}{recency}"
+                    )
                 else:
                     support_lines.append(f"  ${s:.2f}")
 
-            # Format resistance levels with touch count
+            # Format resistance levels with full institutional data
             resistance_lines = []
             for r in resistances:
                 if isinstance(r, dict):
                     price = r.get("price", 0)
                     touches = r.get("touches", 0)
+                    hv_touches = r.get("high_volume_touches", 0)
+                    bounce_q = r.get("bounce_quality", 0)
+                    reclaimed = r.get("reclaimed", False)
                     reliability = r.get("reliability", "weak").upper()
                     strength = r.get("strength", 0)
                     last_touch = r.get("last_touch_bars_ago")
                     level_type = r.get("type", "unknown")
-                    recency = f", last tested {last_touch} bars ago" if last_touch else ""
-                    resistance_lines.append(f"  ${price:.2f} [{reliability}] - {touches} touches, strength: {strength:.0f}, type: {level_type}{recency}")
+
+                    # Build descriptive line
+                    vol_note = f", {hv_touches} high-vol" if hv_touches > 0 else ""
+                    reclaim_note = " [RECLAIMED]" if reclaimed else ""
+                    recency = f", last {last_touch} bars ago" if last_touch is not None else ""
+                    resistance_lines.append(
+                        f"  ${price:.2f} [{reliability}]{reclaim_note} - {touches} touches{vol_note}, "
+                        f"bounce: {bounce_q:.0f}, strength: {strength:.0f}, type: {level_type}{recency}"
+                    )
                 else:
                     resistance_lines.append(f"  ${r:.2f}")
 
@@ -1103,13 +1142,20 @@ Volatility:
                 if isinstance(s, dict):
                     price = s.get("price", 0)
                     touches = s.get("touches", 0)
+                    hv_touches = s.get("high_volume_touches", 0)
+                    bounce_q = s.get("bounce_quality", 0)
+                    reclaimed = s.get("reclaimed", False)
                     reliability = s.get("reliability", "weak").upper()
                     strength = s.get("strength", 0)
                     last_touch = s.get("last_touch_bars_ago")
                     level_type = s.get("type", "unknown")
-                    recency = f" (last tested {last_touch} bars ago)" if last_touch is not None else ""
+
+                    vol_note = f", {hv_touches} high-vol" if hv_touches > 0 else ""
+                    reclaim_note = " [RECLAIMED]" if reclaimed else ""
+                    recency = f" (last {last_touch} bars ago)" if last_touch is not None else ""
                     support_details.append(
-                        f"${price:.2f} [{reliability}] - {touches} touches, strength: {strength:.0f}, type: {level_type}{recency}"
+                        f"${price:.2f} [{reliability}]{reclaim_note} - {touches} touches{vol_note}, "
+                        f"bounce: {bounce_q:.0f}, strength: {strength:.0f}, type: {level_type}{recency}"
                     )
                 else:
                     support_details.append(f"${s:.2f}")
@@ -1119,13 +1165,20 @@ Volatility:
                 if isinstance(r, dict):
                     price = r.get("price", 0)
                     touches = r.get("touches", 0)
+                    hv_touches = r.get("high_volume_touches", 0)
+                    bounce_q = r.get("bounce_quality", 0)
+                    reclaimed = r.get("reclaimed", False)
                     reliability = r.get("reliability", "weak").upper()
                     strength = r.get("strength", 0)
                     last_touch = r.get("last_touch_bars_ago")
                     level_type = r.get("type", "unknown")
-                    recency = f" (last tested {last_touch} bars ago)" if last_touch is not None else ""
+
+                    vol_note = f", {hv_touches} high-vol" if hv_touches > 0 else ""
+                    reclaim_note = " [RECLAIMED]" if reclaimed else ""
+                    recency = f" (last {last_touch} bars ago)" if last_touch is not None else ""
                     resistance_details.append(
-                        f"${price:.2f} [{reliability}] - {touches} touches, strength: {strength:.0f}, type: {level_type}{recency}"
+                        f"${price:.2f} [{reliability}]{reclaim_note} - {touches} touches{vol_note}, "
+                        f"bounce: {bounce_q:.0f}, strength: {strength:.0f}, type: {level_type}{recency}"
                     )
                 else:
                     resistance_details.append(f"${r:.2f}")

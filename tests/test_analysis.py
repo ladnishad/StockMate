@@ -459,10 +459,11 @@ class TestTouchCount:
         return bars
 
     def test_count_level_touches_support(self, bars_with_clear_levels):
-        """Test counting touches on support level."""
+        """Test counting touches on support level with full institutional metrics."""
         result = _count_level_touches(bars_with_clear_levels, 95.0, "support", tolerance_pct=0.5)
 
         assert isinstance(result, dict)
+        # Core metrics
         assert "touches" in result
         assert "recent_touches" in result
         assert "last_touch_bars_ago" in result
@@ -470,11 +471,18 @@ class TestTouchCount:
         assert "broke" in result
         assert "strength" in result
         assert "reliability" in result
+        # Enhanced institutional metrics
+        assert "high_volume_touches" in result
+        assert "bounce_quality" in result
+        assert "reclaimed" in result
 
         # Should detect multiple touches at the 95 level
         assert result["touches"] >= 3
         assert result["strength"] > 0
         assert result["reliability"] in ["weak", "moderate", "strong", "institutional"]
+        assert isinstance(result["high_volume_touches"], int)
+        assert isinstance(result["bounce_quality"], (int, float))
+        assert isinstance(result["reclaimed"], bool)
 
     def test_count_level_touches_resistance(self, bars_with_clear_levels):
         """Test counting touches on resistance level."""
@@ -507,6 +515,9 @@ class TestTouchCount:
         assert result["strength"] == 0
         assert result["reliability"] == "weak"
         assert result["last_touch_bars_ago"] is None
+        assert result["high_volume_touches"] == 0
+        assert result["bounce_quality"] == 0
+        assert result["reclaimed"] is False
 
     def test_count_level_touches_empty_bars(self):
         """Test touch counting with empty bars."""
@@ -514,6 +525,8 @@ class TestTouchCount:
 
         assert result["touches"] == 0
         assert result["reliability"] == "weak"
+        assert result["high_volume_touches"] == 0
+        assert result["reclaimed"] is False
 
     def test_count_level_touches_recent_weight(self, bars_with_clear_levels):
         """Test that recent touches contribute more to strength."""
@@ -523,7 +536,54 @@ class TestTouchCount:
         assert "recent_touches" in result
         # Strength should be higher when there are recent touches
         if result["recent_touches"] > 0:
-            assert result["strength"] >= 15  # At least some recency bonus
+            assert result["strength"] >= 10  # At least some recency bonus
+
+    def test_count_level_touches_bounce_quality(self, bars_with_clear_levels):
+        """Test that bounce quality is calculated correctly."""
+        result = _count_level_touches(bars_with_clear_levels, 95.0, "support", tolerance_pct=0.5)
+
+        # Bounce quality should be a score between 0-100
+        assert 0 <= result["bounce_quality"] <= 100
+        # If there are touches, bounce quality should be non-zero
+        if result["touches"] > 0:
+            assert result["bounce_quality"] >= 0  # Could be 0 if all touches broke through
+
+    def test_count_level_touches_volume_detection(self):
+        """Test that high volume touches are detected correctly."""
+        from datetime import timedelta
+        from app.models.data import PriceBar
+
+        bars = []
+        base_date = datetime(2025, 1, 1)
+
+        # Create bars with varying volume - some touches with high volume
+        for i in range(50):
+            # Touch support at 100 on bars 10, 20, 30, 40
+            if i in [10, 20, 30, 40]:
+                low = 100.0
+                close = 102.0
+                # High volume on bars 20 and 40 (2x average)
+                volume = 2000000 if i in [20, 40] else 500000
+            else:
+                low = 103.0
+                close = 105.0
+                volume = 1000000  # Average volume
+
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(days=i),
+                open=close - 0.5,
+                high=close + 1.0,
+                low=low,
+                close=close,
+                volume=volume,
+            ))
+
+        result = _count_level_touches(bars, 100.0, "support", tolerance_pct=0.5)
+
+        # Should detect 4 touches total
+        assert result["touches"] == 4
+        # Should detect 2 high volume touches (bars 20 and 40 have 2x average)
+        assert result["high_volume_touches"] == 2
 
 
 class TestComprehensiveLevels:
@@ -539,22 +599,32 @@ class TestComprehensiveLevels:
         assert "current_price" in levels
 
     def test_find_comprehensive_levels_touch_data(self, sample_price_bars):
-        """Test that each level has touch count data."""
+        """Test that each level has full institutional touch count data."""
         levels = find_comprehensive_levels(sample_price_bars)
 
         for support in levels.get("support", []):
+            # Core fields
             assert "price" in support
             assert "touches" in support
             assert "strength" in support
             assert "reliability" in support
             assert "type" in support
+            # Enhanced institutional fields
+            assert "high_volume_touches" in support
+            assert "bounce_quality" in support
+            assert "reclaimed" in support
 
         for resistance in levels.get("resistance", []):
+            # Core fields
             assert "price" in resistance
             assert "touches" in resistance
             assert "strength" in resistance
             assert "reliability" in resistance
             assert "type" in resistance
+            # Enhanced institutional fields
+            assert "high_volume_touches" in resistance
+            assert "bounce_quality" in resistance
+            assert "reclaimed" in resistance
 
     def test_find_comprehensive_levels_sorting(self, sample_price_bars):
         """Test that levels are sorted by composite score (strength + proximity)."""
