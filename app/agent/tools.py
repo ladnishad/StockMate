@@ -68,17 +68,23 @@ async def get_current_price(symbol: str) -> Dict[str, Any]:
 
 
 async def get_key_levels(symbol: str) -> Dict[str, Any]:
-    """Get support and resistance levels for a stock.
+    """Get support and resistance levels for a stock with touch count analysis.
+
+    Each level includes reliability metrics based on historical touches:
+    - touches: How many times price has tested this level
+    - strength: Score 0-100 based on touches, recency, and hold rate
+    - reliability: "weak" (1 touch), "moderate" (2-3), "strong" (4-5), "institutional" (6+)
+    - last_touch_bars_ago: How recently the level was tested
 
     Args:
         symbol: Stock ticker symbol
 
     Returns:
-        Dictionary with support and resistance levels
+        Dictionary with support and resistance levels including touch count metrics
     """
     try:
-        # Fetch price bars first
-        bars = fetch_price_bars(symbol.upper(), timeframe="1d", days_back=50)
+        # Fetch more bars for better touch count analysis
+        bars = fetch_price_bars(symbol.upper(), timeframe="1d", days_back=100)
 
         if not bars or len(bars) < 10:
             return {"symbol": symbol.upper(), "error": "Insufficient data", "support": [], "resistance": []}
@@ -88,11 +94,33 @@ async def get_key_levels(symbol: str) -> Dict[str, Any]:
         return {
             "symbol": symbol.upper(),
             "support": [
-                {"price": l["price"], "distance_pct": l.get("distance_pct", 0), "type": l.get("type", "unknown")}
+                {
+                    "price": l["price"],
+                    "distance_pct": l.get("distance_pct", 0),
+                    "type": l.get("type", "unknown"),
+                    "touches": l.get("touches", 0),
+                    "high_volume_touches": l.get("high_volume_touches", 0),
+                    "bounce_quality": l.get("bounce_quality", 0),
+                    "reclaimed": l.get("reclaimed", False),
+                    "strength": l.get("strength", 0),
+                    "reliability": l.get("reliability", "weak"),
+                    "last_touch_bars_ago": l.get("last_touch_bars_ago"),
+                }
                 for l in levels.get("support", [])[:5]
             ],
             "resistance": [
-                {"price": l["price"], "distance_pct": l.get("distance_pct", 0), "type": l.get("type", "unknown")}
+                {
+                    "price": l["price"],
+                    "distance_pct": l.get("distance_pct", 0),
+                    "type": l.get("type", "unknown"),
+                    "touches": l.get("touches", 0),
+                    "high_volume_touches": l.get("high_volume_touches", 0),
+                    "bounce_quality": l.get("bounce_quality", 0),
+                    "reclaimed": l.get("reclaimed", False),
+                    "strength": l.get("strength", 0),
+                    "reliability": l.get("reliability", "weak"),
+                    "last_touch_bars_ago": l.get("last_touch_bars_ago"),
+                }
                 for l in levels.get("resistance", [])[:5]
             ],
         }

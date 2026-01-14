@@ -213,6 +213,47 @@ Focus on recent, relevant information. Ignore outdated articles or old posts.
 - Consider the broader market direction
 - Factor in any news catalysts or social sentiment into your thesis
 
+## Level Reliability Assessment (Institutional-Grade Analysis)
+
+Each support/resistance level includes comprehensive metrics - USE THESE to assess reliability:
+
+### Key Metrics Explained:
+- **touches**: Total times price tested the level
+- **high_volume_touches**: Tests with 1.5x+ average volume (institutional activity)
+- **bounce_quality**: 0-100 score of how strongly price rejected the level (higher = cleaner bounces)
+- **reclaimed**: TRUE if level was broken then reclaimed (VERY bullish/bearish signal)
+- **strength**: Composite 0-100 score weighing all factors
+- **reliability**: Classification based on effective touch quality
+
+### Reliability Classifications:
+- **INSTITUTIONAL**: 8+ effective touches OR reclaimed with 4+ touches. Heavily defended by big money.
+- **STRONG**: 5+ effective touches OR 3+ with high volume. Well-established, reliable for stops/targets.
+- **MODERATE**: 2-3 touches. Confirmed but needs confluence for high confidence.
+- **WEAK**: 1 touch only. Unconfirmed - avoid for critical decisions.
+
+### How to Use This Data:
+1. **Stop Loss Placement**:
+   - BEST: "INSTITUTIONAL" or "STRONG" levels with high bounce_quality (>60)
+   - GOOD: "reclaimed: true" levels (broken and reclaimed = strong)
+   - AVOID: "WEAK" levels with low bounce_quality
+
+2. **Target Selection**:
+   - Prioritize levels with high_volume_touches > 0 (institutions defend these)
+   - "reclaimed" resistance = likely to cause major reaction
+
+3. **Entry Zones**:
+   - Look for "MODERATE" or better with recent touches (last_touch_bars_ago < 10)
+   - High bounce_quality at support = cleaner entries
+
+4. **Volume Confirmation**:
+   - high_volume_touches > 0 = institutional participation confirmed
+   - Use these levels for key decisions
+
+### Red Flags:
+- Stop loss at "WEAK" level with bounce_quality < 40 - HIGH RISK of stop hunt
+- Target at level with 0 high_volume_touches - may not hold
+- Ignoring "reclaimed" levels - these are among the most significant
+
 ## When Evaluating a Plan
 - Has price moved toward entry? Away from it?
 - Have key levels held or broken?
@@ -324,22 +365,29 @@ Respond in this exact JSON format:
     "thesis": "2-3 sentence explanation of why this trade makes sense or why you're passing. Include any relevant news/catalyst info.",
     "entry_zone_low": <price or null if no trade>,
     "entry_zone_high": <price or null>,
-    "stop_loss": <price or null>,
-    "stop_reasoning": "Why this stop level",
-    "target_1": <price - conservative target>,
+    "stop_loss": <price or null - MUST be at STRONG/INSTITUTIONAL level with bounce_quality > 50>,
+    "stop_reasoning": "MUST reference level reliability: e.g., 'Below $145.50 [STRONG] - 4 touches, 2 high-vol, bounce: 72'",
+    "target_1": <price - conservative target at STRONG/INSTITUTIONAL level>,
     "target_2": <price - moderate target>,
     "target_3": <price - aggressive target or null>,
-    "target_reasoning": "Why these targets",
+    "target_reasoning": "MUST reference level reliability for targets",
     "risk_reward": <ratio like 2.5>,
     "position_size_pct": <1-5, percentage of account>,
-    "key_supports": [<price>, <price>],
-    "key_resistances": [<price>, <price>],
-    "invalidation_criteria": "What would invalidate this plan",
+    "key_supports": [<price>, <price> - prioritize STRONG/INSTITUTIONAL levels],
+    "key_resistances": [<price>, <price> - prioritize STRONG/INSTITUTIONAL levels],
+    "invalidation_criteria": "What would invalidate this plan - reference specific level breaks",
     "technical_summary": "Brief summary of key technical factors",
     "news_summary": "Brief summary of recent news/catalysts (from search). Empty string if no news found or search unavailable.",
     "social_sentiment": "bullish" | "bearish" | "neutral" | "mixed" | "none",
     "social_buzz": "Summary of social discussion (X/Twitter, Reddit, etc.) if found. Empty string if none."
 }}
+
+**CRITICAL LEVEL QUALITY RULES:**
+1. NEVER place stop loss at a "WEAK" level (1 touch, low bounce_quality) - high risk of stop hunt
+2. ALWAYS prefer levels marked [RECLAIMED] - these have proven institutional defense
+3. For stops: REQUIRE bounce_quality > 50 and preferably high_volume_touches > 0
+4. For targets: Use levels with high_volume_touches > 0 (institutions will defend/react)
+5. Reduce confidence by 10-15 points if forced to use MODERATE levels for critical decisions
 
 If this is NOT a good setup, still provide your analysis but set entry_zone, stop_loss, and targets to null and explain in the thesis why you're passing. Set confidence to how confident you are that there's no good trade here.
 """
@@ -537,15 +585,70 @@ Volume: {vol.get('relative', 'N/A')}x average ({vol.get('trend', 'N/A')})
 Bollinger: {bb.get('position', 'N/A')} (Width: {bb.get('width', 'N/A')})
 """
 
-        # Key levels
+        # Key levels with institutional-grade touch count analysis
         levels = self._levels_data
         if levels.get("error"):
             levels_str = f"Error: {levels['error']}"
         else:
-            supports = levels.get("support_levels", [])[:5]
-            resistances = levels.get("resistance_levels", [])[:5]
-            levels_str = f"""Support Levels: {', '.join([f'${s:.2f}' for s in supports]) if supports else 'None found'}
-Resistance Levels: {', '.join([f'${r:.2f}' for r in resistances]) if resistances else 'None found'}
+            supports = levels.get("support", levels.get("support_levels", []))[:5]
+            resistances = levels.get("resistance", levels.get("resistance_levels", []))[:5]
+
+            # Format support levels with full institutional data
+            support_lines = []
+            for s in supports:
+                if isinstance(s, dict):
+                    price = s.get("price", 0)
+                    touches = s.get("touches", 0)
+                    hv_touches = s.get("high_volume_touches", 0)
+                    bounce_q = s.get("bounce_quality", 0)
+                    reclaimed = s.get("reclaimed", False)
+                    reliability = s.get("reliability", "weak").upper()
+                    strength = s.get("strength", 0)
+                    last_touch = s.get("last_touch_bars_ago")
+                    level_type = s.get("type", "unknown")
+
+                    # Build descriptive line
+                    vol_note = f", {hv_touches} high-vol" if hv_touches > 0 else ""
+                    reclaim_note = " [RECLAIMED]" if reclaimed else ""
+                    recency = f", last {last_touch} bars ago" if last_touch is not None else ""
+                    support_lines.append(
+                        f"  ${price:.2f} [{reliability}]{reclaim_note} - {touches} touches{vol_note}, "
+                        f"bounce: {bounce_q:.0f}, strength: {strength:.0f}, type: {level_type}{recency}"
+                    )
+                else:
+                    support_lines.append(f"  ${s:.2f}")
+
+            # Format resistance levels with full institutional data
+            resistance_lines = []
+            for r in resistances:
+                if isinstance(r, dict):
+                    price = r.get("price", 0)
+                    touches = r.get("touches", 0)
+                    hv_touches = r.get("high_volume_touches", 0)
+                    bounce_q = r.get("bounce_quality", 0)
+                    reclaimed = r.get("reclaimed", False)
+                    reliability = r.get("reliability", "weak").upper()
+                    strength = r.get("strength", 0)
+                    last_touch = r.get("last_touch_bars_ago")
+                    level_type = r.get("type", "unknown")
+
+                    # Build descriptive line
+                    vol_note = f", {hv_touches} high-vol" if hv_touches > 0 else ""
+                    reclaim_note = " [RECLAIMED]" if reclaimed else ""
+                    recency = f", last {last_touch} bars ago" if last_touch is not None else ""
+                    resistance_lines.append(
+                        f"  ${price:.2f} [{reliability}]{reclaim_note} - {touches} touches{vol_note}, "
+                        f"bounce: {bounce_q:.0f}, strength: {strength:.0f}, type: {level_type}{recency}"
+                    )
+                else:
+                    resistance_lines.append(f"  ${r:.2f}")
+
+            levels_str = f"""Support Levels (sorted by reliability):
+{chr(10).join(support_lines) if support_lines else '  None found'}
+
+Resistance Levels (sorted by reliability):
+{chr(10).join(resistance_lines) if resistance_lines else '  None found'}
+
 ATR (14): ${levels.get('atr', 'N/A')}
 """
 
@@ -1093,32 +1196,64 @@ Accumulation/Distribution:
 - Divergence Detected: {adl.get('divergence', False)}
 """
 
-        # Key levels with more detail
+        # Key levels with full touch count analysis
         levels = self._levels_data
         if levels.get("error"):
             levels_str = f"Error: {levels['error']}"
         else:
-            supports = levels.get("support_levels", [])[:5]
-            resistances = levels.get("resistance_levels", [])[:5]
+            supports = levels.get("support", levels.get("support_levels", []))[:5]
+            resistances = levels.get("resistance", levels.get("resistance_levels", []))[:5]
 
             support_details = []
             for s in supports:
                 if isinstance(s, dict):
-                    support_details.append(f"${s.get('price', s):.2f} (touches: {s.get('touches', 'N/A')})")
+                    price = s.get("price", 0)
+                    touches = s.get("touches", 0)
+                    hv_touches = s.get("high_volume_touches", 0)
+                    bounce_q = s.get("bounce_quality", 0)
+                    reclaimed = s.get("reclaimed", False)
+                    reliability = s.get("reliability", "weak").upper()
+                    strength = s.get("strength", 0)
+                    last_touch = s.get("last_touch_bars_ago")
+                    level_type = s.get("type", "unknown")
+
+                    vol_note = f", {hv_touches} high-vol" if hv_touches > 0 else ""
+                    reclaim_note = " [RECLAIMED]" if reclaimed else ""
+                    recency = f" (last {last_touch} bars ago)" if last_touch is not None else ""
+                    support_details.append(
+                        f"${price:.2f} [{reliability}]{reclaim_note} - {touches} touches{vol_note}, "
+                        f"bounce: {bounce_q:.0f}, strength: {strength:.0f}, type: {level_type}{recency}"
+                    )
                 else:
                     support_details.append(f"${s:.2f}")
 
             resistance_details = []
             for r in resistances:
                 if isinstance(r, dict):
-                    resistance_details.append(f"${r.get('price', r):.2f} (touches: {r.get('touches', 'N/A')})")
+                    price = r.get("price", 0)
+                    touches = r.get("touches", 0)
+                    hv_touches = r.get("high_volume_touches", 0)
+                    bounce_q = r.get("bounce_quality", 0)
+                    reclaimed = r.get("reclaimed", False)
+                    reliability = r.get("reliability", "weak").upper()
+                    strength = r.get("strength", 0)
+                    last_touch = r.get("last_touch_bars_ago")
+                    level_type = r.get("type", "unknown")
+
+                    vol_note = f", {hv_touches} high-vol" if hv_touches > 0 else ""
+                    reclaim_note = " [RECLAIMED]" if reclaimed else ""
+                    recency = f" (last {last_touch} bars ago)" if last_touch is not None else ""
+                    resistance_details.append(
+                        f"${price:.2f} [{reliability}]{reclaim_note} - {touches} touches{vol_note}, "
+                        f"bounce: {bounce_q:.0f}, strength: {strength:.0f}, type: {level_type}{recency}"
+                    )
                 else:
                     resistance_details.append(f"${r:.2f}")
 
-            levels_str = f"""Support Levels:
+            levels_str = f"""Support Levels (sorted by reliability - use STRONG/INSTITUTIONAL levels for stops):
 {chr(10).join(['  - ' + s for s in support_details]) if support_details else '  None identified'}
 
-Resistance Levels:
+Resistance Levels (sorted by reliability - use STRONG/INSTITUTIONAL levels for targets):
 {chr(10).join(['  - ' + r for r in resistance_details]) if resistance_details else '  None identified'}
 
 ATR (14): ${levels.get('atr', 0):.2f}

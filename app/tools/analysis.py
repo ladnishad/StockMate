@@ -145,6 +145,199 @@ def find_structural_pivots(
     return sorted(unique_pivots, key=lambda x: x.strength, reverse=True)
 
 
+def _count_level_touches(
+    price_bars: List[PriceBar],
+    level: float,
+    level_type: str,
+    tolerance_pct: float = 0.5,
+) -> dict:
+    """Count how many times price has touched a given level with institutional-grade analysis.
+
+    This function performs comprehensive level analysis including:
+    - Touch counting with volume weighting
+    - Bounce quality assessment (wick rejection strength)
+    - Break and reclaim detection (reclaimed levels are stronger)
+    - Hold rate calculation
+
+    Args:
+        price_bars: List of PriceBar objects
+        level: The price level to analyze
+        level_type: "support" or "resistance"
+        tolerance_pct: Percentage tolerance for considering a touch (default 0.5%)
+
+    Returns:
+        Dictionary with touch count metrics:
+        - touches: Total number of times price touched the level
+        - recent_touches: Touches in the last 20 bars (weighted more heavily)
+        - last_touch_bars_ago: How many bars ago the last touch occurred
+        - held: Number of times the level held (didn't break through)
+        - broke: Number of times price broke through the level
+        - high_volume_touches: Touches with above-average volume (institutional)
+        - bounce_quality: Average bounce strength (0-100, higher = stronger rejections)
+        - reclaimed: True if level was broken then reclaimed (very strong)
+        - strength: Score 0-100 based on all factors
+        - reliability: "weak", "moderate", "strong", or "institutional"
+    """
+    if not price_bars or level <= 0:
+        return {
+            "touches": 0,
+            "recent_touches": 0,
+            "last_touch_bars_ago": None,
+            "held": 0,
+            "broke": 0,
+            "high_volume_touches": 0,
+            "bounce_quality": 0,
+            "reclaimed": False,
+            "strength": 0,
+            "reliability": "weak",
+        }
+
+    tolerance = level * (tolerance_pct / 100)
+    total_bars = len(price_bars)
+    recent_window = min(20, total_bars)
+
+    # Calculate average volume for comparison
+    volumes = [bar.volume for bar in price_bars if bar.volume > 0]
+    avg_volume = sum(volumes) / len(volumes) if volumes else 1
+
+    touches = 0
+    recent_touches = 0
+    held_count = 0
+    broke_count = 0
+    high_volume_touches = 0
+    bounce_strengths = []
+    last_touch_idx = None
+
+    # Track break and reclaim
+    was_broken = False
+    was_reclaimed = False
+    previous_side = None  # Track which side of level price was on
+
+    for i, bar in enumerate(price_bars):
+        bars_from_end = total_bars - 1 - i
+        is_recent = bars_from_end < recent_window
+
+        # Track break and reclaim
+        if level_type == "support":
+            current_side = "above" if bar.close > level else "below"
+            if previous_side == "above" and current_side == "below":
+                was_broken = True
+            elif was_broken and previous_side == "below" and current_side == "above":
+                was_reclaimed = True
+            previous_side = current_side
+        else:  # resistance
+            current_side = "below" if bar.close < level else "above"
+            if previous_side == "below" and current_side == "above":
+                was_broken = True
+            elif was_broken and previous_side == "above" and current_side == "below":
+                was_reclaimed = True
+            previous_side = current_side
+
+        # Check for touch based on level type
+        if level_type == "support":
+            # Support: low comes within tolerance of level
+            if abs(bar.low - level) <= tolerance:
+                touches += 1
+                if is_recent:
+                    recent_touches += 1
+                last_touch_idx = i
+
+                # High volume touch?
+                if bar.volume > avg_volume * 1.5:
+                    high_volume_touches += 1
+
+                # Bounce quality: how far did price close from the level?
+                # Stronger bounce = closed further above support
+                if bar.high > bar.low:  # Avoid division by zero
+                    wick_ratio = (bar.close - bar.low) / (bar.high - bar.low)
+                    bounce_strengths.append(wick_ratio * 100)
+
+                # Did it hold? (close above level)
+                if bar.close > level:
+                    held_count += 1
+                else:
+                    broke_count += 1
+        else:  # resistance
+            # Resistance: high comes within tolerance of level
+            if abs(bar.high - level) <= tolerance:
+                touches += 1
+                if is_recent:
+                    recent_touches += 1
+                last_touch_idx = i
+
+                # High volume touch?
+                if bar.volume > avg_volume * 1.5:
+                    high_volume_touches += 1
+
+                # Bounce quality: how far did price close from the level?
+                # Stronger bounce = closed further below resistance
+                if bar.high > bar.low:  # Avoid division by zero
+                    wick_ratio = (bar.high - bar.close) / (bar.high - bar.low)
+                    bounce_strengths.append(wick_ratio * 100)
+
+                # Did it hold? (close below level)
+                if bar.close < level:
+                    held_count += 1
+                else:
+                    broke_count += 1
+
+    # Calculate last touch distance
+    last_touch_bars_ago = None
+    if last_touch_idx is not None:
+        last_touch_bars_ago = total_bars - 1 - last_touch_idx
+
+    # Calculate average bounce quality
+    bounce_quality = round(sum(bounce_strengths) / len(bounce_strengths), 1) if bounce_strengths else 0
+
+    # Calculate strength score (0-100) with enhanced factors
+    # Base: touch count (max 25 points)
+    touch_score = min(25, touches * 6)
+
+    # Recency bonus (max 20 points)
+    recency_score = min(20, recent_touches * 10)
+
+    # Hold rate bonus (max 20 points)
+    hold_rate = held_count / max(1, touches)
+    hold_score = min(20, hold_rate * 20)
+
+    # Volume bonus: high volume touches indicate institutional activity (max 15 points)
+    volume_ratio = high_volume_touches / max(1, touches)
+    volume_score = min(15, volume_ratio * 15)
+
+    # Bounce quality bonus (max 10 points)
+    bounce_score = min(10, bounce_quality / 10)
+
+    # Reclaim bonus: broken and reclaimed levels are very strong (10 points)
+    reclaim_score = 10 if was_reclaimed else 0
+
+    strength = round(touch_score + recency_score + hold_score + volume_score + bounce_score + reclaim_score, 1)
+
+    # Determine reliability classification
+    # Consider both touch count AND quality factors
+    effective_touches = touches + (2 if was_reclaimed else 0) + high_volume_touches
+    if effective_touches >= 8 or (touches >= 4 and was_reclaimed):
+        reliability = "institutional"
+    elif effective_touches >= 5 or (touches >= 3 and high_volume_touches >= 1):
+        reliability = "strong"
+    elif touches >= 2:
+        reliability = "moderate"
+    else:
+        reliability = "weak"
+
+    return {
+        "touches": touches,
+        "recent_touches": recent_touches,
+        "last_touch_bars_ago": last_touch_bars_ago,
+        "held": held_count,
+        "broke": broke_count,
+        "high_volume_touches": high_volume_touches,
+        "bounce_quality": bounce_quality,
+        "reclaimed": was_reclaimed,
+        "strength": strength,
+        "reliability": reliability,
+    }
+
+
 def find_comprehensive_levels(
     price_bars: List[PriceBar],
     current_price: Optional[float] = None,
@@ -160,6 +353,11 @@ def find_comprehensive_levels(
     - Moving averages as dynamic S/R (EMA 9, EMA 21, VWAP)
     - Round/psychological numbers ($1.00, $1.50, etc.)
 
+    Each level includes touch count analysis for reliability assessment:
+    - touches: How many times price has tested this level
+    - strength: Score 0-100 based on touches, recency, and hold rate
+    - reliability: "weak", "moderate", "strong", or "institutional"
+
     Args:
         price_bars: List of PriceBar objects (OHLCV data)
         current_price: Current price (optional, uses last bar if not provided)
@@ -169,7 +367,7 @@ def find_comprehensive_levels(
 
     Returns:
         Dictionary with 'support' and 'resistance' arrays, each containing
-        levels with price, type, and distance from current price.
+        levels with price, type, distance, touches, strength, and reliability.
     """
     if not price_bars:
         raise ValueError("price_bars cannot be empty")
@@ -183,32 +381,54 @@ def find_comprehensive_levels(
     highs = [b.high for b in price_bars]
     lows = [b.low for b in price_bars]
 
-    # 1. Find swing highs (resistance) - local maxima
+    # 1. Find swing highs (resistance) - local maxima with touch count
     for i in range(5, len(price_bars) - 5):
         if highs[i] == max(highs[i-5:i+6]):
             level = round(highs[i], 2)
             if level > current_price * 1.01:  # Above current price
+                touch_data = _count_level_touches(price_bars, level, "resistance")
                 resistance_levels.append({
                     "price": level,
                     "type": "swing_high",
                     "date": str(price_bars[i].timestamp.date()) if hasattr(price_bars[i].timestamp, 'date') else str(price_bars[i].timestamp)[:10],
+                    "touches": touch_data["touches"],
+                    "recent_touches": touch_data["recent_touches"],
+                    "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+                    "strength": touch_data["strength"],
+                    "reliability": touch_data["reliability"],
                 })
 
-    # 2. Find swing lows (support) - local minima
+    # 2. Find swing lows (support) - local minima with touch count
     for i in range(5, len(price_bars) - 5):
         if lows[i] == min(lows[i-5:i+6]):
             level = round(lows[i], 2)
             if level < current_price * 0.99:  # Below current price
+                touch_data = _count_level_touches(price_bars, level, "support")
                 support_levels.append({
                     "price": level,
                     "type": "swing_low",
                     "date": str(price_bars[i].timestamp.date()) if hasattr(price_bars[i].timestamp, 'date') else str(price_bars[i].timestamp)[:10],
+                    "touches": touch_data["touches"],
+                    "recent_touches": touch_data["recent_touches"],
+                    "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+                    "strength": touch_data["strength"],
+                    "reliability": touch_data["reliability"],
                 })
 
-    # 3. Add moving averages as dynamic S/R
+    # 3. Add moving averages as dynamic S/R (with touch analysis)
     if ema_9 and len(ema_9) > 0:
         ema9_val = round(ema_9[-1], 2)
-        level_data = {"price": ema9_val, "type": "ema_9"}
+        level_type = "resistance" if ema9_val > current_price else "support"
+        touch_data = _count_level_touches(price_bars, ema9_val, level_type)
+        level_data = {
+            "price": ema9_val,
+            "type": "ema_9",
+            "touches": touch_data["touches"],
+            "recent_touches": touch_data["recent_touches"],
+            "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+            "strength": touch_data["strength"],
+            "reliability": touch_data["reliability"],
+        }
         if ema9_val > current_price:
             resistance_levels.append(level_data)
         else:
@@ -216,7 +436,17 @@ def find_comprehensive_levels(
 
     if ema_21 and len(ema_21) > 0:
         ema21_val = round(ema_21[-1], 2)
-        level_data = {"price": ema21_val, "type": "ema_21"}
+        level_type = "resistance" if ema21_val > current_price else "support"
+        touch_data = _count_level_touches(price_bars, ema21_val, level_type)
+        level_data = {
+            "price": ema21_val,
+            "type": "ema_21",
+            "touches": touch_data["touches"],
+            "recent_touches": touch_data["recent_touches"],
+            "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+            "strength": touch_data["strength"],
+            "reliability": touch_data["reliability"],
+        }
         if ema21_val > current_price:
             resistance_levels.append(level_data)
         else:
@@ -224,13 +454,23 @@ def find_comprehensive_levels(
 
     if vwap:
         vwap_val = round(vwap, 2)
-        level_data = {"price": vwap_val, "type": "vwap"}
+        level_type = "resistance" if vwap_val > current_price else "support"
+        touch_data = _count_level_touches(price_bars, vwap_val, level_type)
+        level_data = {
+            "price": vwap_val,
+            "type": "vwap",
+            "touches": touch_data["touches"],
+            "recent_touches": touch_data["recent_touches"],
+            "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+            "strength": touch_data["strength"],
+            "reliability": touch_data["reliability"],
+        }
         if vwap_val > current_price:
             resistance_levels.append(level_data)
         else:
             support_levels.append(level_data)
 
-    # 4. Add round number levels (psychological)
+    # 4. Add round number levels (psychological) with touch analysis
     # Determine appropriate increments based on price
     if current_price < 5:
         increments = [0.25, 0.50, 1.00]
@@ -246,9 +486,15 @@ def find_comprehensive_levels(
         level = ((current_price // inc) + 1) * inc
         for _ in range(3):  # Next 3 round levels
             if level > current_price * 1.005:
+                touch_data = _count_level_touches(price_bars, level, "resistance")
                 resistance_levels.append({
                     "price": round(level, 2),
                     "type": "round_number",
+                    "touches": touch_data["touches"],
+                    "recent_touches": touch_data["recent_touches"],
+                    "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+                    "strength": touch_data["strength"],
+                    "reliability": touch_data["reliability"],
                 })
             level += inc
 
@@ -256,29 +502,30 @@ def find_comprehensive_levels(
         level = (current_price // inc) * inc
         for _ in range(3):  # Previous 3 round levels
             if level < current_price * 0.995 and level > 0:
+                touch_data = _count_level_touches(price_bars, level, "support")
                 support_levels.append({
                     "price": round(level, 2),
                     "type": "round_number",
+                    "touches": touch_data["touches"],
+                    "recent_touches": touch_data["recent_touches"],
+                    "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+                    "strength": touch_data["strength"],
+                    "reliability": touch_data["reliability"],
                 })
             level -= inc
 
-    # Remove duplicates and sort
+    # Remove duplicates, prioritizing higher strength levels
     def dedupe_levels(levels):
-        seen = set()
-        unique = []
+        # Group by price, keeping highest strength version
+        price_map = {}
         for l in levels:
             price_key = round(l["price"], 2)
-            if price_key not in seen:
-                seen.add(price_key)
-                unique.append(l)
-        return unique
+            if price_key not in price_map or l.get("strength", 0) > price_map[price_key].get("strength", 0):
+                price_map[price_key] = l
+        return list(price_map.values())
 
     resistance_levels = dedupe_levels(resistance_levels)
     support_levels = dedupe_levels(support_levels)
-
-    # Sort resistance ascending (nearest first), support descending (nearest first)
-    resistance_levels.sort(key=lambda x: x["price"])
-    support_levels.sort(key=lambda x: x["price"], reverse=True)
 
     # Add distance percentage
     for level in resistance_levels:
@@ -287,10 +534,21 @@ def find_comprehensive_levels(
     for level in support_levels:
         level["distance_pct"] = round(((level["price"] - current_price) / current_price) * 100, 1)
 
+    # Sort by composite score: prioritize strength but keep proximity relevant
+    # Formula: strength * 0.7 + (10 - min(abs(distance), 10)) * 3 for proximity bonus
+    def sort_key(level):
+        strength = level.get("strength", 0)
+        distance = abs(level.get("distance_pct", 0))
+        proximity_bonus = (10 - min(distance, 10)) * 3  # 0-30 points for proximity
+        return -(strength * 0.7 + proximity_bonus)  # Negative for descending
+
+    resistance_levels.sort(key=sort_key)
+    support_levels.sort(key=sort_key)
+
     return {
         "current_price": round(current_price, 2),
-        "resistance": resistance_levels[:10],  # Top 10 nearest
-        "support": support_levels[:10],  # Top 10 nearest
+        "resistance": resistance_levels[:10],  # Top 10 by composite score
+        "support": support_levels[:10],  # Top 10 by composite score
     }
 
 
