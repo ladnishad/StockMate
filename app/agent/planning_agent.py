@@ -213,6 +213,28 @@ Focus on recent, relevant information. Ignore outdated articles or old posts.
 - Consider the broader market direction
 - Factor in any news catalysts or social sentiment into your thesis
 
+## Level Reliability Assessment (Touch Count Analysis)
+
+Each support/resistance level includes touch count metrics - USE THESE to assess reliability:
+
+### Touch Count Classifications:
+- **INSTITUTIONAL (6+ touches)**: Heavily watched by institutions. Highest reliability. Price action here is significant.
+- **STRONG (4-5 touches)**: Well-established level. High probability of reaction. Good for stops/targets.
+- **MODERATE (2-3 touches)**: Confirmed level. Reasonable reliability. Use with other confluence.
+- **WEAK (1 touch)**: Unconfirmed level. Low reliability. Needs additional validation.
+
+### How to Use Touch Count:
+1. **Stop Loss Placement**: ALWAYS prefer levels with 3+ touches. A stop below a "strong" support is more reliable than one below a "weak" level.
+2. **Target Selection**: Prioritize "institutional" or "strong" resistance levels as profit targets - they're more likely to cause a reaction.
+3. **Entry Zones**: Look for "moderate" or better support levels for long entries, resistance for shorts.
+4. **Confluence**: When a level is both a swing point AND near a round number or EMA, reliability increases.
+5. **Recent Touches**: Levels touched recently (last_touch_bars_ago < 10) are more relevant than stale levels.
+
+### Red Flags:
+- Stop loss at a "weak" (1 touch) level - HIGH RISK of being run
+- Target at an untested level - may blow right through
+- Entry at a level that recently broke (last touched 1-2 bars ago with break)
+
 ## When Evaluating a Plan
 - Has price moved toward entry? Away from it?
 - Have key levels held or broken?
@@ -537,15 +559,50 @@ Volume: {vol.get('relative', 'N/A')}x average ({vol.get('trend', 'N/A')})
 Bollinger: {bb.get('position', 'N/A')} (Width: {bb.get('width', 'N/A')})
 """
 
-        # Key levels
+        # Key levels with touch count analysis
         levels = self._levels_data
         if levels.get("error"):
             levels_str = f"Error: {levels['error']}"
         else:
-            supports = levels.get("support_levels", [])[:5]
-            resistances = levels.get("resistance_levels", [])[:5]
-            levels_str = f"""Support Levels: {', '.join([f'${s:.2f}' for s in supports]) if supports else 'None found'}
-Resistance Levels: {', '.join([f'${r:.2f}' for r in resistances]) if resistances else 'None found'}
+            supports = levels.get("support", levels.get("support_levels", []))[:5]
+            resistances = levels.get("resistance", levels.get("resistance_levels", []))[:5]
+
+            # Format support levels with touch count
+            support_lines = []
+            for s in supports:
+                if isinstance(s, dict):
+                    price = s.get("price", 0)
+                    touches = s.get("touches", 0)
+                    reliability = s.get("reliability", "weak").upper()
+                    strength = s.get("strength", 0)
+                    last_touch = s.get("last_touch_bars_ago")
+                    level_type = s.get("type", "unknown")
+                    recency = f", last tested {last_touch} bars ago" if last_touch else ""
+                    support_lines.append(f"  ${price:.2f} [{reliability}] - {touches} touches, strength: {strength:.0f}, type: {level_type}{recency}")
+                else:
+                    support_lines.append(f"  ${s:.2f}")
+
+            # Format resistance levels with touch count
+            resistance_lines = []
+            for r in resistances:
+                if isinstance(r, dict):
+                    price = r.get("price", 0)
+                    touches = r.get("touches", 0)
+                    reliability = r.get("reliability", "weak").upper()
+                    strength = r.get("strength", 0)
+                    last_touch = r.get("last_touch_bars_ago")
+                    level_type = r.get("type", "unknown")
+                    recency = f", last tested {last_touch} bars ago" if last_touch else ""
+                    resistance_lines.append(f"  ${price:.2f} [{reliability}] - {touches} touches, strength: {strength:.0f}, type: {level_type}{recency}")
+                else:
+                    resistance_lines.append(f"  ${r:.2f}")
+
+            levels_str = f"""Support Levels (sorted by reliability):
+{chr(10).join(support_lines) if support_lines else '  None found'}
+
+Resistance Levels (sorted by reliability):
+{chr(10).join(resistance_lines) if resistance_lines else '  None found'}
+
 ATR (14): ${levels.get('atr', 'N/A')}
 """
 
@@ -1033,32 +1090,50 @@ Volatility:
 - ATR %: {atr_pct:.2f}% (of price)
 """
 
-        # Key levels with more detail
+        # Key levels with full touch count analysis
         levels = self._levels_data
         if levels.get("error"):
             levels_str = f"Error: {levels['error']}"
         else:
-            supports = levels.get("support_levels", [])[:5]
-            resistances = levels.get("resistance_levels", [])[:5]
+            supports = levels.get("support", levels.get("support_levels", []))[:5]
+            resistances = levels.get("resistance", levels.get("resistance_levels", []))[:5]
 
             support_details = []
             for s in supports:
                 if isinstance(s, dict):
-                    support_details.append(f"${s.get('price', s):.2f} (touches: {s.get('touches', 'N/A')})")
+                    price = s.get("price", 0)
+                    touches = s.get("touches", 0)
+                    reliability = s.get("reliability", "weak").upper()
+                    strength = s.get("strength", 0)
+                    last_touch = s.get("last_touch_bars_ago")
+                    level_type = s.get("type", "unknown")
+                    recency = f" (last tested {last_touch} bars ago)" if last_touch is not None else ""
+                    support_details.append(
+                        f"${price:.2f} [{reliability}] - {touches} touches, strength: {strength:.0f}, type: {level_type}{recency}"
+                    )
                 else:
                     support_details.append(f"${s:.2f}")
 
             resistance_details = []
             for r in resistances:
                 if isinstance(r, dict):
-                    resistance_details.append(f"${r.get('price', r):.2f} (touches: {r.get('touches', 'N/A')})")
+                    price = r.get("price", 0)
+                    touches = r.get("touches", 0)
+                    reliability = r.get("reliability", "weak").upper()
+                    strength = r.get("strength", 0)
+                    last_touch = r.get("last_touch_bars_ago")
+                    level_type = r.get("type", "unknown")
+                    recency = f" (last tested {last_touch} bars ago)" if last_touch is not None else ""
+                    resistance_details.append(
+                        f"${price:.2f} [{reliability}] - {touches} touches, strength: {strength:.0f}, type: {level_type}{recency}"
+                    )
                 else:
                     resistance_details.append(f"${r:.2f}")
 
-            levels_str = f"""Support Levels:
+            levels_str = f"""Support Levels (sorted by reliability - use STRONG/INSTITUTIONAL levels for stops):
 {chr(10).join(['  - ' + s for s in support_details]) if support_details else '  None identified'}
 
-Resistance Levels:
+Resistance Levels (sorted by reliability - use STRONG/INSTITUTIONAL levels for targets):
 {chr(10).join(['  - ' + r for r in resistance_details]) if resistance_details else '  None identified'}
 
 ATR (14): ${levels.get('atr', 0):.2f}

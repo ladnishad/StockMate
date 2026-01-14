@@ -9,6 +9,8 @@ from app.tools.analysis import (
     calculate_volume_profile,
     detect_chart_patterns,
     generate_trade_plan,
+    find_comprehensive_levels,
+    _count_level_touches,
 )
 from app.models.data import (
     MarketSnapshot,
@@ -405,3 +407,207 @@ class TestChartPatterns:
         # We don't assert zero patterns (some real patterns might exist),
         # but this test ensures the strict inequality logic doesn't crash
         assert patterns["pattern_count"] >= 0
+
+
+class TestTouchCount:
+    """Tests for touch count analysis in support/resistance levels."""
+
+    @pytest.fixture
+    def bars_with_clear_levels(self):
+        """Create price bars with clear support at $95 and resistance at $105."""
+        from datetime import timedelta
+        from app.models.data import PriceBar
+
+        bars = []
+        base_date = datetime(2025, 1, 1)
+
+        # Create 100 bars that repeatedly test $95 support and $105 resistance
+        for i in range(100):
+            # Price oscillates between 96-104, touching 95 and 105 periodically
+            phase = i % 20
+
+            if phase < 5:
+                # Bouncing off support at 95
+                close = 96 + phase * 0.5
+                low = 95.0 if phase == 2 else 96.0
+                high = close + 1.0
+            elif phase < 10:
+                # Rising
+                close = 98 + (phase - 5) * 1.2
+                low = close - 1.0
+                high = close + 1.0
+            elif phase < 15:
+                # Testing resistance at 105
+                close = 104 - (phase - 10) * 0.5
+                high = 105.0 if phase == 12 else 104.0
+                low = close - 1.0
+            else:
+                # Falling back
+                close = 102 - (phase - 15) * 1.2
+                low = close - 1.0
+                high = close + 1.0
+
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(days=i),
+                open=close - 0.3,
+                high=high,
+                low=low,
+                close=close,
+                volume=1000000,
+            ))
+
+        return bars
+
+    def test_count_level_touches_support(self, bars_with_clear_levels):
+        """Test counting touches on support level."""
+        result = _count_level_touches(bars_with_clear_levels, 95.0, "support", tolerance_pct=0.5)
+
+        assert isinstance(result, dict)
+        assert "touches" in result
+        assert "recent_touches" in result
+        assert "last_touch_bars_ago" in result
+        assert "held" in result
+        assert "broke" in result
+        assert "strength" in result
+        assert "reliability" in result
+
+        # Should detect multiple touches at the 95 level
+        assert result["touches"] >= 3
+        assert result["strength"] > 0
+        assert result["reliability"] in ["weak", "moderate", "strong", "institutional"]
+
+    def test_count_level_touches_resistance(self, bars_with_clear_levels):
+        """Test counting touches on resistance level."""
+        result = _count_level_touches(bars_with_clear_levels, 105.0, "resistance", tolerance_pct=0.5)
+
+        assert isinstance(result, dict)
+        assert result["touches"] >= 3
+        assert result["strength"] > 0
+
+    def test_count_level_touches_reliability_classification(self, bars_with_clear_levels):
+        """Test that reliability classification is correct based on touch count."""
+        # Test with a level that has many touches
+        result_many = _count_level_touches(bars_with_clear_levels, 95.0, "support", tolerance_pct=1.0)
+
+        if result_many["touches"] >= 6:
+            assert result_many["reliability"] == "institutional"
+        elif result_many["touches"] >= 4:
+            assert result_many["reliability"] == "strong"
+        elif result_many["touches"] >= 2:
+            assert result_many["reliability"] == "moderate"
+        else:
+            assert result_many["reliability"] == "weak"
+
+    def test_count_level_touches_no_touches(self, bars_with_clear_levels):
+        """Test counting touches on a level with no touches."""
+        # Price never goes to 50
+        result = _count_level_touches(bars_with_clear_levels, 50.0, "support", tolerance_pct=0.5)
+
+        assert result["touches"] == 0
+        assert result["strength"] == 0
+        assert result["reliability"] == "weak"
+        assert result["last_touch_bars_ago"] is None
+
+    def test_count_level_touches_empty_bars(self):
+        """Test touch counting with empty bars."""
+        result = _count_level_touches([], 100.0, "support")
+
+        assert result["touches"] == 0
+        assert result["reliability"] == "weak"
+
+    def test_count_level_touches_recent_weight(self, bars_with_clear_levels):
+        """Test that recent touches contribute more to strength."""
+        result = _count_level_touches(bars_with_clear_levels, 95.0, "support", tolerance_pct=0.5)
+
+        # Recent touches should be reflected in the result
+        assert "recent_touches" in result
+        # Strength should be higher when there are recent touches
+        if result["recent_touches"] > 0:
+            assert result["strength"] >= 15  # At least some recency bonus
+
+
+class TestComprehensiveLevels:
+    """Tests for comprehensive levels with touch count."""
+
+    def test_find_comprehensive_levels_basic(self, sample_price_bars):
+        """Test that comprehensive levels include touch count data."""
+        levels = find_comprehensive_levels(sample_price_bars)
+
+        assert isinstance(levels, dict)
+        assert "support" in levels
+        assert "resistance" in levels
+        assert "current_price" in levels
+
+    def test_find_comprehensive_levels_touch_data(self, sample_price_bars):
+        """Test that each level has touch count data."""
+        levels = find_comprehensive_levels(sample_price_bars)
+
+        for support in levels.get("support", []):
+            assert "price" in support
+            assert "touches" in support
+            assert "strength" in support
+            assert "reliability" in support
+            assert "type" in support
+
+        for resistance in levels.get("resistance", []):
+            assert "price" in resistance
+            assert "touches" in resistance
+            assert "strength" in resistance
+            assert "reliability" in resistance
+            assert "type" in resistance
+
+    def test_find_comprehensive_levels_sorting(self, sample_price_bars):
+        """Test that levels are sorted by composite score (strength + proximity)."""
+        levels = find_comprehensive_levels(sample_price_bars)
+
+        # Levels should be sorted by a composite of strength and proximity
+        # We can't easily verify the exact sort order, but we can verify
+        # that strong nearby levels should rank higher
+        supports = levels.get("support", [])
+        if len(supports) > 1:
+            # Just verify all levels have the required fields for sorting
+            for s in supports:
+                assert "strength" in s
+                assert "distance_pct" in s
+
+    def test_find_comprehensive_levels_includes_ema_levels(self, sample_price_bars):
+        """Test that EMA levels are included with touch count."""
+        from app.tools.indicators import calculate_ema_series
+
+        ema_9 = calculate_ema_series(sample_price_bars, 9)
+        ema_21 = calculate_ema_series(sample_price_bars, 21)
+
+        levels = find_comprehensive_levels(sample_price_bars, ema_9=ema_9, ema_21=ema_21)
+
+        all_levels = levels.get("support", []) + levels.get("resistance", [])
+        ema_types = [l.get("type") for l in all_levels]
+
+        # Should include EMA levels if they were provided
+        assert "ema_9" in ema_types or "ema_21" in ema_types
+
+    def test_find_comprehensive_levels_round_numbers(self, sample_price_bars):
+        """Test that round number levels are included with touch count."""
+        levels = find_comprehensive_levels(sample_price_bars)
+
+        all_levels = levels.get("support", []) + levels.get("resistance", [])
+        level_types = [l.get("type") for l in all_levels]
+
+        # Should include round number levels
+        assert "round_number" in level_types
+
+    def test_find_comprehensive_levels_empty_bars(self):
+        """Test comprehensive levels with empty bars."""
+        with pytest.raises(ValueError, match="price_bars cannot be empty"):
+            find_comprehensive_levels([])
+
+    def test_find_comprehensive_levels_reliability_in_output(self, sample_price_bars):
+        """Test that reliability classification is in output."""
+        levels = find_comprehensive_levels(sample_price_bars)
+
+        valid_reliabilities = ["weak", "moderate", "strong", "institutional"]
+
+        for support in levels.get("support", []):
+            assert support.get("reliability") in valid_reliabilities
+
+        for resistance in levels.get("resistance", []):
+            assert resistance.get("reliability") in valid_reliabilities
