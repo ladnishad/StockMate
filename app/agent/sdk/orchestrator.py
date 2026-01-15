@@ -680,7 +680,7 @@ class TradePlanOrchestrator:
                     volume_profile = await sdk_tools.get_volume_profile(symbol, 50)  # 50 days
                     chart_patterns = await sdk_tools.get_chart_patterns(symbol, 100)  # 100 days
                 else:  # position
-                    bars = await sdk_tools.get_price_bars(symbol, "1w", 52)
+                    bars = await sdk_tools.get_price_bars(symbol, "1w", 365)
                     indicators = await sdk_tools.get_technical_indicators(symbol, [21, 50, 200], 14)
                     sr_levels = await sdk_tools.get_support_resistance(symbol, "weekly")
                     volume_profile = await sdk_tools.get_volume_profile(symbol, 200)  # 200 days
@@ -694,7 +694,7 @@ class TradePlanOrchestrator:
 
                 # Step 2: Generate chart
                 timeframe_map = {"day": "5m", "swing": "1d", "position": "1w"}
-                days_map = {"day": 3, "swing": 100, "position": 52}
+                days_map = {"day": 3, "swing": 100, "position": 365}
                 chart_result = await sdk_tools.generate_chart(
                     symbol,
                     timeframe_map[trade_style],

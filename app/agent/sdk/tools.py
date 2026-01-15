@@ -448,8 +448,9 @@ async def get_support_resistance(
     """
     try:
         # Different lookback periods for different timeframes
+        # Note: Calendar days, not trading days. ~1.5x multiplier for weekends
         lookback_map = {
-            "intraday": 5,    # 5 days for intraday levels
+            "intraday": 20,   # 20 calendar days (~13 trading days) for intraday levels
             "daily": 50,      # 50 days for swing levels
             "weekly": 200,    # 200 days for position levels
         }
@@ -1011,7 +1012,7 @@ async def get_news_sentiment(
 
 async def get_divergences(
     symbol: str,
-    lookback: int = 50,
+    lookback: int = 75,
 ) -> Dict[str, Any]:
     """Detect RSI and MACD divergences for reversal signals.
 
@@ -1021,7 +1022,8 @@ async def get_divergences(
 
     Args:
         symbol: Stock ticker symbol
-        lookback: Number of days of data to analyze (default: 50)
+        lookback: Number of calendar days of data to analyze (default: 75).
+                  Note: 75 calendar days ≈ 50 trading days, ensuring enough bars for MACD.
 
     Returns:
         Dictionary with RSI and MACD divergence detection results
@@ -1029,7 +1031,8 @@ async def get_divergences(
     try:
         bars = fetch_price_bars(symbol.upper(), timeframe="1d", days_back=lookback)
 
-        if not bars or len(bars) < 20:
+        # MACD requires 35 bars (slow_period=26 + signal_period=9)
+        if not bars or len(bars) < 35:
             return {
                 "symbol": symbol.upper(),
                 "error": "Insufficient data for divergence detection",

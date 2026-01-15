@@ -63,7 +63,7 @@ async def test_detailed_workflow(symbol: str):
     timeframes = [
         ("5m", 3, "Day Trade"),
         ("1d", 100, "Swing Trade"),
-        ("1w", 52, "Position Trade"),
+        ("1w", 365, "Position Trade"),  # 365 days to get ~52 weekly bars
     ]
 
     for tf, days, style in timeframes:
@@ -108,8 +108,15 @@ async def test_detailed_workflow(symbol: str):
                 print(f"    RSI(14): {rsi.get('value', 'N/A')} - {rsi.get('signal', 'N/A')}")
             if 'macd' in indicators:
                 macd = indicators['macd']
-                print(f"    MACD: {macd.get('macd_line', 'N/A'):.4f}, Signal: {macd.get('signal_line', 'N/A'):.4f}")
-                print(f"    MACD Histogram: {macd.get('histogram', 'N/A'):.4f} ({macd.get('histogram_trend', 'N/A')})")
+                macd_value = macd.get('value')  # MACD line value
+                histogram = macd.get('histogram')
+                signal = macd.get('signal', 'N/A')  # Trading signal (bullish/bearish/neutral)
+                if macd_value is not None:
+                    print(f"    MACD Line: {macd_value:.4f}, Signal: {signal}")
+                    if histogram is not None:
+                        print(f"    MACD Histogram: {histogram:.4f}")
+                else:
+                    print(f"    MACD: N/A")
         except Exception as e:
             print(f"    Error: {e}")
 
@@ -138,7 +145,7 @@ async def test_detailed_workflow(symbol: str):
     chart_configs = [
         ("5m", 3, "Day Trade"),
         ("1d", 100, "Swing Trade"),
-        ("1w", 52, "Position Trade"),
+        ("1w", 365, "Position Trade"),  # 365 days to get ~52 weekly bars
     ]
 
     for tf, days, style in chart_configs:
@@ -149,7 +156,7 @@ async def test_detailed_workflow(symbol: str):
                 img_len = len(chart_result['chart_image_base64'])
                 print(f"    Chart Generated: {img_len:,} bytes (base64)")
                 print(f"    Timeframe: {chart_result.get('timeframe', 'N/A')}")
-                print(f"    Bars Used: {chart_result.get('bars_count', 'N/A')}")
+                print(f"    Bars Used: {chart_result.get('bars_plotted', 'N/A')}")
             else:
                 print(f"    Error: {chart_result.get('error', 'Unknown')}")
         except Exception as e:

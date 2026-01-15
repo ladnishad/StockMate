@@ -1969,10 +1969,13 @@ def calculate_cmf(
     # MFM = ((Close - Low) - (High - Close)) / (High - Low)
     # Simplifies to: (2 * Close - High - Low) / (High - Low)
     hl_range = highs - lows
-    mfm = np.where(
-        hl_range != 0,
-        ((closes - lows) - (highs - closes)) / hl_range,
-        0
+    # Use np.divide with where to avoid division warnings when high == low (doji candles)
+    mfm = np.zeros_like(hl_range)
+    np.divide(
+        (closes - lows) - (highs - closes),
+        hl_range,
+        out=mfm,
+        where=hl_range != 0
     )
 
     # Calculate Money Flow Volume
@@ -2096,10 +2099,13 @@ def calculate_adl(
     # Calculate Close Location Value (CLV) for each bar
     # CLV = ((Close - Low) - (High - Close)) / (High - Low)
     hl_range = highs - lows
-    clv = np.where(
-        hl_range != 0,
-        ((closes - lows) - (highs - closes)) / hl_range,
-        0
+    # Use np.divide with where to avoid division warnings when high == low (doji candles)
+    clv = np.zeros_like(hl_range)
+    np.divide(
+        (closes - lows) - (highs - closes),
+        hl_range,
+        out=clv,
+        where=hl_range != 0
     )
 
     # Calculate ADL cumulatively
