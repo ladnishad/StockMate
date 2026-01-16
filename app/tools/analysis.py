@@ -2897,7 +2897,7 @@ def _find_swing_pivots(
         for j in range(i - pivot_window, i + pivot_window + 1):
             if j == i:
                 continue
-            if recent_bars[j].high >= bar.high:
+            if recent_bars[j].high > bar.high:
                 is_swing_high = False
                 break
 
@@ -2910,7 +2910,7 @@ def _find_swing_pivots(
         for j in range(i - pivot_window, i + pivot_window + 1):
             if j == i:
                 continue
-            if recent_bars[j].low <= bar.low:
+            if recent_bars[j].low < bar.low:
                 is_swing_low = False
                 break
 

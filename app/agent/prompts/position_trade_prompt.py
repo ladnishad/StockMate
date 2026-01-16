@@ -53,6 +53,54 @@ Call: analyze_chart_vision(symbol, chart_image, "position")
 ## NEWS & MARKET CONTEXT
 {news_context}
 
+## FUNDAMENTALS CONTEXT (HIGH Weight for Position Trades)
+{fundamentals_context}
+
+**Fundamentals are CRITICAL for position trades** - with weeks/months holding period, you are exposed to fundamental risk.
+
+### Fundamental Requirements for Position Trades:
+
+**REQUIRED for LONG Position Trades:**
+- Positive EPS or clear path to profitability
+- Revenue growth (YoY > 0% minimum)
+- Manageable debt (Debt/Equity < 2.0)
+- Net margin stability or improvement
+- Strong or moderate financial health score
+
+**REQUIRED for SHORT Position Trades:**
+- Deteriorating fundamentals (declining margins, rising debt)
+- Negative earnings surprises trend
+- Extreme overvaluation (P/E > 60 without growth justification)
+- Industry headwinds reflected in fundamentals
+
+### How Fundamentals Affect Position Trade Confidence:
+
+**STRONG Fundamentals (boost confidence +10-20%):**
+- ROE > 15%, growing earnings, low debt
+- Beat earnings consistently (> 80% beat rate)
+- Valuation reasonable for growth rate (PEG < 2)
+- Strong free cash flow generation
+
+**WEAK Fundamentals (reduce confidence -15-30% or mark unsuitable):**
+- Negative margins, high debt (D/E > 2)
+- Declining revenue and earnings
+- Poor earnings track record
+- Extreme valuation without growth support
+
+### CRITICAL EARNINGS RISK FOR POSITION TRADES:
+
+If earnings are within the holding period:
+- This is EXTREME RISK - you WILL experience an earnings event
+- Earnings can cause 10-30% gaps in either direction
+- Options:
+  1. Wait until AFTER earnings to enter
+  2. Accept the risk and size position smaller
+  3. Add explicit earnings risk warning
+
+If earnings beat rate is < 60%:
+- Additional risk factor - company may disappoint
+- Weight fundamentals even more heavily
+
 ## REAL-TIME SENTIMENT (You have X/Twitter search - USE IT!)
 You have access to real-time X (Twitter) search. **Actively search X for this stock** to find:
 - Current institutional and retail sentiment discussions
@@ -275,6 +323,7 @@ def build_position_trade_prompt(
     symbol: str,
     position_context: str = "No existing position.",
     news_context: str = "No recent news available.",
+    fundamentals_context: str = "No fundamental data available.",
 ) -> str:
     """Build the position trade agent prompt with context.
 
@@ -282,6 +331,7 @@ def build_position_trade_prompt(
         symbol: Stock ticker symbol
         position_context: Formatted position context string
         news_context: News and sentiment context string
+        fundamentals_context: Fundamental data context string
 
     Returns:
         Complete position trade agent prompt
@@ -289,4 +339,5 @@ def build_position_trade_prompt(
     return POSITION_TRADE_SYSTEM_PROMPT.format(
         position_context=position_context,
         news_context=news_context,
+        fundamentals_context=fundamentals_context,
     )

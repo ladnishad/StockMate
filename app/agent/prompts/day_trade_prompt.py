@@ -53,6 +53,15 @@ Call: analyze_chart_vision(symbol, chart_image, "day")
 ## NEWS & MARKET CONTEXT
 {news_context}
 
+## FUNDAMENTALS CONTEXT (Low Weight for Day Trades)
+{fundamentals_context}
+
+**Note**: Fundamentals have LOW WEIGHT for day trades - intraday momentum dominates.
+However, ALWAYS check for earnings risk:
+- If earnings are TODAY or TOMORROW: This is HIGH RISK for day trades
+- Avoid holding into earnings announcements (10-30% gap risk)
+- Even intraday, pre-earnings volatility can cause unexpected moves
+
 ## REAL-TIME SENTIMENT (You have X/Twitter search - USE IT!)
 You have access to real-time X (Twitter) search. **Actively search X for this stock** to find:
 - Current trader sentiment and positioning discussions
@@ -220,6 +229,7 @@ def build_day_trade_prompt(
     symbol: str,
     position_context: str = "No existing position.",
     news_context: str = "No recent news available.",
+    fundamentals_context: str = "No fundamental data available.",
 ) -> str:
     """Build the day trade agent prompt with context.
 
@@ -227,6 +237,7 @@ def build_day_trade_prompt(
         symbol: Stock ticker symbol
         position_context: Formatted position context string
         news_context: News and sentiment context string
+        fundamentals_context: Fundamental data context string
 
     Returns:
         Complete day trade agent prompt
@@ -234,4 +245,5 @@ def build_day_trade_prompt(
     return DAY_TRADE_SYSTEM_PROMPT.format(
         position_context=position_context,
         news_context=news_context,
+        fundamentals_context=fundamentals_context,
     )

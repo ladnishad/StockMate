@@ -46,7 +46,7 @@ private func makeISO8601DateDecodingStrategy() -> JSONDecoder.DateDecodingStrate
 actor APIService {
     static let shared = APIService()
 
-    private let baseURL = "https://stockmate-fggr.onrender.com"
+    private let baseURL = AppConfiguration.apiBaseURL
     private let session: URLSession
 
     /// Access keychain lazily to avoid I/O on main thread during init
@@ -459,6 +459,17 @@ actor APIService {
         // V2: Error event (type == "error")
         let errorMessage: String?
 
+        // Agentic mode events
+        let thinking: String?                    // agent_thinking event: AI's reasoning
+        let toolName: String?                    // tool_call/tool_result: name of tool
+        let toolArguments: [String: AnyCodable]? // tool_call: arguments passed to tool
+        let toolResult: [String: AnyCodable]?    // tool_result: result from tool
+        let iteration: Int?                      // Agentic events: which iteration
+
+        // Agentic mode final result - raw plan dict (different structure than TradingPlanResponse)
+        let agenticPlan: [String: AnyCodable]?   // Raw agentic plan with day/swing/position_trade_plan
+        let agenticData: [String: AnyCodable]?   // Additional agentic data (iterations, tool_history, etc.)
+
         enum CodingKeys: String, CodingKey {
             case type, phase, content, plan, message
             case stepType = "step_type"
@@ -473,6 +484,14 @@ actor APIService {
             case alternatives
             case analysisId = "analysis_id"
             case errorMessage = "error_message"
+            // Agentic mode
+            case thinking
+            case toolName = "tool_name"
+            case toolArguments = "tool_arguments"
+            case toolResult = "tool_result"
+            case iteration
+            case agenticPlan = "agentic_plan"  // Agentic final result plan
+            case agenticData = "data"          // Agentic metadata (iterations, tool_history)
         }
 
         /// Get the error message from either V1 (message) or V2 (error_message) format
@@ -550,11 +569,12 @@ actor APIService {
         let userId = keychain.userId ?? "default"
         return AsyncThrowingStream { continuation in
             Task {
-                // V2 endpoint with parallel sub-agents
-                var components = URLComponents(string: "https://stockmate-fggr.onrender.com/plan/\(symbol.uppercased())/generate/v2")!
+                // V2 endpoint with agentic mode (iterative AI tool-calling)
+                var components = URLComponents(string: "\(AppConfiguration.apiBaseURL)/plan/\(symbol.uppercased())/generate/v2")!
                 components.queryItems = [
                     URLQueryItem(name: "user_id", value: userId),
-                    URLQueryItem(name: "force_new", value: String(forceNew))
+                    URLQueryItem(name: "force_new", value: String(forceNew)),
+                    URLQueryItem(name: "agentic_mode", value: "true")  // Enable agentic AI mode
                 ]
 
                 var request = URLRequest(url: components.url!)

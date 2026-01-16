@@ -53,6 +53,29 @@ Call: analyze_chart_vision(symbol, chart_image, "swing")
 ## NEWS & MARKET CONTEXT
 {news_context}
 
+## FUNDAMENTALS CONTEXT (Moderate Weight for Swing Trades)
+{fundamentals_context}
+
+**How Fundamentals Affect Swing Trade Confidence:**
+
+POSITIVE Fundamental Factors (boost confidence +5-10%):
+- Strong financial health (current ratio > 1.5, low debt)
+- Positive EPS growth (YoY > 10%)
+- Reasonable valuation (P/E < 25 or strong growth to justify)
+- High earnings beat rate (> 75%)
+
+NEGATIVE Fundamental Factors (reduce confidence -10-20%):
+- Weak financial health (high debt, low margins)
+- Negative EPS/revenue growth
+- Extreme valuation (P/E > 50 without growth)
+- Poor earnings track record (< 50% beat rate)
+
+**CRITICAL EARNINGS WARNING:**
+If earnings are within 7 days of your expected holding period:
+- This is HIGH RISK - earnings can cause 10-30% gaps
+- Either AVOID the trade or plan to exit BEFORE earnings
+- Add explicit risk warning about earnings gap risk
+
 ## REAL-TIME SENTIMENT (You have X/Twitter search - USE IT!)
 You have access to real-time X (Twitter) search. **Actively search X for this stock** to find:
 - Current trader sentiment and positioning discussions
@@ -265,6 +288,7 @@ def build_swing_trade_prompt(
     symbol: str,
     position_context: str = "No existing position.",
     news_context: str = "No recent news available.",
+    fundamentals_context: str = "No fundamental data available.",
 ) -> str:
     """Build the swing trade agent prompt with context.
 
@@ -272,6 +296,7 @@ def build_swing_trade_prompt(
         symbol: Stock ticker symbol
         position_context: Formatted position context string
         news_context: News and sentiment context string
+        fundamentals_context: Fundamental data context string
 
     Returns:
         Complete swing trade agent prompt
@@ -279,4 +304,5 @@ def build_swing_trade_prompt(
     return SWING_TRADE_SYSTEM_PROMPT.format(
         position_context=position_context,
         news_context=news_context,
+        fundamentals_context=fundamentals_context,
     )
