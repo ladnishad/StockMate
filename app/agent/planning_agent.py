@@ -724,8 +724,8 @@ Value Area Low: ${vol_profile.get('value_area_low', 'N/A')}
         if fib.get("error"):
             fibonacci_str = f"Fibonacci levels unavailable: {fib.get('error')}"
         else:
-            retracements = fib.get("retracement", {})
-            extensions = fib.get("extension", {})
+            retracements = fib.get("retracement_levels", {})
+            extensions = fib.get("extension_levels", {})
             current_price = price_data.get('price', 0)
 
             # Describe current price position vs Fibonacci
@@ -1375,8 +1375,8 @@ ATR (14): ${levels.get('atr', 0):.2f}
         if fib.get("error"):
             fibonacci_str = f"Fibonacci levels unavailable: {fib.get('error')}"
         else:
-            retracements = fib.get("retracement", {})
-            extensions = fib.get("extension", {})
+            retracements = fib.get("retracement_levels", {})
+            extensions = fib.get("extension_levels", {})
 
             # Describe current price position vs Fibonacci
             nearest_level = fib.get("nearest_level", "")

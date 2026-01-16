@@ -3114,7 +3114,7 @@ def calculate_fibonacci_levels(
     nearest_level = min(all_levels.items(), key=lambda x: abs(x[1] - current_price))
 
     # Check if price is near a Fibonacci level (within 1%)
-    near_fib = abs(nearest_level[1] - current_price) / current_price < 0.01
+    near_fib = (abs(nearest_level[1] - current_price) / current_price < 0.01) if current_price > 0 else False
 
     # Determine if at a favorable entry level
     key_entry_levels = ["0.382", "0.500", "0.618", "0.786"]

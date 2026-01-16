@@ -569,7 +569,7 @@ async def get_fibonacci_levels(
             }
 
         # Different lookback periods for different trade styles
-        lookback_map = {"day": 10, "swing": 30, "position": 50}
+        lookback_map = {"day": 15, "swing": 30, "position": 50}
         swing_lookback = lookback_map.get(trade_type, 30)
 
         # Calculate Fibonacci levels using the core analysis function
@@ -593,8 +593,8 @@ async def get_fibonacci_levels(
             "signal": fib_indicator.signal,
             "current_price": current_price,
             "nearest_level": metadata.get("nearest_level"),
-            "retracement_levels": metadata.get("retracement_levels", {}),
-            "extension_levels": metadata.get("extension_levels", {}),
+            "retracement_levels": metadata.get("retracement", {}),
+            "extension_levels": metadata.get("extension", {}),
         }
 
         logger.info(
