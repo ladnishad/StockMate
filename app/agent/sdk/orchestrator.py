@@ -71,15 +71,16 @@ async def retry_async(
             return await func(*args, **kwargs)
         except Exception as e:
             last_exception = e
+            error_msg = str(e) or f"{type(e).__name__}"
             if attempt < max_attempts - 1:
                 logger.warning(
                     f"Retry {attempt + 1}/{max_attempts} for {func.__name__} "
-                    f"after error: {e}. Waiting {current_delay:.1f}s..."
+                    f"after error: {error_msg}. Waiting {current_delay:.1f}s..."
                 )
                 await asyncio.sleep(current_delay)
                 current_delay *= backoff
             else:
-                logger.error(f"All {max_attempts} attempts failed for {func.__name__}: {e}")
+                logger.error(f"All {max_attempts} attempts failed for {func.__name__}: {error_msg}")
 
     raise last_exception
 
@@ -650,6 +651,13 @@ class TradePlanOrchestrator:
 
         yield StreamEvent.subagent_progress(self.subagent_progress.copy())
 
+        # Create queue for real-time progress updates
+        progress_queue: asyncio.Queue = asyncio.Queue()
+
+        async def emit_progress():
+            """Helper to put current progress on queue for real-time streaming."""
+            await progress_queue.put(self.subagent_progress.copy())
+
         async def run_single_agent(agent_name: str, agent_def) -> SubAgentReport:
             """Run a single sub-agent with real API calls and tools."""
             from app.agent.schemas.subagent_report import (
@@ -664,6 +672,7 @@ class TradePlanOrchestrator:
             # Update progress
             self.subagent_progress[agent_name].status = SubAgentStatus.GATHERING_DATA
             self.subagent_progress[agent_name].current_step = "Gathering price data"
+            await emit_progress()
 
             try:
                 # Step 1: Gather timeframe-specific data
@@ -691,6 +700,7 @@ class TradePlanOrchestrator:
 
                 self.subagent_progress[agent_name].current_step = "Generating chart"
                 self.subagent_progress[agent_name].status = SubAgentStatus.GENERATING_CHART
+                await emit_progress()
 
                 # Step 2: Generate chart
                 timeframe_map = {"day": "5m", "swing": "1d", "position": "1w"}
@@ -703,6 +713,7 @@ class TradePlanOrchestrator:
 
                 self.subagent_progress[agent_name].current_step = "Analyzing chart with Vision"
                 self.subagent_progress[agent_name].status = SubAgentStatus.ANALYZING_CHART
+                await emit_progress()
 
                 # Step 3: Vision analysis with retry (uses user's selected provider - Claude or Grok)
                 vision_result = {}
@@ -723,6 +734,7 @@ class TradePlanOrchestrator:
 
                 self.subagent_progress[agent_name].current_step = "Generating trade plan"
                 self.subagent_progress[agent_name].status = SubAgentStatus.GENERATING_PLAN
+                await emit_progress()
 
                 # Step 4: Build report from gathered data
                 # Handle None values explicitly - .get() returns None if key exists with None value
@@ -1135,26 +1147,53 @@ Return ONLY the JSON object, no other text."""
                 )
 
             except Exception as e:
-                logger.error(f"[{agent_name}] Error: {e}")
+                error_msg = str(e) or f"{type(e).__name__}: {repr(e)}"
+                logger.error(f"[{agent_name}] Error: {error_msg}")
                 self.subagent_progress[agent_name].status = SubAgentStatus.FAILED
-                self.subagent_progress[agent_name].error_message = str(e)
+                self.subagent_progress[agent_name].error_message = error_msg
+                self.subagent_progress[agent_name].findings = [
+                    f"Error: {error_msg[:40]}",
+                    "Using fallback data",
+                ]
+                await emit_progress()  # Emit error progress
                 # Return mock report on error
                 return self._create_mock_report(symbol, trade_style, context)
 
-        # Run all agents in parallel
+        # Run all agents in parallel while yielding progress events
         try:
+            # Create tasks (don't await yet)
             tasks = [
-                run_single_agent(name, agent_def)
+                asyncio.create_task(run_single_agent(name, agent_def))
                 for name, agent_def in agents_def.items()
             ]
+
+            # While tasks are running, consume progress events from queue and yield them
+            while not all(task.done() for task in tasks):
+                try:
+                    # Wait for progress update with short timeout
+                    progress = await asyncio.wait_for(progress_queue.get(), timeout=0.2)
+                    yield StreamEvent.subagent_progress(progress)
+                except asyncio.TimeoutError:
+                    pass  # No progress update, check if tasks are done
+
+            # Drain any remaining progress events in queue
+            while not progress_queue.empty():
+                try:
+                    progress = progress_queue.get_nowait()
+                    yield StreamEvent.subagent_progress(progress)
+                except asyncio.QueueEmpty:
+                    break
+
+            # Get results from completed tasks
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Process results
             for (agent_name, _), result in zip(agents_def.items(), results):
                 if isinstance(result, Exception):
+                    error_msg = str(result) or f"{type(result).__name__}: {repr(result)}"
                     self.subagent_progress[agent_name].status = SubAgentStatus.FAILED
-                    self.subagent_progress[agent_name].error_message = str(result)
-                    self.subagent_progress[agent_name].findings = ["Error occurred"]
+                    self.subagent_progress[agent_name].error_message = error_msg
+                    self.subagent_progress[agent_name].findings = [f"Error: {error_msg[:50]}"]
                 else:
                     self.subagent_reports[agent_name] = result
                     self.subagent_progress[agent_name].status = SubAgentStatus.COMPLETED
@@ -1255,7 +1294,7 @@ Return ONLY the JSON object, no other text."""
             suitable=suitable_map.get(trade_style, False),
             confidence=confidence_map.get(trade_style, 50),
             bias="bullish",
-            thesis=f"Simulated {trade_style} trade thesis for {symbol}",
+            thesis=f"[FALLBACK DATA] Analysis unavailable due to API timeout. This is simulated {trade_style} trade data for {symbol}.",
             vision_analysis=VisionAnalysisResult(
                 trend_quality="moderate",
                 visual_patterns=["bull flag"] if trade_style == "swing" else [],

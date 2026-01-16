@@ -145,7 +145,9 @@ async def get_technical_indicators(
     try:
         # Need enough bars for longest EMA plus some buffer
         max_ema = max(ema_periods) if ema_periods else 50
-        bars_needed = max(max_ema + 20, 100)
+        # Add 50% buffer for weekends/holidays (calendar days ≠ trading days)
+        # For Position Trade [21, 50, 200]: int(200 * 1.5) + 30 = 330 calendar days → ~220+ trading bars
+        bars_needed = max(int(max_ema * 1.5) + 30, 100)
 
         bars = fetch_price_bars(symbol.upper(), timeframe="1d", days_back=bars_needed)
 

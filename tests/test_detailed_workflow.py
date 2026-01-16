@@ -14,7 +14,89 @@ import sys
 import json
 from datetime import datetime
 
+import asciichartpy
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# ============================================================================
+# CLI Display Helpers
+# ============================================================================
+
+# Agent names in consistent order for display
+AGENT_ORDER = ["day-trade-analyzer", "swing-trade-analyzer", "position-trade-analyzer"]
+
+# Detect if running in interactive terminal (for in-place updates)
+IS_TTY = sys.stdout.isatty()
+
+# Track last printed state for non-TTY mode (to avoid duplicate lines)
+_last_agent_states: dict = {}
+
+
+def print_subagent_progress(subagents: dict, first_update: bool = False):
+    """Print/update subagent progress. Uses in-place updates if TTY, else filtered print."""
+    if IS_TTY:
+        _print_inline(subagents, first_update)
+    else:
+        _print_filtered(subagents)
+
+
+def _print_inline(subagents: dict, first_update: bool):
+    """In-place update using ANSI escape codes (TTY mode)."""
+    num_agents = len(AGENT_ORDER)
+
+    if not first_update:
+        # Move cursor up to overwrite previous lines
+        print(f"\033[{num_agents}A", end="")
+
+    for agent_name in AGENT_ORDER:
+        progress = subagents.get(agent_name, {})
+        status = progress.get("status", "pending")
+        step = progress.get("current_step") or ""
+
+        # Clean up status string
+        status_clean = str(status).replace("SubAgentStatus.", "").upper()
+        line = f"  >> {agent_name:<25} [{status_clean:<15}] {step[:40]}"
+        print(f"\033[K{line}")  # \033[K clears to end of line
+
+    sys.stdout.flush()
+
+
+def _print_filtered(subagents: dict):
+    """Fallback for non-TTY: only print when status changes."""
+    global _last_agent_states
+
+    for agent_name in AGENT_ORDER:
+        progress = subagents.get(agent_name, {})
+        status = str(progress.get("status", "pending"))
+        step = progress.get("current_step") or ""
+
+        current_state = f"{status}:{step}"
+        if _last_agent_states.get(agent_name) != current_state:
+            _last_agent_states[agent_name] = current_state
+            status_clean = status.replace("SubAgentStatus.", "").upper()
+            print(f"  >> {agent_name}: {status_clean} - {step}")
+
+
+def render_ascii_chart(bars: list, height: int = 10) -> str:
+    """Render price bars as ASCII line chart showing closing prices.
+
+    Args:
+        bars: List of bar dicts with 'close' key
+        height: Chart height in lines
+
+    Returns:
+        Formatted ASCII chart string
+    """
+    if not bars:
+        return "      (No data available)"
+
+    closes = [bar['close'] for bar in bars]
+
+    # Render chart
+    chart = asciichartpy.plot(closes, {'height': height})
+
+    # Indent each line for formatting
+    return '\n'.join(f"      {line}" for line in chart.split('\n'))
 
 
 async def test_detailed_workflow(symbol: str):
@@ -31,6 +113,7 @@ async def test_detailed_workflow(symbol: str):
     from app.agent.prompts.day_trade_prompt import build_day_trade_prompt
     from app.agent.prompts.swing_trade_prompt import build_swing_trade_prompt
     from app.agent.prompts.position_trade_prompt import build_position_trade_prompt
+    from app.tools.market_data import fetch_price_bars
 
     user_id = "test_user"
 
@@ -151,6 +234,14 @@ async def test_detailed_workflow(symbol: str):
     for tf, days, style in chart_configs:
         print(f"\n  --- {style} Chart ({tf}) ---")
         try:
+            # Fetch raw bars for ASCII preview
+            raw_bars = fetch_price_bars(symbol, timeframe=tf, days_back=days)
+            if raw_bars:
+                bars_for_chart = [{'close': b.close} for b in raw_bars]
+                print(f"\n    ASCII Preview ({len(bars_for_chart)} bars):")
+                print(render_ascii_chart(bars_for_chart, height=8))
+                print()
+
             chart_result = await sdk_tools.generate_chart(symbol, tf, days)
             if 'chart_image_base64' in chart_result:
                 img_len = len(chart_result['chart_image_base64'])
@@ -173,6 +264,15 @@ async def test_detailed_workflow(symbol: str):
     for tf, days, style in [("1d", 100, "Swing Trade")]:  # Just test one
         print(f"\n  --- {style} Vision Analysis ---")
         try:
+            # Fetch raw price bars for ASCII chart preview
+            raw_bars = fetch_price_bars(symbol, timeframe=tf, days_back=days)
+            if raw_bars:
+                # Convert to list of dicts for render_ascii_chart
+                bars_for_chart = [{'close': b.close} for b in raw_bars]
+                print(f"\n    Chart Preview ({tf}, {len(bars_for_chart)} bars):")
+                print(render_ascii_chart(bars_for_chart, height=10))
+                print()
+
             chart_result = await sdk_tools.generate_chart(symbol, tf, days)
             if 'chart_image_base64' in chart_result:
                 vision_result = await sdk_tools.analyze_chart_vision(
@@ -220,6 +320,7 @@ async def test_detailed_workflow(symbol: str):
 
     final_result = None
     all_events = []
+    first_subagent_update = True  # Track first update for ANSI cursor positioning
 
     try:
         async for event in orchestrator.generate_plan_stream(
@@ -232,16 +333,24 @@ async def test_detailed_workflow(symbol: str):
             all_events.append(event_data)
 
             if event_type == "orchestrator_step":
-                step = event_data.get("step", "unknown")
-                status = event_data.get("status", "")
-                findings = event_data.get("findings", [])
+                step = event_data.get("step_type", "unknown")
+                status = event_data.get("step_status", "")
+                findings = event_data.get("step_findings", [])
+                # Reset first_subagent_update when switching orchestrator steps
+                if step == "spawning_subagents":
+                    first_subagent_update = True
                 print(f"\n  >> {step.upper().replace('_', ' ')} [{status}]")
                 for f in findings[:5]:
                     print(f"     - {f}")
 
+            elif event_type == "subagent_progress":
+                subagents = event_data.get("subagents", {})
+                print_subagent_progress(subagents, first_update=first_subagent_update)
+                first_subagent_update = False
+
             elif event_type == "subagent_complete":
                 agent_name = event_data.get("agent_name", "")
-                findings = event_data.get("findings", [])
+                findings = event_data.get("agent_findings", [])
                 print(f"\n  >> AGENT COMPLETE: {agent_name}")
                 for f in findings[:5]:
                     print(f"     - {f}")
