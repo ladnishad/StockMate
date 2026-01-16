@@ -185,6 +185,60 @@ If user has a SHORT position:
   - 1.618 extension: Golden extension, major target
   - 2.618 extension: Aggressive trend extension target
 
+### 6. Fibonacci Retracement Entry (CRITICAL FOR POSITION TRADING)
+Position trades benefit enormously from Fibonacci analysis due to longer holding periods.
+Weekly and monthly Fibonacci levels are watched by institutions and algorithms.
+
+**Entry Levels for Position Trades (in order of strength):**
+- **38.2% retracement**: Shallow pullback in STRONG trends only
+  - Use for adding to winning positions
+  - Requires clear weekly uptrend structure
+  - Stop: Below 50% level
+- **50.0% retracement**: Psychological midpoint, most reliable for position entries
+  - Institutions accumulate heavily at 50% pullbacks
+  - Ideal for initiating NEW positions
+  - Stop: Below 61.8% level
+- **61.8% retracement**: The "golden ratio" - highest probability entry zone
+  - Best risk/reward for position trades
+  - Often coincides with major moving averages (50 week EMA)
+  - Stop: Below 78.6% level or swing low
+- **78.6% retracement**: Deep retracement, potential trend reversal
+  - Higher risk but massive R/R potential
+  - MUST have additional confluence (volume node, prior structure)
+  - Stop: Below swing low with tight buffer (2-3%)
+
+**Stop Loss Placement (Position Trades Need Room):**
+- Place stops beyond the NEXT Fibonacci level with 10-15% buffer (wider than swing trades)
+- If entering at 61.8%, stop goes below 78.6% OR the monthly swing low
+- If entering at 50%, stop goes below 61.8% level
+- NEVER place stops exactly at Fibonacci levels - institutions hunt these
+- For multi-month holds, use WEEKLY close below level as stop (not intraday)
+
+**Fibonacci Extension Targets for Position Trades:**
+- **1.272 extension**: First take-profit zone (secure 25-30% of position)
+- **1.618 extension**: Primary target, the "golden extension"
+  - Take another 30-40% off here
+  - Move stop to breakeven or 38.2% retracement of new move
+- **2.000 extension**: Full measured move target
+- **2.618 extension**: Extended target for momentum leaders
+  - Only achievable in strong sector rotations or market leaders
+  - Trail stop using 21 week EMA
+
+**Fibonacci Confluence for Position Trades (MANDATORY):**
+Weekly Fibonacci levels must align with other institutional signals:
+- Fib level + 50 week EMA convergence = STRONG accumulation zone
+- Fib level + prior monthly swing high/low = major structure validation
+- Fib level + high volume node = institutional buying/selling concentration
+- Fib level + sector support = broad money flow confirmation
+- Multiple Fib levels from different swing ranges clustering = "Fibonacci confluence zone"
+
+**Position Trade Fibonacci Rules:**
+1. ONLY enter at Fib levels with 2+ confluence factors
+2. Wait for WEEKLY candle confirmation (hammer, engulfing, inside bar breakout)
+3. Scale into position: 50% at Fib level, add 50% on weekly close confirmation
+4. Use Fib extensions for PARTIAL profit taking, not all-or-nothing exits
+5. Re-measure Fibonacci from NEW swing points as trend extends
+
 ## Risk Management for Position Trades
 - Position size: 2-5% of account (larger positions, longer holds)
 - Stop loss: 2-3x weekly ATR OR below major structure

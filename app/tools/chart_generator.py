@@ -199,13 +199,17 @@ def generate_chart_image(
                 if 'retracement' in fibonacci_levels:
                     for level_name, price in fibonacci_levels['retracement'].items():
                         if price and y_min <= price <= y_max:
-                            # Color logic: in uptrend, lower levels are support (green)
-                            # in downtrend, higher levels are resistance (red)
+                            # Color logic based on level significance:
+                            # In UPTREND: Higher % levels (0.618, 0.786) are near swing low = SUPPORT (green)
+                            #             Lower % levels (0.236, 0.382) are near swing high = RESISTANCE (red)
+                            # In DOWNTREND: Inverse - lower levels are support, higher are resistance
                             level_value = float(level_name)
                             if trend == 'uptrend':
-                                color = '#4CAF50' if level_value < 0.5 else '#FF5722'
+                                # Deep retracements (>50%) = strong support, shallow (<50%) = resistance zones
+                                color = '#4CAF50' if level_value > 0.5 else '#FF5722'
                             else:
-                                color = '#FF5722' if level_value < 0.5 else '#4CAF50'
+                                # In downtrend: deep retracements are resistance, shallow are support
+                                color = '#FF5722' if level_value > 0.5 else '#4CAF50'
 
                             # Draw horizontal line
                             price_ax.axhline(

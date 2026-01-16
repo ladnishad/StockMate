@@ -3012,6 +3012,27 @@ def calculate_fibonacci_levels(
     current_price = price_bars[-1].close
     price_range = swing_high - swing_low
 
+    # Validate price data integrity
+    if swing_high <= 0 or swing_low <= 0:
+        raise ValueError(
+            f"Invalid price data: swing_high={swing_high:.4f}, swing_low={swing_low:.4f}. "
+            "Prices must be positive."
+        )
+
+    # Validate price range for meaningful Fibonacci calculation
+    # Minimum range threshold prevents meaningless levels in flat/consolidating markets
+    min_range_threshold = swing_low * 0.001  # 0.1% of swing low as minimum range
+    if price_range <= 0:
+        raise ValueError(
+            f"Invalid price range: swing_high ({swing_high:.4f}) must be greater than "
+            f"swing_low ({swing_low:.4f})"
+        )
+    if price_range < min_range_threshold:
+        raise ValueError(
+            f"Insufficient price movement for Fibonacci analysis: range={price_range:.4f} "
+            f"(minimum required: {min_range_threshold:.4f}). Market may be consolidating."
+        )
+
     # Determine trend direction based on swing sequence
     # If swing high came after swing low, we're in uptrend
     if high_idx > low_idx:
@@ -3073,16 +3094,23 @@ def calculate_fibonacci_levels(
                 point_c = swing_low
                 # Calculate extensions from C based on B-A range
                 ab_range = point_b - point_a
-                three_point_extensions = {
-                    "3pt_1.272": point_c + (ab_range * 1.272),
-                    "3pt_1.618": point_c + (ab_range * 1.618),
-                    "3pt_2.000": point_c + (ab_range * 2.000),
-                    "3pt_2.618": point_c + (ab_range * 2.618),
-                }
-                logger.debug(
-                    f"3-point extensions (uptrend): A={point_a:.2f}, B={point_b:.2f}, "
-                    f"C={point_c:.2f}, AB range={ab_range:.2f}"
-                )
+
+                # Validate AB range is meaningful (at least 0.1% of point_a)
+                if abs(ab_range) < point_a * 0.001:
+                    logger.warning(
+                        f"3-point AB range too small ({ab_range:.4f}), skipping 3-point extensions"
+                    )
+                else:
+                    three_point_extensions = {
+                        "3pt_1.272": point_c + (ab_range * 1.272),
+                        "3pt_1.618": point_c + (ab_range * 1.618),
+                        "3pt_2.000": point_c + (ab_range * 2.000),
+                        "3pt_2.618": point_c + (ab_range * 2.618),
+                    }
+                    logger.debug(
+                        f"3-point extensions (uptrend): A={point_a:.2f}, B={point_b:.2f}, "
+                        f"C={point_c:.2f}, AB range={ab_range:.2f}"
+                    )
             else:
                 # Point A: Earlier swing high
                 point_a = max(bar.high for bar in earlier_bars)
@@ -3092,15 +3120,22 @@ def calculate_fibonacci_levels(
                 point_c = swing_high
                 # Calculate extensions from C based on A-B range
                 ab_range = point_a - point_b
-                three_point_extensions = {
-                    "3pt_1.272": point_c - (ab_range * 1.272),
-                    "3pt_1.618": point_c - (ab_range * 1.618),
-                    "3pt_2.000": point_c - (ab_range * 2.000),
-                    "3pt_2.618": point_c - (ab_range * 2.618),
-                }
-                logger.debug(
-                    f"3-point extensions (downtrend): A={point_a:.2f}, B={point_b:.2f}, "
-                    f"C={point_c:.2f}, AB range={ab_range:.2f}"
+
+                # Validate AB range is meaningful (at least 0.1% of point_b)
+                if abs(ab_range) < point_b * 0.001:
+                    logger.warning(
+                        f"3-point AB range too small ({ab_range:.4f}), skipping 3-point extensions"
+                    )
+                else:
+                    three_point_extensions = {
+                        "3pt_1.272": point_c - (ab_range * 1.272),
+                        "3pt_1.618": point_c - (ab_range * 1.618),
+                        "3pt_2.000": point_c - (ab_range * 2.000),
+                        "3pt_2.618": point_c - (ab_range * 2.618),
+                    }
+                    logger.debug(
+                        f"3-point extensions (downtrend): A={point_a:.2f}, B={point_b:.2f}, "
+                        f"C={point_c:.2f}, AB range={ab_range:.2f}"
                 )
         except Exception as e:
             logger.warning(f"Could not calculate 3-point extensions: {e}")

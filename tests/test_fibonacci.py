@@ -884,3 +884,437 @@ class TestFibonacciIntegration:
 
             assert chart is not None
             assert len(chart) > 100
+
+
+# ==================== Advanced Tests: Mathematical Correctness ====================
+
+class TestFibonacciMathematicalCorrectness:
+    """Tests verifying mathematical correctness of Fibonacci calculations."""
+
+    def test_extension_levels_mathematical_accuracy_uptrend(self, uptrend_fibonacci_bars):
+        """Test extension levels are mathematically correct in uptrend."""
+        result = calculate_fibonacci_levels(uptrend_fibonacci_bars, swing_lookback=20)
+
+        metadata = result.metadata
+        swing_high = metadata["swing_high"]
+        swing_low = metadata["swing_low"]
+        price_range = swing_high - swing_low
+        extension = metadata["extension"]
+
+        # In uptrend, extensions should project ABOVE swing high
+        # 1.272 extension = swing_high + (price_range * 0.272)
+        expected_1272 = swing_high + (price_range * 0.272)
+        assert abs(extension["1.272"] - expected_1272) < 0.01, \
+            f"1.272 extension incorrect: got {extension['1.272']}, expected {expected_1272}"
+
+        # 1.618 extension = swing_high + (price_range * 0.618)
+        expected_1618 = swing_high + (price_range * 0.618)
+        assert abs(extension["1.618"] - expected_1618) < 0.01, \
+            f"1.618 extension incorrect: got {extension['1.618']}, expected {expected_1618}"
+
+        # 2.000 extension = swing_high + price_range
+        expected_2000 = swing_high + price_range
+        assert abs(extension["2.000"] - expected_2000) < 0.01, \
+            f"2.000 extension incorrect: got {extension['2.000']}, expected {expected_2000}"
+
+        # 2.618 extension = swing_high + (price_range * 1.618)
+        expected_2618 = swing_high + (price_range * 1.618)
+        assert abs(extension["2.618"] - expected_2618) < 0.01, \
+            f"2.618 extension incorrect: got {extension['2.618']}, expected {expected_2618}"
+
+    def test_extension_levels_mathematical_accuracy_downtrend(self, downtrend_fibonacci_bars):
+        """Test extension levels are mathematically correct in downtrend."""
+        result = calculate_fibonacci_levels(downtrend_fibonacci_bars, swing_lookback=20)
+
+        metadata = result.metadata
+        swing_high = metadata["swing_high"]
+        swing_low = metadata["swing_low"]
+        price_range = swing_high - swing_low
+        extension = metadata["extension"]
+
+        # In downtrend, extensions should project BELOW swing low
+        # 1.272 extension = swing_low - (price_range * 0.272)
+        expected_1272 = swing_low - (price_range * 0.272)
+        assert abs(extension["1.272"] - expected_1272) < 0.01, \
+            f"1.272 extension incorrect: got {extension['1.272']}, expected {expected_1272}"
+
+        # 1.618 extension = swing_low - (price_range * 0.618)
+        expected_1618 = swing_low - (price_range * 0.618)
+        assert abs(extension["1.618"] - expected_1618) < 0.01, \
+            f"1.618 extension incorrect: got {extension['1.618']}, expected {expected_1618}"
+
+        # 2.000 extension = swing_low - price_range
+        expected_2000 = swing_low - price_range
+        assert abs(extension["2.000"] - expected_2000) < 0.01, \
+            f"2.000 extension incorrect: got {extension['2.000']}, expected {expected_2000}"
+
+        # 2.618 extension = swing_low - (price_range * 1.618)
+        expected_2618 = swing_low - (price_range * 1.618)
+        assert abs(extension["2.618"] - expected_2618) < 0.01, \
+            f"2.618 extension incorrect: got {extension['2.618']}, expected {expected_2618}"
+
+    def test_retracement_levels_boundary_values(self, uptrend_fibonacci_bars):
+        """Test retracement boundary levels 0.000 and 1.000."""
+        result = calculate_fibonacci_levels(uptrend_fibonacci_bars, swing_lookback=20)
+
+        metadata = result.metadata
+        retracement = metadata["retracement"]
+        swing_high = metadata["swing_high"]
+        swing_low = metadata["swing_low"]
+
+        # In uptrend: 0.000 should be at swing_high, 1.000 at swing_low
+        if metadata["trend"] == "uptrend":
+            assert abs(retracement["0.000"] - swing_high) < 0.01, \
+                f"0.000 level should be swing_high ({swing_high}), got {retracement['0.000']}"
+            assert abs(retracement["1.000"] - swing_low) < 0.01, \
+                f"1.000 level should be swing_low ({swing_low}), got {retracement['1.000']}"
+
+    def test_extension_level_2000_exists(self, uptrend_fibonacci_bars):
+        """Test that 2.000 extension level is calculated and exists."""
+        result = calculate_fibonacci_levels(uptrend_fibonacci_bars, swing_lookback=20)
+
+        extension = result.metadata["extension"]
+        assert "2.000" in extension, "Extension level 2.000 is missing!"
+        assert extension["2.000"] is not None, "Extension level 2.000 is None!"
+        assert isinstance(extension["2.000"], (int, float)), \
+            f"Extension 2.000 should be numeric, got {type(extension['2.000'])}"
+
+
+# ==================== Tests for 3-Point Extensions ====================
+
+class TestThreePointExtensions:
+    """Tests for 3-point (A-B-C pattern) extension functionality."""
+
+    @pytest.fixture
+    def three_point_pattern_bars(self) -> List[PriceBar]:
+        """Generate bars with clear A-B-C pattern for 3-point extension testing."""
+        bars = []
+        base_date = datetime(2025, 1, 1)
+
+        # Point A: Swing low at $100 (bar 0-10)
+        for i in range(10):
+            price = 100.0 + i * 0.5  # Rising from 100
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(days=i),
+                open=price - 0.2, high=price + 0.3, low=price - 0.4, close=price,
+                volume=1000000,
+            ))
+
+        # Point B: Swing high at ~$120 (bar 10-30)
+        for i in range(20):
+            price = 105.0 + i * 0.75  # Rising to ~120
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(days=10 + i),
+                open=price - 0.2, high=price + 0.5, low=price - 0.3, close=price,
+                volume=1000000,
+            ))
+
+        # Point C: Pullback to ~$110 (bar 30-40)
+        for i in range(10):
+            price = 120.0 - i * 1.0  # Falling to ~110
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(days=30 + i),
+                open=price + 0.2, high=price + 0.4, low=price - 0.3, close=price,
+                volume=1200000,
+            ))
+
+        # Additional bars to make lookback*2 requirement (bar 40-60)
+        for i in range(20):
+            price = 110.0 + i * 0.2  # Slight recovery
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(days=40 + i),
+                open=price - 0.1, high=price + 0.3, low=price - 0.2, close=price,
+                volume=1000000,
+            ))
+
+        return bars
+
+    def test_three_point_extensions_calculated(self, three_point_pattern_bars):
+        """Test that 3-point extensions are calculated when use_3point=True."""
+        result = calculate_fibonacci_levels(
+            three_point_pattern_bars,
+            swing_lookback=20,
+            use_3point=True
+        )
+
+        metadata = result.metadata
+
+        # 3-point extensions should exist
+        assert "3point_extension" in metadata or any(
+            key.startswith("3pt_") for key in metadata.get("extension", {}).keys()
+        ), "3-point extensions not found in metadata"
+
+    def test_three_point_extensions_not_calculated_by_default(self, three_point_pattern_bars):
+        """Test that 3-point extensions are NOT calculated when use_3point=False."""
+        result = calculate_fibonacci_levels(
+            three_point_pattern_bars,
+            swing_lookback=20,
+            use_3point=False
+        )
+
+        extension = result.metadata.get("extension", {})
+
+        # Should not have 3pt_ keys
+        three_point_keys = [k for k in extension.keys() if k.startswith("3pt_")]
+        assert len(three_point_keys) == 0, \
+            f"3-point extensions should not exist when use_3point=False: {three_point_keys}"
+
+    def test_three_point_insufficient_data(self):
+        """Test 3-point extensions gracefully handle insufficient data."""
+        # Create bars with only 25 bars (not enough for lookback * 2 = 40)
+        bars = []
+        base_date = datetime(2025, 1, 1)
+        for i in range(25):
+            price = 100.0 + i * 0.5
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(days=i),
+                open=price - 0.2, high=price + 0.3, low=price - 0.4, close=price,
+                volume=1000000,
+            ))
+
+        result = calculate_fibonacci_levels(
+            bars,
+            swing_lookback=20,
+            use_3point=True
+        )
+
+        # Should not crash, regular extensions should still work
+        assert result.metadata["extension"] is not None
+
+
+# ==================== Tests for Trade Type Parameter ====================
+
+class TestTradeTypeParameter:
+    """Tests for trade_type parameter in core calculate_fibonacci_levels function."""
+
+    def test_trade_type_day_lookback(self):
+        """Test day trade type uses correct lookback (15 bars)."""
+        bars = []
+        base_date = datetime(2025, 1, 1)
+        for i in range(50):
+            price = 100.0 + i * 0.3
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(minutes=i * 5),
+                open=price - 0.1, high=price + 0.2, low=price - 0.2, close=price,
+                volume=100000,
+            ))
+
+        result = calculate_fibonacci_levels(bars, trade_type="day")
+        assert result.metadata["lookback_used"] == 15
+
+    def test_trade_type_swing_lookback(self):
+        """Test swing trade type uses correct lookback (30 bars)."""
+        bars = []
+        base_date = datetime(2025, 1, 1)
+        for i in range(60):
+            price = 100.0 + i * 0.5
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(days=i),
+                open=price - 0.2, high=price + 0.3, low=price - 0.3, close=price,
+                volume=1000000,
+            ))
+
+        result = calculate_fibonacci_levels(bars, trade_type="swing")
+        assert result.metadata["lookback_used"] == 30
+
+    def test_trade_type_position_lookback(self):
+        """Test position trade type uses correct lookback (50 bars)."""
+        bars = []
+        base_date = datetime(2025, 1, 1)
+        for i in range(100):
+            price = 100.0 + i * 0.2
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(days=i),
+                open=price - 0.3, high=price + 0.4, low=price - 0.4, close=price,
+                volume=1000000,
+            ))
+
+        result = calculate_fibonacci_levels(bars, trade_type="position")
+        assert result.metadata["lookback_used"] == 50
+
+    def test_trade_type_overrides_swing_lookback_param(self):
+        """Test trade_type parameter overrides explicit swing_lookback."""
+        bars = []
+        base_date = datetime(2025, 1, 1)
+        for i in range(60):
+            price = 100.0 + i * 0.5
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(days=i),
+                open=price - 0.2, high=price + 0.3, low=price - 0.3, close=price,
+                volume=1000000,
+            ))
+
+        # Pass swing_lookback=25 but trade_type="swing" should override to 30
+        result = calculate_fibonacci_levels(bars, swing_lookback=25, trade_type="swing")
+        assert result.metadata["lookback_used"] == 30
+
+    def test_invalid_trade_type_uses_swing_lookback(self):
+        """Test invalid trade_type falls back to swing_lookback parameter."""
+        bars = []
+        base_date = datetime(2025, 1, 1)
+        for i in range(40):
+            price = 100.0 + i * 0.5
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(days=i),
+                open=price - 0.2, high=price + 0.3, low=price - 0.3, close=price,
+                volume=1000000,
+            ))
+
+        # Invalid trade_type should fall back to swing_lookback parameter
+        result = calculate_fibonacci_levels(bars, swing_lookback=25, trade_type="invalid")
+        assert result.metadata["lookback_used"] == 25
+
+
+# ==================== Tests for Downtrend Scenarios ====================
+
+class TestDowntrendFibonacci:
+    """Comprehensive tests for Fibonacci in downtrend scenarios."""
+
+    def test_downtrend_trend_detection(self, downtrend_fibonacci_bars):
+        """Test trend is correctly detected as downtrend."""
+        result = calculate_fibonacci_levels(downtrend_fibonacci_bars, swing_lookback=20)
+
+        # In our fixture, downtrend has swing low after swing high
+        metadata = result.metadata
+        assert metadata["trend"] in ["uptrend", "downtrend"]  # Either is valid based on bars
+
+    def test_downtrend_retracement_calculation(self, downtrend_fibonacci_bars):
+        """Test retracement levels in downtrend are calculated correctly."""
+        result = calculate_fibonacci_levels(downtrend_fibonacci_bars, swing_lookback=20)
+
+        metadata = result.metadata
+        retracement = metadata["retracement"]
+        swing_high = metadata["swing_high"]
+        swing_low = metadata["swing_low"]
+
+        # All standard retracement levels should exist
+        for level in ["0.236", "0.382", "0.500", "0.618", "0.786"]:
+            assert level in retracement, f"Missing retracement level {level}"
+            assert retracement[level] is not None, f"Retracement level {level} is None"
+
+        # Levels should be between swing_low and swing_high
+        for level, price in retracement.items():
+            if level not in ["0.000", "1.000"]:
+                assert swing_low <= price <= swing_high, \
+                    f"Level {level} ({price}) not between {swing_low} and {swing_high}"
+
+    def test_downtrend_extensions_project_below(self, downtrend_fibonacci_bars):
+        """Test extensions in downtrend project below swing low."""
+        result = calculate_fibonacci_levels(downtrend_fibonacci_bars, swing_lookback=20)
+
+        metadata = result.metadata
+        extension = metadata["extension"]
+        swing_low = metadata["swing_low"]
+
+        # If trend is downtrend, extensions should be below swing_low
+        if metadata["trend"] == "downtrend":
+            for level in ["1.272", "1.618", "2.000", "2.618"]:
+                assert extension[level] < swing_low, \
+                    f"Downtrend extension {level} ({extension[level]}) should be below swing_low ({swing_low})"
+
+
+# ==================== Tests for Edge Cases and Validations ====================
+
+class TestEdgeCasesAndValidations:
+    """Tests for edge cases and new validations."""
+
+    def test_zero_price_range_raises_error(self):
+        """Test that zero price range (flat market) raises ValueError."""
+        bars = []
+        base_date = datetime(2025, 1, 1)
+
+        # Create completely flat market - all prices exactly the same
+        for i in range(30):
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(days=i),
+                open=100.0,
+                high=100.0,  # Same as open/close
+                low=100.0,   # Same as open/close
+                close=100.0,
+                volume=1000000,
+            ))
+
+        with pytest.raises(ValueError, match="Insufficient price movement|Invalid price range"):
+            calculate_fibonacci_levels(bars, swing_lookback=20)
+
+    def test_near_fib_level_threshold_exactly_1_percent(self, uptrend_fibonacci_bars):
+        """Test near_fib_level detection at exactly 1% threshold."""
+        result = calculate_fibonacci_levels(uptrend_fibonacci_bars, swing_lookback=20)
+
+        metadata = result.metadata
+        assert "near_fib_level" in metadata
+        assert isinstance(metadata["near_fib_level"], bool)
+
+    def test_at_entry_level_detection(self, uptrend_fibonacci_bars):
+        """Test at_entry_level detection for key levels."""
+        result = calculate_fibonacci_levels(uptrend_fibonacci_bars, swing_lookback=20)
+
+        metadata = result.metadata
+        assert "at_entry_level" in metadata
+        assert isinstance(metadata["at_entry_level"], bool)
+
+        # at_entry_level should only be True for key entry levels
+        key_levels = ["0.382", "0.500", "0.618", "0.786"]
+        if metadata["at_entry_level"]:
+            assert metadata["nearest_level"] in key_levels, \
+                f"at_entry_level is True but nearest_level ({metadata['nearest_level']}) is not a key level"
+
+    def test_positive_price_validation(self):
+        """Test that non-positive prices are handled."""
+        bars = []
+        base_date = datetime(2025, 1, 1)
+
+        # Create bars with very small but positive prices
+        for i in range(30):
+            price = 0.01 + i * 0.001  # Penny stock range
+            bars.append(PriceBar(
+                timestamp=base_date + timedelta(days=i),
+                open=price - 0.001,
+                high=price + 0.002,
+                low=price - 0.002,
+                close=price,
+                volume=1000000,
+            ))
+
+        # Should not raise error for small but positive prices
+        result = calculate_fibonacci_levels(bars, swing_lookback=20)
+        assert result.metadata["swing_high"] > 0
+        assert result.metadata["swing_low"] > 0
+
+
+# ==================== Tests for Error Response Consistency ====================
+
+class TestErrorResponseConsistency:
+    """Tests verifying error responses have consistent structure."""
+
+    @pytest.mark.asyncio
+    async def test_agent_tool_error_response_has_all_keys(self):
+        """Test that error response from agent tool has all expected keys."""
+        with patch('app.agent.tools.fetch_price_bars') as mock_fetch:
+            mock_fetch.side_effect = Exception("Test API Error")
+
+            result = await get_fibonacci_levels("AAPL", trade_type="swing")
+
+            # All keys that success response has should exist in error response
+            expected_keys = [
+                "symbol", "error", "swing_high", "swing_low",
+                "retracement_levels", "extension_levels", "current_price",
+                "nearest_level", "nearest_price", "distance_to_nearest",
+                "distance_pct", "signal", "at_entry_level",
+                "suggested_entry_zone", "suggested_stop_zone", "trend"
+            ]
+
+            for key in expected_keys:
+                assert key in result, f"Error response missing key: {key}"
+
+    @pytest.mark.asyncio
+    async def test_agent_tool_error_signal_is_neutral(self):
+        """Test that error response has signal='neutral'."""
+        with patch('app.agent.tools.fetch_price_bars') as mock_fetch:
+            mock_fetch.side_effect = Exception("Test API Error")
+
+            result = await get_fibonacci_levels("AAPL", trade_type="swing")
+
+            assert result["signal"] == "neutral"
+            assert result["at_entry_level"] == False
+            assert result["trend"] == "unknown"

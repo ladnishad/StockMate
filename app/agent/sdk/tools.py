@@ -560,10 +560,14 @@ async def get_fibonacci_levels(
             return {
                 "symbol": symbol.upper(),
                 "error": "Insufficient data for Fibonacci",
+                "trade_type": trade_type,
                 "swing_high": None,
                 "swing_low": None,
+                "swing_range": 0,
                 "trend": "unknown",
                 "signal": "neutral",
+                "current_price": None,
+                "nearest_level": None,
                 "retracement_levels": {},
                 "extension_levels": {},
             }
@@ -611,10 +615,14 @@ async def get_fibonacci_levels(
         return {
             "symbol": symbol.upper(),
             "error": str(e),
+            "trade_type": trade_type,
             "swing_high": None,
             "swing_low": None,
+            "swing_range": 0,
             "trend": "unknown",
             "signal": "neutral",
+            "current_price": None,
+            "nearest_level": None,
             "retracement_levels": {},
             "extension_levels": {},
         }

@@ -559,11 +559,24 @@ async def get_fibonacci_levels(symbol: str, trade_type: str = "swing") -> Dict[s
         }
     except Exception as e:
         logger.error(f"Error getting Fibonacci levels for {symbol}: {e}")
+        # Return complete structure with default values for consistency
         return {
             "symbol": symbol.upper(),
             "error": str(e),
+            "swing_high": None,
+            "swing_low": None,
             "retracement_levels": {},
             "extension_levels": {},
+            "current_price": None,
+            "nearest_level": None,
+            "nearest_price": None,
+            "distance_to_nearest": None,
+            "distance_pct": None,
+            "signal": "neutral",
+            "at_entry_level": False,
+            "suggested_entry_zone": None,
+            "suggested_stop_zone": None,
+            "trend": "unknown",
         }
 
 
