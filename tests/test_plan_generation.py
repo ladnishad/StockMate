@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
-"""Test script to verify the complete plan generation workflow with Grok for ALCY."""
+"""Test script to verify the complete plan generation workflow.
 
+Usage:
+    python tests/test_plan_generation.py          # Default: AAPL
+    python tests/test_plan_generation.py TSLA     # Test with TSLA
+    python tests/test_plan_generation.py NVDA     # Test with NVDA
+"""
+
+import argparse
 import asyncio
 import os
 import sys
@@ -8,13 +15,17 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-async def test_plan_generation():
-    """Test the complete plan generation workflow."""
+
+async def test_plan_generation(symbol: str):
+    """Test the complete plan generation workflow.
+
+    Args:
+        symbol: Stock ticker to test
+    """
     from app.agent.sdk.orchestrator import TradePlanOrchestrator
     from app.agent.providers.factory import get_provider_config
     from app.agent.providers import ModelProvider
 
-    symbol = "ALCY"
     user_id = "test_user"
 
     print("=" * 70)
@@ -85,6 +96,59 @@ async def test_plan_generation():
         import traceback
         traceback.print_exc()
         return
+
+    # Print each agent's detailed output
+    print("\n" + "=" * 70)
+    print("INDIVIDUAL AGENT REPORTS")
+    print("=" * 70)
+
+    for agent_name, report in orchestrator.subagent_reports.items():
+        style = agent_name.replace("-trade-analyzer", "").upper()
+        print(f"\n{'─'*70}")
+        print(f"  {style} TRADE AGENT")
+        print(f"{'─'*70}")
+        print(f"  Bias:        {report.bias}")
+        print(f"  Confidence:  {report.confidence}%")
+        print(f"  Suitable:    {report.suitable}")
+        print(f"  ATR%:        {report.atr_percent}")
+        print(f"  Entry:       ${report.entry_zone_low} - ${report.entry_zone_high}")
+        print(f"  Stop:        ${report.stop_loss}")
+
+        if report.targets:
+            targets_str = ", ".join([f"${t.price}" for t in report.targets[:3]])
+            print(f"  Targets:     {targets_str}")
+        else:
+            print(f"  Targets:     None")
+
+        print(f"  R:R:         {report.risk_reward}")
+        print(f"  Holding:     {report.holding_period}")
+
+        print(f"\n  THESIS:")
+        thesis = report.thesis or "N/A"
+        # Wrap thesis for readability
+        words = thesis.split()
+        line = "    "
+        for word in words:
+            if len(line) + len(word) > 80:
+                print(line)
+                line = "    " + word + " "
+            else:
+                line += word + " "
+        if line.strip():
+            print(line)
+
+        if report.entry_reasoning:
+            print(f"\n  Entry Reasoning: {report.entry_reasoning[:100]}...")
+        if report.stop_reasoning:
+            print(f"  Stop Reasoning: {report.stop_reasoning[:100]}...")
+
+        # Vision analysis - it's a Pydantic model, use attribute access
+        if report.vision_analysis:
+            va = report.vision_analysis
+            print(f"\n  Vision Analysis:")
+            print(f"    Trend Quality: {getattr(va, 'trend_quality', 'N/A')}")
+            print(f"    Visual Patterns: {getattr(va, 'visual_patterns', [])}")
+            print(f"    Confidence Modifier: {getattr(va, 'confidence_modifier', 0)}")
 
     # Print final analysis
     if final_result:
@@ -168,4 +232,22 @@ async def test_plan_generation():
     print("=" * 70)
 
 if __name__ == "__main__":
-    asyncio.run(test_plan_generation())
+    parser = argparse.ArgumentParser(
+        description="Test orchestrator plan generation for a stock",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python tests/test_plan_generation.py AAPL
+    python tests/test_plan_generation.py TSLA
+    python tests/test_plan_generation.py NVDA
+        """
+    )
+    parser.add_argument(
+        "symbol",
+        nargs="?",
+        default="AAPL",
+        help="Stock ticker symbol (default: AAPL)"
+    )
+    args = parser.parse_args()
+
+    asyncio.run(test_plan_generation(args.symbol.upper()))

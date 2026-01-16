@@ -55,7 +55,7 @@ class GrokProvider(AIProvider):
                     "Authorization": f"Bearer {self.config.api_key}",
                     "Content-Type": "application/json",
                 },
-                timeout=httpx.Timeout(60.0, connect=10.0),
+                timeout=httpx.Timeout(180.0, connect=30.0),  # 3 min for search-enabled requests
             )
             self._initialized = True
         return self._client
@@ -243,7 +243,8 @@ class GrokProvider(AIProvider):
                 logger.error(f"Grok API error: {e.response.status_code} - {e.response.text}")
             raise
         except httpx.RequestError as e:
-            logger.error(f"Grok connection error: {e}")
+            error_detail = str(e) or f"{type(e).__name__}: {repr(e)}"
+            logger.error(f"Grok connection error: {error_detail}")
             raise
 
     async def create_message_stream(
@@ -321,7 +322,8 @@ class GrokProvider(AIProvider):
                 logger.error(f"Grok API error during stream: {e.response.status_code}")
             raise
         except httpx.RequestError as e:
-            logger.error(f"Grok connection error during stream: {e}")
+            error_detail = str(e) or f"{type(e).__name__}: {repr(e)}"
+            logger.error(f"Grok connection error during stream: {error_detail}")
             raise
 
     async def analyze_image(
@@ -383,7 +385,8 @@ class GrokProvider(AIProvider):
             logger.error(f"Grok vision error: {e.response.status_code} - {e.response.text}")
             raise
         except httpx.RequestError as e:
-            logger.error(f"Grok vision connection error: {e}")
+            error_detail = str(e) or f"{type(e).__name__}: {repr(e)}"
+            logger.error(f"Grok vision connection error: {error_detail}")
             raise
 
     @property
