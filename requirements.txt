@@ -35,3 +35,4 @@ slowapi>=0.1.9
 # Chart Generation (Visual Analysis)
 mplfinance>=0.12.10b0
 matplotlib>=3.7.0
+asciichartpy>=1.5.25

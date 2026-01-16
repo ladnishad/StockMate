@@ -158,6 +158,85 @@ If user has a SHORT position:
 - Scaling: Consider taking 1/3 at each Fibonacci extension target
 - Time stop: If no movement in 5-7 days, reassess
 
+## INSTITUTIONAL-GRADE LEVEL ANALYSIS (CRITICAL)
+
+Each support/resistance level includes institutional metrics - USE THESE for placement decisions:
+
+### Key Metrics Explained:
+- **touches**: Total times price tested the level (more = stronger)
+- **high_volume_touches**: Tests with 1.5x+ average volume (institutional activity)
+- **bounce_quality**: 0-100 score of bounce strength (>60 = strong rejection)
+- **reclaimed**: TRUE if level was broken then reclaimed (very strong signal)
+- **reliability**: WEAK/MODERATE/STRONG/INSTITUTIONAL classification
+
+### Reliability Classifications:
+- **INSTITUTIONAL**: 8+ effective touches OR reclaimed with 4+ touches - heavily defended
+- **STRONG**: 5+ effective touches OR 3+ with high volume - well-established
+- **MODERATE**: 2-3 touches - confirmed but needs confluence
+- **WEAK**: 1 touch only - unconfirmed, avoid for critical decisions
+
+### Stop Loss Placement Rules:
+- ONLY use STRONG or INSTITUTIONAL levels for stop placement
+- REQUIRE bounce_quality > 50 for stop levels
+- PREFER levels with high_volume_touches > 0 (institutions defend these)
+- PREFER [RECLAIMED] levels - proven institutional defense
+- NEVER place stops at WEAK levels (high stop-hunt risk)
+
+### Target Selection Rules:
+- Use STRONG or INSTITUTIONAL levels for profit targets
+- Prefer levels with high_volume_touches > 0
+- [RECLAIMED] resistance = likely to cause major reaction
+
+### Confidence Adjustment:
+- Using MODERATE levels for stops: Reduce confidence by 10-15 points
+- Using [RECLAIMED] levels: Can increase confidence by 5-10 points
+- High bounce_quality (>60) at entry: Increase confidence by 5 points
+
+## VOLUME PROFILE USAGE
+
+- **VPOC (Point of Control)**: Most traded price = strong S/R level
+- **Value Area**: 70% of volume traded here = congestion zone, price tends to revert
+- **High Volume Nodes (HVN)**: Strong support/resistance, slow price movement through
+- **Low Volume Nodes (LVN)**: Price moves FAST through these - good breakout zones
+
+Use VPOC and HVN for stop placement and targets. Expect fast moves through LVN.
+
+## DIVERGENCE SIGNALS FOR SWING TRADING
+
+Divergences are EXTREMELY valuable for swing trade timing:
+
+### Bullish Divergence (Best for Entry):
+- Daily price makes lower lows but RSI/MACD makes higher lows
+- Signals: Selling pressure exhausted, reversal likely
+- Best setup: Divergence at strong daily support level
+- Action: Enter on first green daily candle after divergence confirmed
+- Confidence boost: +15 points when divergence + strong support
+
+### Bearish Divergence (Exit Signal or Short Setup):
+- Daily price makes higher highs but RSI/MACD makes lower highs
+- Signals: Buying exhausted, potential top forming
+- If LONG: Consider taking profits or tightening stops
+- If looking to SHORT: Valid entry setup near resistance
+- Confidence boost: +15 points when divergence + strong resistance
+
+### Hidden Divergence (Continuation Signal):
+- Hidden bullish: Price higher lows, indicator lower lows = uptrend continuation
+- Hidden bearish: Price lower highs, indicator higher highs = downtrend continuation
+- Use for: Adding to winning positions on pullbacks
+
+### Swing Trading Divergence Rules:
+- Daily divergences are MORE significant than intraday
+- Divergence + pattern (flag, double bottom) = HIGH probability
+- Multiple indicator divergence (both RSI AND MACD) = strongest signal
+- Divergence WITHOUT a pattern = wait for pattern confirmation
+
+## CHART PATTERN SUCCESS RATES
+
+Each pattern includes historical success rate - use this to calibrate confidence:
+- Pattern with 65%+ success rate: Add 5-10 points to confidence
+- Pattern with 50-65% success rate: Use baseline confidence
+- Pattern with <50% success rate: Reduce confidence by 5-10 points
+
 ## Vision Analysis Focus (Daily chart)
 When analyzing the chart, look for:
 - **Trend Structure**: Higher highs/lows (uptrend) or lower highs/lows (downtrend)

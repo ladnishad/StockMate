@@ -145,6 +145,106 @@ If user has a SHORT position:
 - Time horizon: Be prepared to hold through noise
 - Review: Re-evaluate weekly, not daily
 
+## INSTITUTIONAL-GRADE LEVEL ANALYSIS (CRITICAL)
+
+Each support/resistance level includes institutional metrics - USE THESE for placement decisions:
+
+### Key Metrics Explained:
+- **touches**: Total times price tested the level (more = stronger)
+- **high_volume_touches**: Tests with 1.5x+ average volume (institutional activity)
+- **bounce_quality**: 0-100 score of bounce strength (>60 = strong rejection)
+- **reclaimed**: TRUE if level was broken then reclaimed (very strong signal)
+- **reliability**: WEAK/MODERATE/STRONG/INSTITUTIONAL classification
+
+### For Position Trading - Level Rules:
+- ONLY use STRONG or INSTITUTIONAL levels - weekly timeframe demands reliability
+- Levels with high_volume_touches indicate genuine institutional accumulation/distribution
+- [RECLAIMED] levels on weekly timeframe = EXTREMELY significant (major money defended)
+- Multi-year levels with 5+ touches are high-conviction anchor points
+
+### Stop Loss Placement (Position Trades Need MAJOR Structure):
+- REQUIRE INSTITUTIONAL or STRONG reliability for position trade stops
+- bounce_quality > 50 is baseline for weekly levels
+- [RECLAIMED] weekly levels are preferred stop references
+- NEVER use WEAK levels - position trades can't afford stop hunts on major capital
+
+### Entry Zone Selection:
+- INSTITUTIONAL levels for entry zones (accumulation areas)
+- High bounce_quality at entry = institutions are buying dips
+- Value Area Low combined with STRONG level = high-probability long entry
+
+### Confidence Adjustment:
+- INSTITUTIONAL level support for entry: Add 10-15 points
+- [RECLAIMED] weekly level: Add 10 points (proven major defense)
+- Using MODERATE levels: Reduce confidence by 15-20 points
+- No STRONG/INSTITUTIONAL levels nearby: Consider passing on the trade
+
+## VOLUME PROFILE FOR POSITION TRADING
+
+For multi-week/month holds, volume profile is critical for identifying:
+- **VPOC (Point of Control)**: Fair value - price gravitates here over time
+- **Value Area**: 70% of volume = institutional "fair value" consensus
+- **High Volume Nodes (HVN)**: Major accumulation zones = strong support
+- **Low Volume Nodes (LVN)**: Gaps in accumulation = fast moves through
+
+Position trades should have entries near HVN or VAL, NOT in LVN (unstable).
+
+## ADX TREND STRENGTH FOR POSITION TRADING
+
+ADX is CRITICAL for position trades - tells you if trend is worth riding:
+
+### ADX Interpretation:
+- **ADX < 20**: Weak or no trend - AVOID position trades, market is ranging
+- **ADX 20-25**: Trend emerging - can start building position, be cautious
+- **ADX 25-50**: Strong trend - IDEAL for position trades, ride the trend
+- **ADX > 50**: Very strong trend - may be extended, watch for exhaustion
+
+### Position Trading ADX Rules:
+- REQUIRE ADX > 20 for position trade entry (need confirmed trend)
+- ADX > 25 = add confidence points (+10)
+- ADX < 20 = avoid or pass on the trade (no trend to ride)
+- Rising ADX = trend strengthening, hold position
+- Falling ADX = trend weakening, consider taking profits
+
+### ADX + EMA Alignment:
+- Strong trend (ADX > 25) + EMAs aligned = HIGH conviction position trade
+- Strong trend but EMAs crossed = trend may be exhausting
+- Weak trend (ADX < 20) + EMAs aligned = wait for breakout confirmation
+
+## DIVERGENCE SIGNALS FOR POSITION TRADING
+
+Weekly divergences are the MOST significant timing tools:
+
+### Weekly Bullish Divergence:
+- Price makes lower weekly lows, RSI/MACD makes higher lows
+- Signals: Major bottom forming after extended decline
+- Best setup: At multi-year support or 200-week EMA
+- Action: Start building position on first green weekly candle
+- Confidence boost: +20 points (weekly divergences are rare and powerful)
+
+### Weekly Bearish Divergence:
+- Price makes higher weekly highs, RSI/MACD makes lower highs
+- Signals: Major top forming after extended rally
+- If LONG: Take significant profits, tighten stops dramatically
+- Warning: This is a distribution signal by institutions
+- Confidence impact: -20 points if entering new longs at this divergence
+
+### Position Trading Divergence Rules:
+- Weekly divergences are RARE but HIGHLY significant
+- Divergence at multi-year levels = major turning point
+- Ignore minor divergences - focus on divergences lasting 4+ weeks
+- Divergence + ADX declining = high probability reversal setup
+
+## CHART PATTERN SUCCESS RATES
+
+Each pattern includes historical success rate - use this to calibrate confidence:
+- Pattern with 65%+ success rate: Add 5-10 points to confidence
+- Pattern with 50-65% success rate: Use baseline confidence
+- Pattern with <50% success rate: Reduce confidence by 5-10 points
+
+For position trades, ALSO consider the timeframe of the pattern:
+- Multi-month patterns (like cup & handle) have higher success than daily patterns
+
 ## Vision Analysis Focus (Weekly chart)
 When analyzing the chart, look for:
 - **Primary Trend**: What is the long-term direction over 6-12 months?

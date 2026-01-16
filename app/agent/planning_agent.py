@@ -241,6 +241,47 @@ Fibonacci levels are critical for precision trading - institutional traders and 
 - Factor in any news catalysts or social sentiment into your thesis
 - When Fibonacci levels are available, USE THEM for precise level placement
 
+## Level Reliability Assessment (Institutional-Grade Analysis)
+
+Each support/resistance level includes comprehensive metrics - USE THESE to assess reliability:
+
+### Key Metrics Explained:
+- **touches**: Total times price tested the level
+- **high_volume_touches**: Tests with 1.5x+ average volume (institutional activity)
+- **bounce_quality**: 0-100 score of how strongly price rejected the level (higher = cleaner bounces)
+- **reclaimed**: TRUE if level was broken then reclaimed (VERY bullish/bearish signal)
+- **strength**: Composite 0-100 score weighing all factors
+- **reliability**: Classification based on effective touch quality
+
+### Reliability Classifications:
+- **INSTITUTIONAL**: 8+ effective touches OR reclaimed with 4+ touches. Heavily defended by big money.
+- **STRONG**: 5+ effective touches OR 3+ with high volume. Well-established, reliable for stops/targets.
+- **MODERATE**: 2-3 touches. Confirmed but needs confluence for high confidence.
+- **WEAK**: 1 touch only. Unconfirmed - avoid for critical decisions.
+
+### How to Use This Data:
+1. **Stop Loss Placement**:
+   - BEST: "INSTITUTIONAL" or "STRONG" levels with high bounce_quality (>60)
+   - GOOD: "reclaimed: true" levels (broken and reclaimed = strong)
+   - AVOID: "WEAK" levels with low bounce_quality
+
+2. **Target Selection**:
+   - Prioritize levels with high_volume_touches > 0 (institutions defend these)
+   - "reclaimed" resistance = likely to cause major reaction
+
+3. **Entry Zones**:
+   - Look for "MODERATE" or better with recent touches (last_touch_bars_ago < 10)
+   - High bounce_quality at support = cleaner entries
+
+4. **Volume Confirmation**:
+   - high_volume_touches > 0 = institutional participation confirmed
+   - Use these levels for key decisions
+
+### Red Flags:
+- Stop loss at "WEAK" level with bounce_quality < 40 - HIGH RISK of stop hunt
+- Target at level with 0 high_volume_touches - may not hold
+- Ignoring "reclaimed" levels - these are among the most significant
+
 ## When Evaluating a Plan
 - Has price moved toward entry? Away from it?
 - Have key levels held or broken?
@@ -356,24 +397,31 @@ Respond in this exact JSON format:
     "entry_zone_low": <price or null if no trade>,
     "entry_zone_high": <price or null>,
     "fib_entry_level": "38.2%" | "50%" | "61.8%" | "78.6%" | null (if entry aligns with a Fib retracement),
-    "stop_loss": <price or null>,
-    "stop_reasoning": "Why this stop level (mention Fibonacci level if applicable)",
+    "stop_loss": <price or null - MUST be at STRONG/INSTITUTIONAL level with bounce_quality > 50>,
+    "stop_reasoning": "MUST reference level reliability AND Fibonacci: e.g., 'Below $145.50 [STRONG] - 4 touches, bounce: 72, below 78.6% Fib'",
     "fib_stop_level": "50%" | "61.8%" | "78.6%" | "100%" | null (Fib level below/above stop),
-    "target_1": <price - conservative target>,
+    "target_1": <price - conservative target at STRONG/INSTITUTIONAL level>,
     "target_2": <price - moderate target>,
     "target_3": <price - aggressive target or null>,
-    "target_reasoning": "Why these targets (mention Fibonacci extensions if applicable)",
+    "target_reasoning": "MUST reference level reliability AND Fibonacci extensions if applicable",
     "fib_target_levels": ["1.272", "1.618", "2.618"] or [] (Fib extensions used for targets),
     "risk_reward": <ratio like 2.5>,
     "position_size_pct": <1-5, percentage of account>,
-    "key_supports": [<price>, <price>],
-    "key_resistances": [<price>, <price>],
-    "invalidation_criteria": "What would invalidate this plan",
+    "key_supports": [<price>, <price> - prioritize STRONG/INSTITUTIONAL levels],
+    "key_resistances": [<price>, <price> - prioritize STRONG/INSTITUTIONAL levels],
+    "invalidation_criteria": "What would invalidate this plan - reference specific level breaks",
     "technical_summary": "Brief summary of key technical factors",
     "news_summary": "Brief summary of recent news/catalysts (from search). Empty string if no news found or search unavailable.",
     "social_sentiment": "bullish" | "bearish" | "neutral" | "mixed" | "none",
     "social_buzz": "Summary of social discussion (X/Twitter, Reddit, etc.) if found. Empty string if none."
 }}
+
+**CRITICAL LEVEL QUALITY RULES:**
+1. NEVER place stop loss at a "WEAK" level (1 touch, low bounce_quality) - high risk of stop hunt
+2. ALWAYS prefer levels marked [RECLAIMED] - these have proven institutional defense
+3. For stops: REQUIRE bounce_quality > 50 and preferably high_volume_touches > 0
+4. For targets: Use levels with high_volume_touches > 0 (institutions will defend/react)
+5. Reduce confidence by 10-15 points if forced to use MODERATE levels for critical decisions
 
 If this is NOT a good setup, still provide your analysis but set entry_zone, stop_loss, and targets to null and explain in the thesis why you're passing. Set confidence to how confident you are that there's no good trade here.
 """
@@ -580,15 +628,70 @@ Volume: {vol.get('relative', 'N/A')}x average ({vol.get('trend', 'N/A')})
 Bollinger: {bb.get('position', 'N/A')} (Width: {bb.get('width', 'N/A')})
 """
 
-        # Key levels
+        # Key levels with institutional-grade touch count analysis
         levels = self._levels_data
         if levels.get("error"):
             levels_str = f"Error: {levels['error']}"
         else:
-            supports = levels.get("support_levels", [])[:5]
-            resistances = levels.get("resistance_levels", [])[:5]
-            levels_str = f"""Support Levels: {', '.join([f'${s:.2f}' for s in supports]) if supports else 'None found'}
-Resistance Levels: {', '.join([f'${r:.2f}' for r in resistances]) if resistances else 'None found'}
+            supports = levels.get("support", levels.get("support_levels", []))[:5]
+            resistances = levels.get("resistance", levels.get("resistance_levels", []))[:5]
+
+            # Format support levels with full institutional data
+            support_lines = []
+            for s in supports:
+                if isinstance(s, dict):
+                    price = s.get("price", 0)
+                    touches = s.get("touches", 0)
+                    hv_touches = s.get("high_volume_touches", 0)
+                    bounce_q = s.get("bounce_quality", 0)
+                    reclaimed = s.get("reclaimed", False)
+                    reliability = s.get("reliability", "weak").upper()
+                    strength = s.get("strength", 0)
+                    last_touch = s.get("last_touch_bars_ago")
+                    level_type = s.get("type", "unknown")
+
+                    # Build descriptive line
+                    vol_note = f", {hv_touches} high-vol" if hv_touches > 0 else ""
+                    reclaim_note = " [RECLAIMED]" if reclaimed else ""
+                    recency = f", last {last_touch} bars ago" if last_touch is not None else ""
+                    support_lines.append(
+                        f"  ${price:.2f} [{reliability}]{reclaim_note} - {touches} touches{vol_note}, "
+                        f"bounce: {bounce_q:.0f}, strength: {strength:.0f}, type: {level_type}{recency}"
+                    )
+                else:
+                    support_lines.append(f"  ${s:.2f}")
+
+            # Format resistance levels with full institutional data
+            resistance_lines = []
+            for r in resistances:
+                if isinstance(r, dict):
+                    price = r.get("price", 0)
+                    touches = r.get("touches", 0)
+                    hv_touches = r.get("high_volume_touches", 0)
+                    bounce_q = r.get("bounce_quality", 0)
+                    reclaimed = r.get("reclaimed", False)
+                    reliability = r.get("reliability", "weak").upper()
+                    strength = r.get("strength", 0)
+                    last_touch = r.get("last_touch_bars_ago")
+                    level_type = r.get("type", "unknown")
+
+                    # Build descriptive line
+                    vol_note = f", {hv_touches} high-vol" if hv_touches > 0 else ""
+                    reclaim_note = " [RECLAIMED]" if reclaimed else ""
+                    recency = f", last {last_touch} bars ago" if last_touch is not None else ""
+                    resistance_lines.append(
+                        f"  ${price:.2f} [{reliability}]{reclaim_note} - {touches} touches{vol_note}, "
+                        f"bounce: {bounce_q:.0f}, strength: {strength:.0f}, type: {level_type}{recency}"
+                    )
+                else:
+                    resistance_lines.append(f"  ${r:.2f}")
+
+            levels_str = f"""Support Levels (sorted by reliability):
+{chr(10).join(support_lines) if support_lines else '  None found'}
+
+Resistance Levels (sorted by reliability):
+{chr(10).join(resistance_lines) if resistance_lines else '  None found'}
+
 ATR (14): ${levels.get('atr', 'N/A')}
 """
 
@@ -996,12 +1099,30 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                 visual_analysis = await self._perform_visual_analysis()
 
                 if visual_analysis:
-                    # Apply visual confidence modifier to the plan
+                    # Apply visual confidence modifier to the plan with confidence-based scaling
                     original_confidence = plan_data.get("confidence", 0)
-                    visual_modifier = visual_analysis.get("visual_confidence_modifier", 0)
+                    raw_visual_modifier = visual_analysis.get("visual_confidence_modifier", 0)
 
-                    # Clamp modifier to reasonable range
-                    visual_modifier = max(-20, min(20, visual_modifier))
+                    # Clamp raw modifier to reasonable range
+                    raw_visual_modifier = max(-20, min(20, raw_visual_modifier))
+
+                    # Confidence-based scaling of visual modifier:
+                    # - Low confidence (0-30%): reduce visual impact (may be noise)
+                    # - Medium confidence (30-60%): neutral, apply as-is
+                    # - High confidence (60-100%): enhance visual impact (confirms signal)
+                    if original_confidence < 30:
+                        modifier_scale = 0.7  # Reduce visual weight when technical is weak
+                        scale_reason = "low_confidence"
+                    elif original_confidence <= 60:
+                        modifier_scale = 1.0  # Neutral
+                        scale_reason = "medium_confidence"
+                    else:
+                        modifier_scale = 1.2  # Enhance visual weight when technical is strong
+                        scale_reason = "high_confidence"
+
+                    # Apply scaling
+                    scaled_modifier = int(raw_visual_modifier * modifier_scale)
+                    visual_modifier = max(-20, min(20, scaled_modifier))
 
                     # Apply modifier and clamp final confidence to 0-100
                     adjusted_confidence = max(0, min(100, original_confidence + visual_modifier))
@@ -1010,6 +1131,9 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                     # Store visual analysis data in the plan
                     plan_data["visual_analysis"] = {
                         "confidence_modifier": visual_modifier,
+                        "raw_modifier": raw_visual_modifier,
+                        "modifier_scale": modifier_scale,
+                        "scale_reason": scale_reason,
                         "original_confidence": original_confidence,
                         "trend_quality": visual_analysis.get("trend_quality", {}),
                         "patterns_identified": visual_analysis.get("visual_patterns_identified", []),
@@ -1020,7 +1144,7 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                     logger.info(
                         f"Visual analysis applied for {self.symbol}: "
                         f"confidence {original_confidence} -> {adjusted_confidence} "
-                        f"(modifier: {visual_modifier:+d})"
+                        f"(raw modifier: {raw_visual_modifier:+d}, scaled: {visual_modifier:+d} at {modifier_scale:.1f}x)"
                     )
 
                 # Build the EnhancedTradePlan
@@ -1090,56 +1214,127 @@ QQQ: {market_ctx.get('qqq_direction', 'N/A')}
             atr_value = atr.get('value', 0)
             atr_pct = (atr_value / current_price * 100) if current_price > 0 else 0
 
-            tech_str = f"""RSI (14): {rsi.get('value', 0):.1f} - {rsi.get('signal', 'N/A')}
+            # Get new institutional-grade indicators
+            ichimoku = tech.get("ichimoku", {})
+            williams = tech.get("williams_r", {})
+            psar = tech.get("parabolic_sar", {})
+            cmf = tech.get("cmf", {})
+            adl = tech.get("adl", {})
+
+            tech_str = f"""=== CORE MOMENTUM ===
+RSI (14): {rsi.get('value', 0):.1f} - {rsi.get('signal', 'N/A')}
 MACD: {macd.get('signal', 'N/A')} | Histogram: {macd.get('histogram', 0):.3f}
 Histogram Trend: {macd.get('histogram_trend', 'N/A')}
 
+=== TREND ANALYSIS ===
 EMA Alignment:
 - Price vs 9 EMA: {'Above' if emas.get('above_9') else 'Below'}
 - Price vs 21 EMA: {'Above' if emas.get('above_21') else 'Below'}
 - Price vs 50 EMA: {'Above' if emas.get('above_50') else 'Below'}
-- EMA Trend: {emas.get('trend', 'N/A')}
+- Overall EMA Trend: {emas.get('trend', 'N/A')} ({emas.get('bullish_count', 0)}/3 bullish)
 
-Volume:
+=== VOLUME ANALYSIS ===
 - Relative Volume: {vol.get('relative', 0):.2f}x average
-- Volume Trend: {vol.get('trend', 'N/A')}
+- Volume Signal: {vol.get('signal', 'N/A')}
 
+=== VOLATILITY ===
 Bollinger Bands:
 - Position: {bb.get('position', 'N/A')}
 - Width: {bb.get('width', 'N/A')}
 - %B: {bb.get('percent_b', 'N/A')}
 
-Volatility:
+ATR Volatility:
 - ATR (14): ${atr_value:.2f}
-- ATR %: {atr_pct:.2f}% (of price)
+- ATR %: {atr.get('percentage', atr_pct):.2f}%
+- Volatility Regime: {atr.get('volatility_regime', 'moderate').upper()}
+
+=== INSTITUTIONAL-GRADE INDICATORS ===
+Ichimoku Cloud:
+- Signal: {ichimoku.get('signal', 'N/A')}
+- Price vs Cloud: {ichimoku.get('price_vs_cloud', 'N/A')}
+- TK Cross: {ichimoku.get('tk_cross', 'none')}
+- Cloud Color: {ichimoku.get('cloud_color', 'N/A')}
+
+Williams %R:
+- Value: {williams.get('value', 'N/A')}
+- Signal: {williams.get('signal', 'N/A')}
+- Overbought: {williams.get('overbought', False)} | Oversold: {williams.get('oversold', False)}
+
+Parabolic SAR:
+- Signal: {psar.get('signal', 'N/A')}
+- SAR Position: {psar.get('sar_position', 'N/A')}
+- Trend Direction: {psar.get('trend_direction', 'N/A')}
+
+Chaikin Money Flow (CMF):
+- Value: {cmf.get('value', 'N/A')}
+- Signal: {cmf.get('signal', 'N/A')}
+- Interpretation: {cmf.get('interpretation', 'N/A')}
+
+Accumulation/Distribution:
+- Signal: {adl.get('signal', 'N/A')}
+- ADL Trend: {adl.get('trend', 'N/A')}
+- Price Confirmation: {adl.get('price_confirmation', 'N/A')}
+- Divergence Detected: {adl.get('divergence', False)}
 """
 
-        # Key levels with more detail
+        # Key levels with full touch count analysis
         levels = self._levels_data
         if levels.get("error"):
             levels_str = f"Error: {levels['error']}"
         else:
-            supports = levels.get("support_levels", [])[:5]
-            resistances = levels.get("resistance_levels", [])[:5]
+            supports = levels.get("support", levels.get("support_levels", []))[:5]
+            resistances = levels.get("resistance", levels.get("resistance_levels", []))[:5]
 
             support_details = []
             for s in supports:
                 if isinstance(s, dict):
-                    support_details.append(f"${s.get('price', s):.2f} (touches: {s.get('touches', 'N/A')})")
+                    price = s.get("price", 0)
+                    touches = s.get("touches", 0)
+                    hv_touches = s.get("high_volume_touches", 0)
+                    bounce_q = s.get("bounce_quality", 0)
+                    reclaimed = s.get("reclaimed", False)
+                    reliability = s.get("reliability", "weak").upper()
+                    strength = s.get("strength", 0)
+                    last_touch = s.get("last_touch_bars_ago")
+                    level_type = s.get("type", "unknown")
+
+                    vol_note = f", {hv_touches} high-vol" if hv_touches > 0 else ""
+                    reclaim_note = " [RECLAIMED]" if reclaimed else ""
+                    recency = f" (last {last_touch} bars ago)" if last_touch is not None else ""
+                    support_details.append(
+                        f"${price:.2f} [{reliability}]{reclaim_note} - {touches} touches{vol_note}, "
+                        f"bounce: {bounce_q:.0f}, strength: {strength:.0f}, type: {level_type}{recency}"
+                    )
                 else:
                     support_details.append(f"${s:.2f}")
 
             resistance_details = []
             for r in resistances:
                 if isinstance(r, dict):
-                    resistance_details.append(f"${r.get('price', r):.2f} (touches: {r.get('touches', 'N/A')})")
+                    price = r.get("price", 0)
+                    touches = r.get("touches", 0)
+                    hv_touches = r.get("high_volume_touches", 0)
+                    bounce_q = r.get("bounce_quality", 0)
+                    reclaimed = r.get("reclaimed", False)
+                    reliability = r.get("reliability", "weak").upper()
+                    strength = r.get("strength", 0)
+                    last_touch = r.get("last_touch_bars_ago")
+                    level_type = r.get("type", "unknown")
+
+                    vol_note = f", {hv_touches} high-vol" if hv_touches > 0 else ""
+                    reclaim_note = " [RECLAIMED]" if reclaimed else ""
+                    recency = f" (last {last_touch} bars ago)" if last_touch is not None else ""
+                    resistance_details.append(
+                        f"${price:.2f} [{reliability}]{reclaim_note} - {touches} touches{vol_note}, "
+                        f"bounce: {bounce_q:.0f}, strength: {strength:.0f}, type: {level_type}{recency}"
+                    )
                 else:
                     resistance_details.append(f"${r:.2f}")
 
-            levels_str = f"""Support Levels:
+            levels_str = f"""Support Levels (sorted by reliability - use STRONG/INSTITUTIONAL levels for stops):
 {chr(10).join(['  - ' + s for s in support_details]) if support_details else '  None identified'}
 
-Resistance Levels:
+Resistance Levels (sorted by reliability - use STRONG/INSTITUTIONAL levels for targets):
 {chr(10).join(['  - ' + r for r in resistance_details]) if resistance_details else '  None identified'}
 
 ATR (14): ${levels.get('atr', 0):.2f}
@@ -1337,7 +1532,7 @@ Extension Levels (Profit Targets):
             return {"visual_confidence_modifier": 0, "visual_summary": "Analysis parsing failed"}
 
     def _parse_smart_plan_response(self, response_text: str) -> Dict[str, Any]:
-        """Parse the smart plan JSON response."""
+        """Parse the smart plan JSON response with enhanced error recovery."""
         try:
             # Look for JSON block
             if "```json" in response_text:
@@ -1379,19 +1574,74 @@ Extension Levels (Profit Targets):
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse smart plan JSON: {e}")
             logger.error(f"Response was: {response_text[:1000]}")
-            # Return a minimal valid structure
+
+            # Enhanced error recovery: try regex extraction of key fields
+            import re
+
+            extracted_data = {}
+            extraction_notes = []
+
+            # Try to extract bias
+            bias_match = re.search(r'"bias"\s*:\s*"(bullish|bearish|neutral)"', response_text, re.IGNORECASE)
+            if bias_match:
+                extracted_data["bias"] = bias_match.group(1).lower()
+                extraction_notes.append("bias extracted")
+
+            # Try to extract confidence
+            conf_match = re.search(r'"confidence"\s*:\s*(\d+)', response_text)
+            if conf_match:
+                extracted_data["confidence"] = int(conf_match.group(1))
+                extraction_notes.append("confidence extracted")
+
+            # Try to extract entry zones
+            entry_low_match = re.search(r'"entry_zone_low"\s*:\s*\$?([\d.]+)', response_text)
+            if entry_low_match:
+                extracted_data["entry_zone_low"] = float(entry_low_match.group(1))
+                extraction_notes.append("entry_zone_low extracted")
+
+            entry_high_match = re.search(r'"entry_zone_high"\s*:\s*\$?([\d.]+)', response_text)
+            if entry_high_match:
+                extracted_data["entry_zone_high"] = float(entry_high_match.group(1))
+                extraction_notes.append("entry_zone_high extracted")
+
+            # Try to extract stop loss
+            stop_match = re.search(r'"stop_loss"\s*:\s*\$?([\d.]+)', response_text)
+            if stop_match:
+                extracted_data["stop_loss"] = float(stop_match.group(1))
+                extraction_notes.append("stop_loss extracted")
+
+            # Try to extract thesis
+            thesis_match = re.search(r'"thesis"\s*:\s*"([^"]+)"', response_text)
+            if thesis_match:
+                extracted_data["thesis"] = thesis_match.group(1)
+                extraction_notes.append("thesis extracted")
+
+            # Try to extract trade style
+            style_match = re.search(r'"recommended_style"\s*:\s*"(day|swing|position)"', response_text, re.IGNORECASE)
+            if style_match:
+                extracted_data["trade_style"] = {
+                    "recommended_style": style_match.group(1).lower(),
+                    "reasoning": "Extracted from partial response",
+                    "holding_period": "See full analysis"
+                }
+                extraction_notes.append("trade_style extracted")
+
+            if extraction_notes:
+                logger.info(f"Partial extraction succeeded: {', '.join(extraction_notes)}")
+
+            # Build response with extracted data or defaults
             return {
-                "trade_style": {
+                "trade_style": extracted_data.get("trade_style", {
                     "recommended_style": "swing",
-                    "reasoning": "Unable to parse response",
+                    "reasoning": "Unable to parse full response",
                     "holding_period": "Unknown"
-                },
-                "bias": "neutral",
-                "thesis": f"Analysis parsing failed: {str(e)[:100]}",
-                "confidence": 0,
-                "entry_zone_low": None,
-                "entry_zone_high": None,
-                "stop_loss": None,
+                }),
+                "bias": extracted_data.get("bias", "neutral"),
+                "thesis": extracted_data.get("thesis", f"Partial analysis - JSON parsing failed: {str(e)[:100]}"),
+                "confidence": extracted_data.get("confidence", 0),
+                "entry_zone_low": extracted_data.get("entry_zone_low"),
+                "entry_zone_high": extracted_data.get("entry_zone_high"),
+                "stop_loss": extracted_data.get("stop_loss"),
                 "stop_reasoning": "",
                 "targets": [],
                 "risk_reward": None,
@@ -1400,13 +1650,18 @@ Extension Levels (Profit Targets):
                 "key_resistances": [],
                 "invalidation_criteria": "",
                 "educational": {
-                    "setup_explanation": "Analysis could not be completed",
+                    "setup_explanation": "Partial analysis recovered from parsing failure",
                     "level_explanations": {},
                     "what_to_watch": [],
                     "scenarios": [],
-                    "risk_warnings": ["Analysis parsing failed - please retry"],
+                    "risk_warnings": [
+                        "Analysis parsing partially failed - some data may be incomplete",
+                        "Please retry for a complete analysis"
+                    ],
                     "chart_annotations": []
-                }
+                },
+                "_parsing_status": "partial" if extraction_notes else "failed",
+                "_extraction_notes": extraction_notes,
             }
 
     def _build_enhanced_plan(self, plan_data: Dict[str, Any]) -> EnhancedTradePlan:

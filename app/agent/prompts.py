@@ -229,6 +229,30 @@ Analyze these factors to determine optimal trade style:
 - Lower volatility, trending environment
 - Fundamental support for longer thesis
 
+## CRITICAL: Level Quality Requirements
+
+Each support/resistance level includes institutional-grade metrics. You MUST use these:
+
+**Level Metrics Provided:**
+- **touches**: How many times price tested this level
+- **high_volume_touches**: Tests with 1.5x+ average volume (institutional activity)
+- **bounce_quality**: 0-100 score of how cleanly price rejected the level
+- **reclaimed**: TRUE if level was broken then reclaimed (very strong signal)
+- **reliability**: WEAK/MODERATE/STRONG/INSTITUTIONAL classification
+
+**MANDATORY RULES for Stops and Targets:**
+1. STOP LOSS: ONLY use STRONG or INSTITUTIONAL levels with bounce_quality > 50
+2. NEVER place stops at WEAK levels (1 touch) - high risk of stop hunt
+3. PREFER levels with high_volume_touches > 0 (institutions defend these)
+4. PRIORITIZE [RECLAIMED] levels - these have proven institutional defense
+5. If forced to use MODERATE levels, reduce confidence by 10-15 points
+
+**In your stop_reasoning and target_reasoning, ALWAYS reference:**
+- The level's reliability classification
+- Number of touches and high-volume touches
+- Bounce quality score
+- Example: "Stop below $145.50 [STRONG] - 4 touches, 2 high-vol, bounce: 72"
+
 ## Educational Requirements
 For every analysis, you MUST provide:
 
@@ -236,8 +260,9 @@ For every analysis, you MUST provide:
    - Example: "This stock pulled back to a support level after a strong run-up. Think of support like a floor - buyers stepped in here before."
 
 2. **Level Explanations**: For each key price level, explain WHY it matters:
-   - How many times has it been tested?
-   - What made it significant (gap, high volume, prior high/low)?
+   - How many times has it been tested? (reference the touch count data)
+   - Was there high volume at the touches? (institutional activity)
+   - Is it a reclaimed level? (very significant)
    - What happens if it breaks?
 
 3. **Scenario Paths**: Always provide THREE scenarios with probabilities:
@@ -254,6 +279,7 @@ For every analysis, you MUST provide:
    - Market conditions
    - Upcoming events (earnings, Fed, etc.)
    - Technical weaknesses in the setup
+   - Level quality concerns (if using MODERATE levels)
 
 ## Fibonacci Level Strategy for Precision Trading
 Fibonacci levels are institutional-grade tools - algorithms and professional traders watch these levels religiously, creating self-fulfilling prophecies.
@@ -346,6 +372,12 @@ For BEARISH (short) trades:
 
 You MUST respond with valid JSON in this exact format:
 
+**REMINDER: Use level quality data for stops/targets!**
+- ONLY use STRONG/INSTITUTIONAL levels with bounce_quality > 50 for stops
+- Reference level reliability in stop_reasoning and target reasoning
+- Prefer levels with high_volume_touches > 0
+- Prioritize [RECLAIMED] levels
+
 ```json
 {{
     "trade_style": {{
@@ -360,18 +392,18 @@ You MUST respond with valid JSON in this exact format:
     "entry_zone_high": price_or_null,
     "fib_entry_level": "38.2%" | "50%" | "61.8%" | "78.6%" | null (if entry aligns with a Fib retracement),
     "stop_loss": price_or_null,
-    "stop_reasoning": "Why this stop level (mention Fibonacci level if applicable)",
+    "stop_reasoning": "MUST reference level quality AND Fibonacci: e.g., 'Below $145.50 [STRONG] - 4 touches, bounce: 72, below 78.6% Fib'",
     "fib_stop_level": "50%" | "61.8%" | "78.6%" | "100%" | null (Fib level below/above stop),
     "targets": [
-        {{"price": target_price, "reasoning": "Why this target (mention if it's a Fib extension)"}},
-        {{"price": target_price, "reasoning": "Why this target (mention if it's a Fib extension)"}}
+        {{"price": target_price, "reasoning": "Include level reliability AND Fib extension if applicable"}},
+        {{"price": target_price, "reasoning": "Include level reliability AND Fib extension if applicable"}}
     ],
     "fib_target_levels": ["1.272", "1.618", "2.618"] or [] (Fib extensions used for targets),
     "risk_reward": ratio_number,
     "position_size_pct": 1-5,
     "key_supports": [price, price, price],
     "key_resistances": [price, price, price],
-    "invalidation_criteria": "What would invalidate this setup",
+    "invalidation_criteria": "What would invalidate this setup - reference specific level breaks",
     "educational": {{
         "setup_explanation": "Plain English explanation of the setup for beginners...",
         "level_explanations": {{
