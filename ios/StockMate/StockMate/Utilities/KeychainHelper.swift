@@ -20,6 +20,7 @@ final class KeychainHelper {
         static let userEmail = "com.stockmate.userEmail"
         static let userId = "com.stockmate.userId"
         static let tokenExpiration = "com.stockmate.tokenExpiration"
+        static let lastRefreshTime = "com.stockmate.lastRefreshTime"
     }
 
     // MARK: - Token Management
@@ -85,6 +86,24 @@ final class KeychainHelper {
         }
     }
 
+    /// Tracks when the last successful token refresh occurred
+    var lastRefreshTime: Date? {
+        get {
+            guard let timestampString = read(key: Keys.lastRefreshTime),
+                  let timestamp = Double(timestampString) else {
+                return nil
+            }
+            return Date(timeIntervalSince1970: timestamp)
+        }
+        set {
+            if let date = newValue {
+                save(key: Keys.lastRefreshTime, value: String(date.timeIntervalSince1970))
+            } else {
+                delete(key: Keys.lastRefreshTime)
+            }
+        }
+    }
+
     // MARK: - Save Auth Session
 
     func saveAuthSession(response: AuthResponse) {
@@ -94,6 +113,8 @@ final class KeychainHelper {
         userId = response.user.id
         // Calculate and store token expiration (expires_in is in seconds)
         tokenExpirationDate = Date().addingTimeInterval(TimeInterval(response.expiresIn))
+        // Track when this refresh occurred
+        lastRefreshTime = Date()
     }
 
     // MARK: - Clear All
@@ -104,6 +125,7 @@ final class KeychainHelper {
         userEmail = nil
         userId = nil
         tokenExpirationDate = nil
+        lastRefreshTime = nil
     }
 
     // MARK: - Check if Logged In
