@@ -172,15 +172,15 @@ async def test_detailed_workflow(symbol: str):
     print("=" * 80)
 
     ema_configs = [
-        ([5, 9, 20], "Day Trade"),
-        ([9, 21, 50], "Swing Trade"),
-        ([21, 50, 200], "Position Trade"),
+        ([5, 9, 20], "5m", "Day Trade"),
+        ([9, 21, 50], "1d", "Swing Trade"),
+        ([21, 50, 200], "1w", "Position Trade"),
     ]
 
-    for ema_periods, style in ema_configs:
-        print(f"\n  --- {style} (EMAs: {ema_periods}) ---")
+    for ema_periods, timeframe, style in ema_configs:
+        print(f"\n  --- {style} (EMAs: {ema_periods}, Timeframe: {timeframe}) ---")
         try:
-            indicators = await sdk_tools.get_technical_indicators(symbol, ema_periods, 14)
+            indicators = await sdk_tools.get_technical_indicators(symbol, ema_periods, 14, timeframe=timeframe)
             print(f"    EMA Trend: {indicators.get('ema_trend', 'N/A')}")
             for period in ema_periods:
                 ema_key = f"ema_{period}"
@@ -217,6 +217,62 @@ async def test_detailed_workflow(symbol: str):
             resistances = sr_levels.get('resistance', [])
             print(f"    Supports: {[f'${s['price']:.2f}' for s in supports[:3]]}")
             print(f"    Resistances: {[f'${r['price']:.2f}' for r in resistances[:3]]}")
+        except Exception as e:
+            print(f"    Error: {e}")
+
+    # Step 4.5: Fibonacci Levels
+    print("\n" + "=" * 80)
+    print("STEP 4.5: FIBONACCI LEVELS")
+    print("=" * 80)
+
+    fib_configs = [
+        ("5m", 3, "day", "Day Trade"),
+        ("1d", 100, "swing", "Swing Trade"),
+        ("1w", 365, "position", "Position Trade"),
+    ]
+
+    for tf, days, trade_type, style in fib_configs:
+        print(f"\n  --- {style} Fibonacci ({trade_type}) ---")
+        try:
+            # First get the price bars for this timeframe
+            bars_data = await sdk_tools.get_price_bars(symbol, tf, days)
+            bars = bars_data.get("bars", [])
+
+            # Then get Fibonacci levels
+            fib_levels = await sdk_tools.get_fibonacci_levels(symbol, bars, trade_type)
+
+            print(f"    Swing High: ${fib_levels.get('swing_high', 'N/A')}")
+            print(f"    Swing Low: ${fib_levels.get('swing_low', 'N/A')}")
+            print(f"    Trend: {fib_levels.get('trend', 'N/A')}")
+            print(f"    Signal: {fib_levels.get('signal', 'N/A')}")
+            print(f"    At Entry Level: {fib_levels.get('at_entry_level', False)}")
+            print(f"    Nearest Level: {fib_levels.get('nearest_level', 'N/A')} (${fib_levels.get('nearest_price', 'N/A')})")
+            print(f"    Distance: {fib_levels.get('distance_pct', 'N/A'):.2f}%" if isinstance(fib_levels.get('distance_pct'), (int, float)) else f"    Distance: N/A")
+
+            # Key retracement levels
+            retracements = fib_levels.get('retracement_levels', {})
+            if retracements:
+                print(f"    Retracements:")
+                for level in ['0.382', '0.500', '0.618', '0.786']:
+                    if level in retracements:
+                        print(f"      {level}: ${retracements[level]:.2f}")
+
+            # Extension targets
+            extensions = fib_levels.get('extension_levels', {})
+            if extensions:
+                print(f"    Extensions:")
+                for level in ['1.272', '1.618', '2.000', '2.618']:
+                    if level in extensions:
+                        print(f"      {level}: ${extensions[level]:.2f}")
+
+            # Suggested zones
+            entry_zone = fib_levels.get('suggested_entry_zone', {})
+            stop_zone = fib_levels.get('suggested_stop_zone', {})
+            if entry_zone.get('low') and entry_zone.get('high'):
+                print(f"    Suggested Entry: ${entry_zone['low']:.2f} - ${entry_zone['high']:.2f}")
+            if stop_zone.get('low') and stop_zone.get('high'):
+                print(f"    Suggested Stop: ${stop_zone['low']:.2f} - ${stop_zone['high']:.2f}")
+
         except Exception as e:
             print(f"    Error: {e}")
 

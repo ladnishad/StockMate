@@ -95,7 +95,7 @@ async def execute_tool(
             ema_periods = arguments.get("ema_periods", [9, 21, 50])
             timeframe = arguments.get("timeframe", "1d")
             rsi_period = 14
-            result = await sdk_tools.get_technical_indicators(symbol, ema_periods, rsi_period)
+            result = await sdk_tools.get_technical_indicators(symbol, ema_periods, rsi_period, timeframe=timeframe)
             return _format_technicals_result(result)
 
         elif name == "get_support_resistance":

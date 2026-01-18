@@ -47,6 +47,13 @@ Call: analyze_chart_vision(symbol, chart_image, "swing")
 - Analyzes your daily chart
 - Look for: Multi-day patterns, trend channels, breakout levels
 
+### 7. Fibonacci Levels
+Call: get_fibonacci_levels(symbol, bars, "swing")
+- Gets: Retracement levels (38.2%, 50%, 61.8%, 78.6%)
+- Gets: Extension levels (127.2%, 161.8%, 200%, 261.8%)
+- Use for: Pullback entries, multi-day targets
+- Key levels: 50% and 61.8% for swing entries
+
 ## CRITICAL: Position Awareness
 {position_context}
 

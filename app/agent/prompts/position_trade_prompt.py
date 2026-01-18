@@ -47,6 +47,13 @@ Call: analyze_chart_vision(symbol, chart_image, "position")
 - Analyzes your weekly chart
 - Look for: Long-term trend, weekly patterns, major breakouts
 
+### 7. Fibonacci Levels
+Call: get_fibonacci_levels(symbol, bars, "position")
+- Gets: Retracement levels (38.2%, 50%, 61.8%, 78.6%)
+- Gets: Extension levels (127.2%, 161.8%, 200%, 261.8%)
+- Use for: Major pullback entries, long-term targets
+- Key levels: 38.2% and 50% for position entries
+
 ## CRITICAL: Position Awareness
 {position_context}
 

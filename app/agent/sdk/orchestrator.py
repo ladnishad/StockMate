@@ -306,6 +306,67 @@ def format_enhanced_technicals(indicators: Dict[str, Any], bars: Dict[str, Any])
     return "\n".join(lines)
 
 
+def format_fibonacci_levels(fib_data: Dict[str, Any]) -> str:
+    """Format Fibonacci levels for AI consumption."""
+    if not fib_data or fib_data.get("error"):
+        return "- Fibonacci: Not available"
+
+    lines = []
+
+    # Swing points and trend
+    swing_high = fib_data.get("swing_high")
+    swing_low = fib_data.get("swing_low")
+    trend = fib_data.get("trend", "unknown")
+    if swing_high and swing_low:
+        lines.append(f"- Swing High: ${swing_high:.2f}, Swing Low: ${swing_low:.2f} ({trend})")
+
+    # Signal
+    signal = fib_data.get("signal", "neutral")
+    at_entry = fib_data.get("at_entry_level", False)
+    near_fib = fib_data.get("near_fib_level", False)
+    lines.append(f"- Fibonacci Signal: {signal.upper()}" + (" - AT KEY ENTRY LEVEL" if at_entry else " - near level" if near_fib else ""))
+
+    # Nearest level
+    nearest_level = fib_data.get("nearest_level")
+    nearest_price = fib_data.get("nearest_price")
+    distance_pct = fib_data.get("distance_pct", 0)
+    if nearest_level and nearest_price:
+        lines.append(f"- Nearest Fib Level: {nearest_level} (${nearest_price:.2f}) - {abs(distance_pct):.1f}% away")
+
+    # Retracement levels (key entries)
+    retracements = fib_data.get("retracement_levels", {})
+    if retracements:
+        key_levels = ["0.382", "0.500", "0.618", "0.786"]
+        ret_parts = []
+        for level in key_levels:
+            price = retracements.get(level)
+            if price:
+                ret_parts.append(f"{level}: ${price:.2f}")
+        if ret_parts:
+            lines.append(f"- Key Retracements: {', '.join(ret_parts)}")
+
+    # Extension levels (targets)
+    extensions = fib_data.get("extension_levels", {})
+    if extensions:
+        ext_parts = []
+        for level in ["1.272", "1.618", "2.000", "2.618"]:
+            price = extensions.get(level)
+            if price:
+                ext_parts.append(f"{level}: ${price:.2f}")
+        if ext_parts:
+            lines.append(f"- Extension Targets: {', '.join(ext_parts)}")
+
+    # Suggested zones
+    entry_zone = fib_data.get("suggested_entry_zone", {})
+    stop_zone = fib_data.get("suggested_stop_zone", {})
+    if entry_zone.get("low") and entry_zone.get("high"):
+        lines.append(f"- Fib Entry Zone: ${entry_zone['low']:.2f} - ${entry_zone['high']:.2f}")
+    if stop_zone.get("low") and stop_zone.get("high"):
+        lines.append(f"- Fib Stop Zone: ${stop_zone['low']:.2f} - ${stop_zone['high']:.2f}")
+
+    return "\n".join(lines) if lines else "- Fibonacci: No data"
+
+
 class TradePlanOrchestrator:
     """Orchestrates parallel sub-agents for trading plan generation.
 
@@ -678,25 +739,32 @@ class TradePlanOrchestrator:
                 # Step 1: Gather timeframe-specific data
                 if trade_style == "day":
                     bars = await sdk_tools.get_price_bars(symbol, "5m", 3)
-                    indicators = await sdk_tools.get_technical_indicators(symbol, [5, 9, 20], 14)
+                    indicators = await sdk_tools.get_technical_indicators(symbol, [5, 9, 20], 14, timeframe="5m")
                     sr_levels = await sdk_tools.get_support_resistance(symbol, "intraday")
                     volume_profile = await sdk_tools.get_volume_profile(symbol, 5)  # 5 days
                     chart_patterns = await sdk_tools.get_chart_patterns(symbol, 20)  # 20 days
                 elif trade_style == "swing":
                     bars = await sdk_tools.get_price_bars(symbol, "1d", 100)
-                    indicators = await sdk_tools.get_technical_indicators(symbol, [9, 21, 50], 14)
+                    indicators = await sdk_tools.get_technical_indicators(symbol, [9, 21, 50], 14, timeframe="1d")
                     sr_levels = await sdk_tools.get_support_resistance(symbol, "daily")
                     volume_profile = await sdk_tools.get_volume_profile(symbol, 50)  # 50 days
                     chart_patterns = await sdk_tools.get_chart_patterns(symbol, 100)  # 100 days
                 else:  # position
                     bars = await sdk_tools.get_price_bars(symbol, "1w", 365)
-                    indicators = await sdk_tools.get_technical_indicators(symbol, [21, 50, 200], 14)
+                    indicators = await sdk_tools.get_technical_indicators(symbol, [21, 50, 200], 14, timeframe="1w")
                     sr_levels = await sdk_tools.get_support_resistance(symbol, "weekly")
                     volume_profile = await sdk_tools.get_volume_profile(symbol, 200)  # 200 days
                     chart_patterns = await sdk_tools.get_chart_patterns(symbol, 200)  # 200 days
 
                 # Get divergences (same lookback for all trade styles - daily chart divergences)
                 divergences = await sdk_tools.get_divergences(symbol, lookback=50)
+
+                # Get Fibonacci levels for the trade style
+                fib_levels = await sdk_tools.get_fibonacci_levels(
+                    symbol,
+                    bars.get("bars", []),
+                    trade_style
+                )
 
                 self.subagent_progress[agent_name].current_step = "Generating chart"
                 self.subagent_progress[agent_name].status = SubAgentStatus.GENERATING_CHART
@@ -934,6 +1002,9 @@ class TradePlanOrchestrator:
 ## Key Levels (with Institutional Metrics):
 {format_levels_with_metrics(sr_levels)}
 
+## Fibonacci Analysis:
+{format_fibonacci_levels(fib_levels)}
+
 ## Volume Profile:
 {format_volume_profile(volume_profile)}
 
@@ -954,6 +1025,7 @@ Use the institutional metrics to assess level reliability for stop placement.
 Reference chart pattern success rates when setting confidence.
 Consider divergence signals - bullish divergence suggests potential reversal up, bearish suggests reversal down.
 For day trades, pay attention to VWAP positioning. For position trades, use ADX to assess trend strength.
+Use Fibonacci retracement levels (38.2%, 50%, 61.8%, 78.6%) for entry zones and extensions (1.272, 1.618) for targets.
 """
 
                 # Get the trade-style specific prompt

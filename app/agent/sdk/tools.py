@@ -133,6 +133,7 @@ async def get_technical_indicators(
     symbol: str,
     ema_periods: List[int],
     rsi_period: int = 14,
+    timeframe: Literal["5m", "15m", "1h", "1d", "1w"] = "1d",
 ) -> Dict[str, Any]:
     """Calculate technical indicators with specified EMA periods.
 
@@ -140,6 +141,7 @@ async def get_technical_indicators(
         symbol: Stock ticker symbol
         ema_periods: List of EMA periods (e.g., [5, 9, 20] for day, [9, 21, 50] for swing)
         rsi_period: RSI period (default 14)
+        timeframe: Bar timeframe - "5m" for day, "1d" for swing, "1w" for position
 
     Returns:
         Dictionary with all technical indicators
@@ -147,11 +149,18 @@ async def get_technical_indicators(
     try:
         # Need enough bars for longest EMA plus some buffer
         max_ema = max(ema_periods) if ema_periods else 50
-        # Add 50% buffer for weekends/holidays (calendar days ≠ trading days)
-        # For Position Trade [21, 50, 200]: int(200 * 1.5) + 30 = 330 calendar days → ~220+ trading bars
-        bars_needed = max(int(max_ema * 1.5) + 30, 100)
+        # Timeframe-aware data requirements
+        if timeframe == "5m":
+            # 5m bars: more bars per day, need fewer calendar days
+            bars_needed = max(int(max_ema * 1.2) + 20, 100)
+        elif timeframe == "1w":
+            # Weekly bars: need 7x more calendar days to get enough bars
+            # For 200 EMA: 200 * 7 * 1.5 + 100 = 2200 days (~6 years)
+            bars_needed = max(int(max_ema * 7 * 1.5) + 100, 400)
+        else:  # 1d, 15m, 1h
+            bars_needed = max(int(max_ema * 1.5) + 30, 100)
 
-        bars = fetch_price_bars(symbol.upper(), timeframe="1d", days_back=bars_needed)
+        bars = fetch_price_bars(symbol.upper(), timeframe=timeframe, days_back=bars_needed)
 
         if not bars or len(bars) < max_ema:
             return {

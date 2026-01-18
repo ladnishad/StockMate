@@ -47,6 +47,13 @@ Call: analyze_chart_vision(symbol, chart_image, "day")
 - Analyzes your 5-min chart
 - Look for: Intraday trends, candle patterns, volume spikes
 
+### 7. Fibonacci Levels
+Call: get_fibonacci_levels(symbol, bars, "day")
+- Gets: Retracement levels (38.2%, 50%, 61.8%, 78.6%)
+- Gets: Extension levels (127.2%, 161.8%, 200%, 261.8%)
+- Use for: Intraday pullback entries, profit targets
+- Key levels: 61.8% and 78.6% for reversals
+
 ## CRITICAL: Position Awareness
 {position_context}
 
