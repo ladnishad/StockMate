@@ -13,6 +13,7 @@ from app.tools.analysis import (
     calculate_volume_profile,
     detect_chart_patterns,
     detect_divergences,
+    calculate_fibonacci_levels,
 )
 from app.tools.indicators import (
     calculate_rsi,
@@ -454,6 +455,131 @@ async def get_chart_patterns(symbol: str) -> Dict[str, Any]:
         return {"symbol": symbol.upper(), "error": str(e)}
 
 
+async def get_fibonacci_levels(symbol: str, trade_type: str = "swing") -> Dict[str, Any]:
+    """Get Fibonacci retracement and extension levels for a stock.
+
+    These levels are critical for:
+    - Entry points: Look for entries at 38.2%, 50%, 61.8% retracement
+    - Stop losses: Place stops beyond the next Fib level
+    - Targets: Use extension levels (1.272, 1.618, 2.618) for profit targets
+
+    Args:
+        symbol: Stock ticker symbol
+        trade_type: "day", "swing", or "position" - affects lookback period
+
+    Returns:
+        Dictionary with Fibonacci analysis including levels and signals
+    """
+    try:
+        # Determine lookback and days based on trade_type
+        if trade_type == "day":
+            swing_lookback = 10
+            days_back = 30
+            timeframe = "5m"  # Intraday for day trades
+        elif trade_type == "position":
+            swing_lookback = 50
+            days_back = 200
+            timeframe = "1d"
+        else:  # swing (default)
+            swing_lookback = 20
+            days_back = 100
+            timeframe = "1d"
+
+        # Fetch price bars
+        bars = fetch_price_bars(symbol.upper(), timeframe=timeframe, days_back=days_back)
+
+        if not bars or len(bars) < swing_lookback:
+            return {
+                "symbol": symbol.upper(),
+                "error": f"Insufficient data (need at least {swing_lookback} bars)",
+                "retracement_levels": {},
+                "extension_levels": {},
+            }
+
+        # Calculate Fibonacci levels
+        fib_indicator = calculate_fibonacci_levels(bars, swing_lookback=swing_lookback)
+
+        # Extract metadata
+        metadata = fib_indicator.metadata
+        current_price = metadata.get("current_price", 0)
+        swing_high = metadata.get("swing_high", 0)
+        swing_low = metadata.get("swing_low", 0)
+        nearest_level = metadata.get("nearest_level", "")
+        nearest_price = metadata.get("nearest_price", 0)
+
+        # Calculate distance to nearest level
+        distance_to_nearest = abs(current_price - nearest_price) if current_price and nearest_price else 0
+        distance_pct = (distance_to_nearest / current_price * 100) if current_price else 0
+
+        # Determine suggested zones based on signal and levels
+        retracement_levels = metadata.get("retracement", {})
+
+        # Entry zone: around 50%-61.8% retracement
+        entry_zone = None
+        if fib_indicator.signal in ["bullish", "neutral"]:
+            fib_50 = retracement_levels.get("0.500", 0)
+            fib_618 = retracement_levels.get("0.618", 0)
+            if fib_50 and fib_618:
+                entry_zone = {
+                    "low": min(fib_50, fib_618),
+                    "high": max(fib_50, fib_618),
+                }
+
+        # Stop zone: beyond 78.6% or swing low/high
+        stop_zone = None
+        if fib_indicator.signal == "bullish":
+            fib_786 = retracement_levels.get("0.786", 0)
+            stop_zone = {
+                "low": swing_low * 0.98,  # 2% buffer below swing low
+                "high": fib_786,
+            }
+        elif fib_indicator.signal == "bearish":
+            fib_786 = retracement_levels.get("0.786", 0)
+            stop_zone = {
+                "low": fib_786,
+                "high": swing_high * 1.02,  # 2% buffer above swing high
+            }
+
+        return {
+            "symbol": symbol.upper(),
+            "swing_high": swing_high,
+            "swing_low": swing_low,
+            "retracement_levels": retracement_levels,
+            "extension_levels": metadata.get("extension", {}),
+            "current_price": current_price,
+            "nearest_level": nearest_level,
+            "nearest_price": nearest_price,
+            "distance_to_nearest": round(distance_to_nearest, 2),
+            "distance_pct": round(distance_pct, 2),
+            "signal": fib_indicator.signal,
+            "at_entry_level": metadata.get("at_entry_level", False),
+            "suggested_entry_zone": entry_zone,
+            "suggested_stop_zone": stop_zone,
+            "trend": metadata.get("trend", "unknown"),
+        }
+    except Exception as e:
+        logger.error(f"Error getting Fibonacci levels for {symbol}: {e}")
+        # Return complete structure with default values for consistency
+        return {
+            "symbol": symbol.upper(),
+            "error": str(e),
+            "swing_high": None,
+            "swing_low": None,
+            "retracement_levels": {},
+            "extension_levels": {},
+            "current_price": None,
+            "nearest_level": None,
+            "nearest_price": None,
+            "distance_to_nearest": None,
+            "distance_pct": None,
+            "signal": "neutral",
+            "at_entry_level": False,
+            "suggested_entry_zone": None,
+            "suggested_stop_zone": None,
+            "trend": "unknown",
+        }
+
+
 async def get_position_status(symbol: str, user_id: str = "default") -> Dict[str, Any]:
     """Get current position status for a stock with P&L.
 
@@ -658,6 +784,24 @@ def get_agent_tools() -> List[Dict[str, Any]]:
                 "required": ["symbol"],
             },
             "function": get_chart_patterns,
+        },
+        {
+            "name": "get_fibonacci_levels",
+            "description": "Get Fibonacci retracement and extension levels for entry points, stops, and targets",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Stock ticker symbol"},
+                    "trade_type": {
+                        "type": "string",
+                        "description": "Trade type: 'day', 'swing', or 'position'",
+                        "enum": ["day", "swing", "position"],
+                        "default": "swing"
+                    },
+                },
+                "required": ["symbol"],
+            },
+            "function": get_fibonacci_levels,
         },
         {
             "name": "get_position_status",

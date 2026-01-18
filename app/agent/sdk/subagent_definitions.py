@@ -40,6 +40,7 @@ SUBAGENT_TOOLS = [
     "get_technical_indicators",
     "get_support_resistance",
     "get_volume_profile",
+    "get_fibonacci_levels",
     "generate_chart",
     "analyze_chart_vision",
     "get_position_status",

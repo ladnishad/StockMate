@@ -2829,6 +2829,20 @@ def _parse_price(value: Any) -> Optional[float]:
     return None
 
 
+def _conviction_to_confidence(conviction: str) -> int:
+    """Convert conviction level (high/medium/low) to confidence percentage."""
+    conviction = conviction.lower().strip() if conviction else "medium"
+    if not conviction:  # Handle empty string after strip
+        conviction = "medium"
+    if conviction == "high":
+        return 80
+    elif conviction == "medium":
+        return 60
+    elif conviction == "low":
+        return 40
+    return 50  # Default for unknown values
+
+
 class PlanResponse(BaseModel):
     """Response containing a trading plan."""
     symbol: str
@@ -3342,22 +3356,22 @@ async def create_plan_stream(
 async def generate_plan_v2_stream(
     symbol: str,
     force_new: bool = True,
+    agentic_mode: bool = True,
     user: User = Depends(get_current_user),
 ):
-    """Generate trading plan with parallel sub-agents via Claude Agent SDK.
+    """Generate trading plan via Claude Agent SDK.
 
-    This v2 endpoint uses three specialized sub-agents running in parallel:
-    - Day Trade Analyzer: Intraday setups (5-min charts, ATR > 3%)
-    - Swing Trade Analyzer: Multi-day patterns (daily charts, ATR 1-3%)
-    - Position Trade Analyzer: Major trends (weekly charts, ATR < 1.5%)
+    When agentic_mode=True (default): Uses iterative AI tool-calling where the AI
+    decides what to investigate, calls tools one by one, and reasons through findings.
+    This provides a ChatGPT-like experience with visible AI reasoning.
 
-    Each agent gathers its own timeframe-specific data, generates its own chart,
-    and performs vision analysis. The orchestrator then selects the best plan.
+    When agentic_mode=False: Uses parallel sub-agents (legacy V2 mode) where three
+    specialized agents run simultaneously for Day/Swing/Position trade analysis.
 
     The analysis is auto-saved as draft when complete. Use the approval endpoint
     to convert to an active trading plan.
 
-    Returns Server-Sent Events with progress for each sub-agent.
+    Returns Server-Sent Events with progress updates.
     """
     from app.agent.sdk.orchestrator import TradePlanOrchestrator
     from app.storage.plan_analysis_store import get_plan_analysis_store, PlanAnalysis
@@ -3376,52 +3390,83 @@ async def generate_plan_v2_stream(
                 symbol=symbol,
                 user_id=user_id,
                 force_new=force_new,
+                agentic_mode=agentic_mode,
             ):
-                # Intercept final_result to save the analysis
-                if event.type == "final_result" and event.plan:
+                # Intercept final_result to save the analysis (V2 or Agentic)
+                if event.type == "final_result" and (event.plan or event.agentic_plan):
                     try:
                         # Extract sub-agent reports from the plan data
                         day_report = None
                         swing_report = None
                         position_report = None
+                        selected_style = None
+                        selection_reasoning = ""
 
-                        # The alternatives contain the other trade style reports
-                        if event.alternatives:
-                            for alt in event.alternatives:
-                                style = alt.get("trade_style")
-                                if style == "day":
-                                    day_report = alt
-                                elif style == "swing":
-                                    swing_report = alt
-                                elif style == "position":
-                                    position_report = alt
+                        if event.agentic_plan:
+                            # Agentic mode: plans are stored as day_trade_plan, swing_trade_plan, etc.
+                            day_report = event.agentic_plan.get("day_trade_plan")
+                            swing_report = event.agentic_plan.get("swing_trade_plan")
+                            position_report = event.agentic_plan.get("position_trade_plan")
+                            selected_style = event.agentic_plan.get("recommended_style") or event.selected_style
+                            selection_reasoning = event.agentic_plan.get("recommendation_reasoning") or event.selection_reasoning or ""
 
-                        # The selected plan is the main report
-                        selected_style = event.selected_style or event.plan.get("trade_style")
-                        if selected_style == "day":
-                            day_report = event.plan
-                        elif selected_style == "swing":
-                            swing_report = event.plan
-                        elif selected_style == "position":
-                            position_report = event.plan
+                            # Create analysis record for agentic mode
+                            analysis = PlanAnalysis.create(
+                                user_id=user_id,
+                                symbol=symbol,
+                                selected_style=selected_style,
+                                selection_reasoning=selection_reasoning,
+                                analysis_data={
+                                    "agentic_plan": event.agentic_plan,
+                                    "is_agentic": True,
+                                },
+                                day_trade_report=day_report,
+                                swing_trade_report=swing_report,
+                                position_trade_report=position_report,
+                                market_context=None,
+                                news_context=None,
+                            )
+                        else:
+                            # V2 mode: use existing logic
+                            # The alternatives contain the other trade style reports
+                            if event.alternatives:
+                                for alt in event.alternatives:
+                                    style = alt.get("trade_style")
+                                    if style == "day":
+                                        day_report = alt
+                                    elif style == "swing":
+                                        swing_report = alt
+                                    elif style == "position":
+                                        position_report = alt
 
-                        # Create analysis record
-                        analysis = PlanAnalysis.create(
-                            user_id=user_id,
-                            symbol=symbol,
-                            selected_style=selected_style,
-                            selection_reasoning=event.selection_reasoning or "",
-                            analysis_data={
-                                "selected_plan": event.plan,
-                                "alternatives": event.alternatives or [],
-                                "selection_reasoning": event.selection_reasoning,
-                            },
-                            day_trade_report=day_report,
-                            swing_trade_report=swing_report,
-                            position_trade_report=position_report,
-                            market_context=event.plan.get("market_context") if event.plan else None,
-                            news_context=event.plan.get("news_context") if event.plan else None,
-                        )
+                            # The selected plan is the main report
+                            selected_style = event.selected_style or event.plan.get("trade_style")
+                            if selected_style == "day":
+                                day_report = event.plan
+                            elif selected_style == "swing":
+                                swing_report = event.plan
+                            elif selected_style == "position":
+                                position_report = event.plan
+
+                            selection_reasoning = event.selection_reasoning or ""
+
+                            # Create analysis record for V2 mode
+                            analysis = PlanAnalysis.create(
+                                user_id=user_id,
+                                symbol=symbol,
+                                selected_style=selected_style,
+                                selection_reasoning=selection_reasoning,
+                                analysis_data={
+                                    "selected_plan": event.plan,
+                                    "alternatives": event.alternatives or [],
+                                    "selection_reasoning": event.selection_reasoning,
+                                },
+                                day_trade_report=day_report,
+                                swing_trade_report=swing_report,
+                                position_trade_report=position_report,
+                                market_context=event.plan.get("market_context") if event.plan else None,
+                                news_context=event.plan.get("news_context") if event.plan else None,
+                            )
 
                         # Archive any previous draft analyses for this symbol
                         await analysis_store.archive_previous_analyses(user_id, symbol, analysis.id)
@@ -3429,21 +3474,33 @@ async def generate_plan_v2_stream(
                         # Save the new analysis
                         await analysis_store.save_analysis(analysis)
                         saved_analysis_id = analysis.id
-                        logger.info(f"Saved V2 analysis {analysis.id} for {symbol}")
+                        logger.info(f"Saved {'agentic' if event.agentic_plan else 'V2'} analysis {analysis.id} for {symbol}")
 
                         # Yield modified event with analysis_id
-                        modified_event = StreamEvent.final_result(
-                            plan=event.plan,
-                            alternatives=event.alternatives or [],
-                            selected_style=event.selected_style,
-                            selection_reasoning=event.selection_reasoning,
-                            analysis_id=saved_analysis_id,
-                        )
+                        if event.agentic_plan:
+                            # For agentic mode, create event with agentic_plan
+                            from app.agent.schemas.streaming import StreamEvent as SE
+                            modified_event = SE(
+                                type="final_result",
+                                timestamp=event.timestamp,
+                                agentic_plan=event.agentic_plan,
+                                selected_style=selected_style,
+                                selection_reasoning=selection_reasoning,
+                                analysis_id=saved_analysis_id,
+                            )
+                        else:
+                            modified_event = StreamEvent.final_result(
+                                plan=event.plan,
+                                alternatives=event.alternatives or [],
+                                selected_style=event.selected_style,
+                                selection_reasoning=event.selection_reasoning,
+                                analysis_id=saved_analysis_id,
+                            )
                         yield modified_event.to_sse()
                         continue
 
                     except Exception as save_error:
-                        logger.error(f"Failed to save V2 analysis for {symbol}: {save_error}")
+                        logger.error(f"Failed to save analysis for {symbol}: {save_error}", exc_info=True)
                         # Still yield the original event even if save fails
                         yield event.to_sse()
                         continue
@@ -3597,13 +3654,46 @@ async def approve_plan_analysis(
             detail="Analysis has already been approved"
         )
 
-    # Get the selected plan from analysis_data
-    selected_plan = analysis.analysis_data.get("selected_plan", {})
-    if not selected_plan:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No selected plan found in analysis"
-        )
+    # Get the selected plan from analysis_data (handles both V2 and agentic)
+    is_agentic = analysis.analysis_data.get("is_agentic", False)
+
+    if is_agentic:
+        # Agentic mode: extract the recommended plan from agentic_plan structure
+        agentic_plan = analysis.analysis_data.get("agentic_plan", {})
+        recommended_style = agentic_plan.get("recommended_style", "swing")
+        style_plan = agentic_plan.get(f"{recommended_style}_trade_plan", {})
+
+        if not style_plan:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"No {recommended_style} trade plan found in agentic analysis"
+            )
+
+        # Convert agentic format to V2 format for TradingPlan creation
+        entry_zone = style_plan.get("entry_zone", [])
+        targets_list = style_plan.get("targets", [])
+
+        selected_plan = {
+            "bias": style_plan.get("bias", "neutral"),
+            "thesis": style_plan.get("thesis", ""),
+            "entry_zone_low": entry_zone[0] if len(entry_zone) > 0 else None,
+            "entry_zone_high": entry_zone[1] if len(entry_zone) > 1 else None,
+            "stop_loss": style_plan.get("stop_loss"),
+            "stop_reasoning": style_plan.get("conviction_reasoning", ""),
+            "targets": [{"price": t} for t in targets_list] if isinstance(targets_list, list) else [],
+            "trade_style": recommended_style,
+            "holding_period": style_plan.get("holding_period", ""),
+            "confidence": _conviction_to_confidence(style_plan.get("conviction", "medium")),
+            "technical_summary": style_plan.get("conviction_reasoning", ""),
+        }
+    else:
+        # V2 mode: use existing selected_plan structure
+        selected_plan = analysis.analysis_data.get("selected_plan", {})
+        if not selected_plan:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No selected plan found in analysis"
+            )
 
     # Create TradingPlan from the selected plan
     plan_store = get_plan_store()
@@ -3614,7 +3704,7 @@ async def approve_plan_analysis(
     target_1 = targets[0].get("price") if len(targets) > 0 else None
     target_2 = targets[1].get("price") if len(targets) > 1 else None
     target_3 = targets[2].get("price") if len(targets) > 2 else None
-    target_reasoning = ", ".join([t.get("reasoning", "") for t in targets[:3]]) if targets else ""
+    target_reasoning = ", ".join([t.get("reasoning", "") for t in targets[:3] if isinstance(t, dict)]) if targets else ""
 
     trading_plan = TradingPlan(
         id=plan_id,
@@ -3643,6 +3733,7 @@ async def approve_plan_analysis(
         price_at_creation=selected_plan.get("current_price"),
         technical_summary=selected_plan.get("technical_summary", ""),
         news_summary=selected_plan.get("news_summary", ""),
+        source_analysis_id=analysis_id,  # Link back to source analysis
     )
 
     # Save the trading plan

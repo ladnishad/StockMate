@@ -1229,9 +1229,9 @@ def calculate_adx(
     def wilders_smooth(data: np.ndarray, period: int) -> np.ndarray:
         """Apply Wilder's smoothing method."""
         smoothed = np.zeros(len(data))
-        smoothed[period] = np.sum(data[1 : period + 1])
+        smoothed[period] = np.sum(data[1 : period + 1]) / period
         for i in range(period + 1, len(data)):
-            smoothed[i] = smoothed[i - 1] - (smoothed[i - 1] / period) + data[i]
+            smoothed[i] = smoothed[i - 1] - (smoothed[i - 1] / period) + data[i] / period
         return smoothed
 
     smoothed_tr = wilders_smooth(tr, period)

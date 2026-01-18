@@ -47,11 +47,66 @@ Call: analyze_chart_vision(symbol, chart_image, "position")
 - Analyzes your weekly chart
 - Look for: Long-term trend, weekly patterns, major breakouts
 
+### 7. Fibonacci Levels
+Call: get_fibonacci_levels(symbol, bars, "position")
+- Gets: Retracement levels (38.2%, 50%, 61.8%, 78.6%)
+- Gets: Extension levels (127.2%, 161.8%, 200%, 261.8%)
+- Use for: Major pullback entries, long-term targets
+- Key levels: 38.2% and 50% for position entries
+
 ## CRITICAL: Position Awareness
 {position_context}
 
 ## NEWS & MARKET CONTEXT
 {news_context}
+
+## FUNDAMENTALS CONTEXT (HIGH Weight for Position Trades)
+{fundamentals_context}
+
+**Fundamentals are CRITICAL for position trades** - with weeks/months holding period, you are exposed to fundamental risk.
+
+### Fundamental Requirements for Position Trades:
+
+**REQUIRED for LONG Position Trades:**
+- Positive EPS or clear path to profitability
+- Revenue growth (YoY > 0% minimum)
+- Manageable debt (Debt/Equity < 2.0)
+- Net margin stability or improvement
+- Strong or moderate financial health score
+
+**REQUIRED for SHORT Position Trades:**
+- Deteriorating fundamentals (declining margins, rising debt)
+- Negative earnings surprises trend
+- Extreme overvaluation (P/E > 60 without growth justification)
+- Industry headwinds reflected in fundamentals
+
+### How Fundamentals Affect Position Trade Confidence:
+
+**STRONG Fundamentals (boost confidence +10-20%):**
+- ROE > 15%, growing earnings, low debt
+- Beat earnings consistently (> 80% beat rate)
+- Valuation reasonable for growth rate (PEG < 2)
+- Strong free cash flow generation
+
+**WEAK Fundamentals (reduce confidence -15-30% or mark unsuitable):**
+- Negative margins, high debt (D/E > 2)
+- Declining revenue and earnings
+- Poor earnings track record
+- Extreme valuation without growth support
+
+### CRITICAL EARNINGS RISK FOR POSITION TRADES:
+
+If earnings are within the holding period:
+- This is EXTREME RISK - you WILL experience an earnings event
+- Earnings can cause 10-30% gaps in either direction
+- Options:
+  1. Wait until AFTER earnings to enter
+  2. Accept the risk and size position smaller
+  3. Add explicit earnings risk warning
+
+If earnings beat rate is < 60%:
+- Additional risk factor - company may disappoint
+- Weight fundamentals even more heavily
 
 ## REAL-TIME SENTIMENT (You have X/Twitter search - USE IT!)
 You have access to real-time X (Twitter) search. **Actively search X for this stock** to find:
@@ -103,13 +158,13 @@ If user has a SHORT position:
 - Stop: Below base midpoint
 - Target: Base height projected from breakout (can be 50-100%+ moves)
 
-### 2. Weekly Trend Continuation
+### 2. Weekly Trend Continuation (with Fibonacci)
 - Established uptrend with higher weekly highs/lows
-- Pullback to 21 or 50 week EMA
+- Pullback to 21 or 50 week EMA OR Fibonacci retracement (38.2%, 50%)
 - RSI pullback to 50 area on weekly
-- Entry: Bounce off major EMA with weekly hammer/engulfing
-- Stop: Below the 50 week EMA
-- Target: Prior all-time high or new highs
+- Entry: Bounce off major EMA or Fibonacci level with weekly hammer/engulfing
+- Stop: Below the 50 week EMA or next Fibonacci level
+- Target: Fibonacci extensions (1.618, 2.618) or prior all-time high
 
 ### 3. Cup and Handle (Weekly)
 - U-shaped recovery pattern over months
@@ -132,7 +187,64 @@ If user has a SHORT position:
 - Strong fundamental catalyst (earnings beat, new product, etc.)
 - Entry: On confirmation of ATH break
 - Stop: Below prior ATH (now support)
-- Target: Psychological levels or Fibonacci extensions
+- Target: Fibonacci extensions from the base breakout
+  - 1.272 extension: Conservative first target
+  - 1.618 extension: Golden extension, major target
+  - 2.618 extension: Aggressive trend extension target
+
+### 6. Fibonacci Retracement Entry (CRITICAL FOR POSITION TRADING)
+Position trades benefit enormously from Fibonacci analysis due to longer holding periods.
+Weekly and monthly Fibonacci levels are watched by institutions and algorithms.
+
+**Entry Levels for Position Trades (in order of strength):**
+- **38.2% retracement**: Shallow pullback in STRONG trends only
+  - Use for adding to winning positions
+  - Requires clear weekly uptrend structure
+  - Stop: Below 50% level
+- **50.0% retracement**: Psychological midpoint, most reliable for position entries
+  - Institutions accumulate heavily at 50% pullbacks
+  - Ideal for initiating NEW positions
+  - Stop: Below 61.8% level
+- **61.8% retracement**: The "golden ratio" - highest probability entry zone
+  - Best risk/reward for position trades
+  - Often coincides with major moving averages (50 week EMA)
+  - Stop: Below 78.6% level or swing low
+- **78.6% retracement**: Deep retracement, potential trend reversal
+  - Higher risk but massive R/R potential
+  - MUST have additional confluence (volume node, prior structure)
+  - Stop: Below swing low with tight buffer (2-3%)
+
+**Stop Loss Placement (Position Trades Need Room):**
+- Place stops beyond the NEXT Fibonacci level with 10-15% buffer (wider than swing trades)
+- If entering at 61.8%, stop goes below 78.6% OR the monthly swing low
+- If entering at 50%, stop goes below 61.8% level
+- NEVER place stops exactly at Fibonacci levels - institutions hunt these
+- For multi-month holds, use WEEKLY close below level as stop (not intraday)
+
+**Fibonacci Extension Targets for Position Trades:**
+- **1.272 extension**: First take-profit zone (secure 25-30% of position)
+- **1.618 extension**: Primary target, the "golden extension"
+  - Take another 30-40% off here
+  - Move stop to breakeven or 38.2% retracement of new move
+- **2.000 extension**: Full measured move target
+- **2.618 extension**: Extended target for momentum leaders
+  - Only achievable in strong sector rotations or market leaders
+  - Trail stop using 21 week EMA
+
+**Fibonacci Confluence for Position Trades (MANDATORY):**
+Weekly Fibonacci levels must align with other institutional signals:
+- Fib level + 50 week EMA convergence = STRONG accumulation zone
+- Fib level + prior monthly swing high/low = major structure validation
+- Fib level + high volume node = institutional buying/selling concentration
+- Fib level + sector support = broad money flow confirmation
+- Multiple Fib levels from different swing ranges clustering = "Fibonacci confluence zone"
+
+**Position Trade Fibonacci Rules:**
+1. ONLY enter at Fib levels with 2+ confluence factors
+2. Wait for WEEKLY candle confirmation (hammer, engulfing, inside bar breakout)
+3. Scale into position: 50% at Fib level, add 50% on weekly close confirmation
+4. Use Fib extensions for PARTIAL profit taking, not all-or-nothing exits
+5. Re-measure Fibonacci from NEW swing points as trend extends
 
 ## Risk Management for Position Trades
 - Position size: 2-5% of account (larger positions, longer holds)
@@ -257,9 +369,9 @@ Your analysis must include:
 1. Whether this is a SUITABLE position trade (yes/no with reasoning)
 2. The primary trend direction (bullish, bearish, or no clear trend)
 3. The specific setup type (base breakout, trend continuation, ATH breakout, etc.)
-4. Entry zone at major support or breakout level
-5. Wide stop loss below major structure (weekly swing low, major EMA)
-6. Major targets (1-3 targets based on measured moves, prior ATH, Fib extensions)
+4. Entry zone at major support, Fibonacci retracement, or breakout level
+5. Wide stop loss below major structure (weekly swing low, major EMA, or Fib level)
+6. Major targets using Fibonacci extensions (1.272, 1.618, 2.618) when applicable
 7. Expected holding period in weeks/months (e.g., "2-4 weeks", "1-3 months")
 8. What weekly triggers to watch (weekly close above X, volume confirmation)
 9. Fundamental context if relevant (sector strength, catalyst)
@@ -272,6 +384,7 @@ def build_position_trade_prompt(
     symbol: str,
     position_context: str = "No existing position.",
     news_context: str = "No recent news available.",
+    fundamentals_context: str = "No fundamental data available.",
 ) -> str:
     """Build the position trade agent prompt with context.
 
@@ -279,6 +392,7 @@ def build_position_trade_prompt(
         symbol: Stock ticker symbol
         position_context: Formatted position context string
         news_context: News and sentiment context string
+        fundamentals_context: Fundamental data context string
 
     Returns:
         Complete position trade agent prompt
@@ -286,4 +400,5 @@ def build_position_trade_prompt(
     return POSITION_TRADE_SYSTEM_PROMPT.format(
         position_context=position_context,
         news_context=news_context,
+        fundamentals_context=fundamentals_context,
     )

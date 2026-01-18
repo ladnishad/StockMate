@@ -22,6 +22,7 @@ from app.tools.analysis import (
     find_comprehensive_levels,
     calculate_volume_profile,
     detect_chart_patterns,
+    calculate_fibonacci_levels,
 )
 from app.tools.indicators import detect_divergences, calculate_atr, calculate_adx
 from app.tools.indicators import (
@@ -108,6 +109,7 @@ async def get_price_bars(
             "symbol": symbol.upper(),
             "timeframe": timeframe,
             "bars_count": len(bars),
+            "bars": bars,  # Include raw bars for Fibonacci calculation
             "current_price": closes[-1],
             "high": max(highs[-20:]) if len(highs) >= 20 else max(highs),
             "low": min(lows[-20:]) if len(lows) >= 20 else min(lows),
@@ -131,6 +133,7 @@ async def get_technical_indicators(
     symbol: str,
     ema_periods: List[int],
     rsi_period: int = 14,
+    timeframe: Literal["5m", "15m", "1h", "1d", "1w"] = "1d",
 ) -> Dict[str, Any]:
     """Calculate technical indicators with specified EMA periods.
 
@@ -138,6 +141,7 @@ async def get_technical_indicators(
         symbol: Stock ticker symbol
         ema_periods: List of EMA periods (e.g., [5, 9, 20] for day, [9, 21, 50] for swing)
         rsi_period: RSI period (default 14)
+        timeframe: Bar timeframe - "5m" for day, "1d" for swing, "1w" for position
 
     Returns:
         Dictionary with all technical indicators
@@ -145,11 +149,18 @@ async def get_technical_indicators(
     try:
         # Need enough bars for longest EMA plus some buffer
         max_ema = max(ema_periods) if ema_periods else 50
-        # Add 50% buffer for weekends/holidays (calendar days ≠ trading days)
-        # For Position Trade [21, 50, 200]: int(200 * 1.5) + 30 = 330 calendar days → ~220+ trading bars
-        bars_needed = max(int(max_ema * 1.5) + 30, 100)
+        # Timeframe-aware data requirements
+        if timeframe == "5m":
+            # 5m bars: more bars per day, need fewer calendar days
+            bars_needed = max(int(max_ema * 1.2) + 20, 100)
+        elif timeframe == "1w":
+            # Weekly bars: need 7x more calendar days to get enough bars
+            # For 200 EMA: 200 * 7 * 1.5 + 100 = 2200 days (~6 years)
+            bars_needed = max(int(max_ema * 7 * 1.5) + 100, 400)
+        else:  # 1d, 15m, 1h
+            bars_needed = max(int(max_ema * 1.5) + 30, 100)
 
-        bars = fetch_price_bars(symbol.upper(), timeframe="1d", days_back=bars_needed)
+        bars = fetch_price_bars(symbol.upper(), timeframe=timeframe, days_back=bars_needed)
 
         if not bars or len(bars) < max_ema:
             return {
@@ -530,6 +541,100 @@ async def get_support_resistance(
     except Exception as e:
         logger.error(f"Error getting S/R for {symbol}: {e}")
         return {"symbol": symbol.upper(), "timeframe": timeframe, "error": str(e)}
+
+
+async def get_fibonacci_levels(
+    symbol: str,
+    price_bars: List,
+    trade_type: Literal["day", "swing", "position"] = "swing",
+) -> Dict[str, Any]:
+    """Calculate Fibonacci retracement and extension levels for the given price bars.
+
+    Each trade style uses different lookback periods for swing detection:
+    - Day trade: 10 bars (recent intraday swings)
+    - Swing trade: 30 bars (multi-day swings)
+    - Position trade: 50 bars (major trend swings)
+
+    Args:
+        symbol: Stock ticker symbol
+        price_bars: Price bars already fetched for this timeframe
+        trade_type: "day", "swing", or "position"
+
+    Returns:
+        Dict with retracement_levels, extension_levels, signal, trend, etc.
+    """
+    try:
+        if not price_bars or len(price_bars) < 10:
+            logger.warning(f"Insufficient bars for Fibonacci: {len(price_bars) if price_bars else 0}")
+            return {
+                "symbol": symbol.upper(),
+                "error": "Insufficient data for Fibonacci",
+                "trade_type": trade_type,
+                "swing_high": None,
+                "swing_low": None,
+                "swing_range": 0,
+                "trend": "unknown",
+                "signal": "neutral",
+                "current_price": None,
+                "nearest_level": None,
+                "retracement_levels": {},
+                "extension_levels": {},
+            }
+
+        # Different lookback periods for different trade styles
+        lookback_map = {"day": 15, "swing": 30, "position": 50}
+        swing_lookback = lookback_map.get(trade_type, 30)
+
+        # Calculate Fibonacci levels using the core analysis function
+        fib_indicator = calculate_fibonacci_levels(
+            price_bars,
+            swing_lookback=min(swing_lookback, len(price_bars))
+        )
+
+        metadata = fib_indicator.metadata
+        swing_high = metadata.get("swing_high")
+        swing_low = metadata.get("swing_low")
+        current_price = metadata.get("current_price", price_bars[-1].close if price_bars else 0)
+
+        result = {
+            "symbol": symbol.upper(),
+            "trade_type": trade_type,
+            "swing_high": swing_high,
+            "swing_low": swing_low,
+            "swing_range": (swing_high - swing_low) if swing_high and swing_low else 0,
+            "trend": metadata.get("trend", "unknown"),
+            "signal": fib_indicator.signal,
+            "current_price": current_price,
+            "nearest_level": metadata.get("nearest_level"),
+            "retracement_levels": metadata.get("retracement", {}),
+            "extension_levels": metadata.get("extension", {}),
+        }
+
+        logger.info(
+            f"Fibonacci for {symbol} ({trade_type}): "
+            f"High=${swing_high:.2f}, Low=${swing_low:.2f}, "
+            f"Trend={result['trend']}, Signal={result['signal']}"
+            if swing_high and swing_low else f"Fibonacci for {symbol}: No clear swings"
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error calculating Fibonacci for {symbol}: {e}")
+        return {
+            "symbol": symbol.upper(),
+            "error": str(e),
+            "trade_type": trade_type,
+            "swing_high": None,
+            "swing_low": None,
+            "swing_range": 0,
+            "trend": "unknown",
+            "signal": "neutral",
+            "current_price": None,
+            "nearest_level": None,
+            "retracement_levels": {},
+            "extension_levels": {},
+        }
 
 
 async def get_volume_profile(
@@ -963,42 +1068,58 @@ async def get_news_sentiment(
     symbol: str,
     days_back: int = 7,
 ) -> Dict[str, Any]:
-    """Get news sentiment and recent headlines for a stock.
+    """Get news sentiment and recent headlines for a stock from Finnhub.
+
+    This uses the Finnhub News API which is included in the free tier
+    (60 API calls/minute).
+
+    NEWS INFLUENCE ON TRADE DECISIONS:
+    - For DAY TRADES: News has LOW weight (20%) - intraday momentum dominates
+    - For SWING TRADES: News has MODERATE weight (50%) - catalysts affect 2-10 day holds
+    - For POSITION TRADES: News has HIGH weight (100%) - major news affects weeks/months
 
     Args:
         symbol: Stock ticker symbol
         days_back: Number of days of news to fetch
 
     Returns:
-        Dictionary with sentiment, headlines, and summary
+        Dictionary with:
+        - sentiment: Overall sentiment label (bullish/neutral/bearish)
+        - sentiment_score: Numeric score from -1 to 1
+        - article_count: Number of articles analyzed
+        - headlines: List of recent article titles
+        - has_breaking_news: Whether there's very recent news (< 2 hours)
+        - key_themes: Common topics from article tags
+        - summary: Brief summary of news context
     """
     from app.tools.market_data import fetch_news_sentiment
 
     try:
-        news_data = fetch_news_sentiment(symbol.upper(), days_back=days_back)
+        # fetch_news_sentiment is now async and returns NewsContext
+        news_context = await fetch_news_sentiment(symbol.upper(), days_back=days_back)
 
-        # Extract headlines
-        headlines = []
-        for item in news_data.get("recent_headlines", [])[:5]:
-            if isinstance(item, dict):
-                headlines.append(item.get("title", ""))
-            elif isinstance(item, str):
-                headlines.append(item)
+        # Extract headlines from articles
+        headlines = [article.title for article in news_context.articles[:5]]
 
         # Build summary
         summary_parts = []
-        if news_data.get("article_count", 0) > 0:
-            summary_parts.append(f"{news_data['article_count']} articles analyzed")
-        if news_data.get("news_volume_trend"):
-            summary_parts.append(f"News volume: {news_data['news_volume_trend']}")
+        if news_context.article_count > 0:
+            summary_parts.append(f"{news_context.article_count} articles analyzed")
+        if news_context.has_breaking_news:
+            summary_parts.append("BREAKING NEWS detected")
+        if news_context.key_themes:
+            summary_parts.append(f"Topics: {', '.join(news_context.key_themes[:3])}")
 
         return {
             "symbol": symbol.upper(),
-            "sentiment": news_data.get("sentiment_label", "neutral"),
-            "sentiment_score": news_data.get("sentiment_score", 0),
-            "article_count": news_data.get("article_count", 0),
+            "sentiment": news_context.overall_sentiment,
+            "sentiment_score": news_context.sentiment_score,
+            "article_count": news_context.article_count,
             "headlines": headlines,
+            "has_breaking_news": news_context.has_breaking_news,
+            "key_themes": news_context.key_themes,
             "summary": ". ".join(summary_parts) if summary_parts else "No recent news",
+            "data_source": news_context.data_source,
         }
     except Exception as e:
         logger.warning(f"Error getting news for {symbol}: {e}")
@@ -1008,7 +1129,123 @@ async def get_news_sentiment(
             "sentiment_score": 0,
             "article_count": 0,
             "headlines": [],
+            "has_breaking_news": False,
+            "key_themes": [],
             "summary": "News unavailable",
+            "data_source": "error",
+        }
+
+
+async def get_fundamentals(symbol: str) -> Dict[str, Any]:
+    """Get fundamental financial data for a stock.
+
+    This tool retrieves comprehensive fundamental data including:
+    - Valuation metrics (P/E, P/B, P/S, PEG)
+    - Growth metrics (EPS growth, revenue growth)
+    - Profitability (margins, ROE, ROA)
+    - Financial health (debt ratios, liquidity)
+    - Earnings calendar (CRITICAL for risk assessment)
+
+    IMPORTANT FOR TRADE DECISIONS:
+    - For DAY TRADES: Fundamentals have LOW weight (momentum dominates)
+    - For SWING TRADES: Fundamentals have MODERATE weight (1-2 week exposure)
+    - For POSITION TRADES: Fundamentals have HIGH weight (weeks-months exposure)
+
+    EARNINGS WARNING: If earnings are within 7 days, this is HIGH RISK
+    for swing and position trades due to gap risk.
+
+    Args:
+        symbol: Stock ticker symbol
+
+    Returns:
+        Dictionary with comprehensive fundamental data and risk flags
+    """
+    from app.tools.market_data import fetch_fundamentals
+
+    try:
+        fundamentals = await fetch_fundamentals(symbol.upper())
+
+        # Build response dict
+        result = {
+            "symbol": symbol.upper(),
+            # Valuation Summary
+            "valuation": {
+                "pe_ratio": fundamentals.pe_ratio,
+                "pe_forward": fundamentals.pe_forward,
+                "pb_ratio": fundamentals.pb_ratio,
+                "ps_ratio": fundamentals.ps_ratio,
+                "peg_ratio": fundamentals.peg_ratio,
+                "assessment": fundamentals.get_valuation_assessment(),
+            },
+            # Growth Summary
+            "growth": {
+                "eps": fundamentals.eps,
+                "eps_growth_yoy": fundamentals.eps_growth_yoy,
+                "revenue_growth_yoy": fundamentals.revenue_growth_yoy,
+                "revenue_growth_3y": fundamentals.revenue_growth_3y,
+            },
+            # Profitability Summary
+            "profitability": {
+                "gross_margin": fundamentals.gross_margin,
+                "operating_margin": fundamentals.operating_margin,
+                "net_margin": fundamentals.net_margin,
+                "roe": fundamentals.roe,
+                "roa": fundamentals.roa,
+            },
+            # Financial Health Summary
+            "health": {
+                "debt_to_equity": fundamentals.debt_to_equity,
+                "current_ratio": fundamentals.current_ratio,
+                "quick_ratio": fundamentals.quick_ratio,
+                "assessment": fundamentals.get_financial_health_score(),
+            },
+            # 52-Week Range
+            "price_range": {
+                "52w_high": fundamentals.fifty_two_week_high,
+                "52w_low": fundamentals.fifty_two_week_low,
+                "range_position": fundamentals.fifty_two_week_range_position,
+            },
+            # CRITICAL: Earnings Risk
+            "earnings_risk": {
+                "has_risk": fundamentals.has_earnings_risk(),
+                "days_until": (
+                    fundamentals.next_earnings.days_until
+                    if fundamentals.next_earnings
+                    else None
+                ),
+                "date": (
+                    fundamentals.next_earnings.date
+                    if fundamentals.next_earnings
+                    else None
+                ),
+                "eps_estimate": (
+                    fundamentals.next_earnings.eps_estimate
+                    if fundamentals.next_earnings
+                    else None
+                ),
+                "beat_rate": fundamentals.earnings_beat_rate,
+                "avg_surprise": fundamentals.avg_earnings_surprise,
+            },
+            # Trade Style Guidance
+            "trade_guidance": {
+                "day_trade_weight": "low",
+                "swing_trade_weight": (
+                    "moderate" if not fundamentals.has_earnings_risk() else "high_risk"
+                ),
+                "position_trade_weight": (
+                    "high" if not fundamentals.has_earnings_risk() else "extreme_risk"
+                ),
+            },
+        }
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error getting fundamentals for {symbol}: {e}")
+        return {
+            "symbol": symbol.upper(),
+            "error": str(e),
+            "earnings_risk": {"has_risk": False},
         }
 
 

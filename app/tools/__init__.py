@@ -5,6 +5,7 @@ from .market_data import (
     fetch_fundamentals,
     fetch_sentiment,
     fetch_news_sentiment,
+    fetch_news_for_trade_style,
 )
 from .indicators import (
     calculate_vwap,
@@ -33,11 +34,12 @@ from .market_scanner import (
 )
 
 __all__ = [
-    # Market data tools (4)
+    # Market data tools (5)
     "fetch_price_bars",
     "fetch_fundamentals",
     "fetch_sentiment",
     "fetch_news_sentiment",
+    "fetch_news_for_trade_style",
     # Indicator tools (8)
     "calculate_vwap",
     "calculate_ema",

@@ -28,6 +28,7 @@ def generate_chart_image(
     lookback: int = 60,
     show_volume: bool = True,
     show_rsi: bool = True,
+    fibonacci_levels: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Generate candlestick chart with indicators.
 
@@ -36,6 +37,7 @@ def generate_chart_image(
     - EMA lines (9, 21, 50 period)
     - Volume bars
     - RSI indicator subplot
+    - Fibonacci retracement and extension levels (optional)
 
     Args:
         symbol: Stock ticker symbol
@@ -48,6 +50,12 @@ def generate_chart_image(
         lookback: Number of bars to show (default 60)
         show_volume: Whether to show volume bars (default True)
         show_rsi: Whether to show RSI subplot (default True)
+        fibonacci_levels: Optional dictionary containing Fibonacci levels:
+            - swing_high: float - Swing high price
+            - swing_low: float - Swing low price
+            - retracement: dict - Retracement levels (0.236, 0.382, 0.500, 0.618, 0.786)
+            - extension: dict - Extension levels (1.272, 1.618, 2.618)
+            - trend: str - "uptrend" or "downtrend"
 
     Returns:
         Base64-encoded PNG image string
@@ -175,9 +183,106 @@ def generate_chart_image(
             returnfig=True,
         )
 
-        # Add legend for EMA lines
-        if add_plots:
-            axes[0].legend(['EMA 9', 'EMA 21', 'EMA 50'], loc='upper left', fontsize=8)
+        # Plot Fibonacci levels if provided
+        fib_labels = []
+        if fibonacci_levels:
+            try:
+                # Get the price axis (main chart)
+                price_ax = axes[0]
+
+                # Get the visible price range for filtering
+                y_min, y_max = price_ax.get_ylim()
+
+                trend = fibonacci_levels.get('trend', 'uptrend')
+
+                # Plot retracement levels (dashed lines)
+                if 'retracement' in fibonacci_levels:
+                    for level_name, price in fibonacci_levels['retracement'].items():
+                        if price and y_min <= price <= y_max:
+                            # Color logic based on level significance:
+                            # In UPTREND: Higher % levels (0.618, 0.786) are near swing low = SUPPORT (green)
+                            #             Lower % levels (0.236, 0.382) are near swing high = RESISTANCE (red)
+                            # In DOWNTREND: Inverse - lower levels are support, higher are resistance
+                            level_value = float(level_name)
+                            if trend == 'uptrend':
+                                # Deep retracements (>50%) = strong support, shallow (<50%) = resistance zones
+                                color = '#4CAF50' if level_value > 0.5 else '#FF5722'
+                            else:
+                                # In downtrend: deep retracements are resistance, shallow are support
+                                color = '#FF5722' if level_value > 0.5 else '#4CAF50'
+
+                            # Draw horizontal line
+                            price_ax.axhline(
+                                y=price,
+                                color=color,
+                                linestyle='--',
+                                linewidth=1.2,
+                                alpha=0.7,
+                                zorder=2
+                            )
+
+                            # Add label on the right side
+                            price_ax.text(
+                                1.002, price, f' {level_name} - ${price:.2f}',
+                                transform=price_ax.get_yaxis_transform(),
+                                fontsize=7,
+                                verticalalignment='center',
+                                color=color,
+                                weight='bold'
+                            )
+                            fib_labels.append(f'Fib {level_name}')
+
+                # Plot extension levels (dotted lines)
+                if 'extension' in fibonacci_levels:
+                    for level_name, price in fibonacci_levels['extension'].items():
+                        if price and y_min <= price <= y_max:
+                            # Extension levels: targets in trend direction
+                            level_value = float(level_name)
+                            if trend == 'uptrend':
+                                color = '#2196F3'  # Blue for upside targets
+                            else:
+                                color = '#9C27B0'  # Purple for downside targets
+
+                            # Draw horizontal line
+                            price_ax.axhline(
+                                y=price,
+                                color=color,
+                                linestyle=':',
+                                linewidth=1.5,
+                                alpha=0.7,
+                                zorder=2
+                            )
+
+                            # Add label on the right side
+                            price_ax.text(
+                                1.002, price, f' {level_name} - ${price:.2f}',
+                                transform=price_ax.get_yaxis_transform(),
+                                fontsize=7,
+                                verticalalignment='center',
+                                color=color,
+                                weight='bold'
+                            )
+                            fib_labels.append(f'Fib Ext {level_name}')
+
+                logger.info(f"Plotted {len(fib_labels)} Fibonacci levels for {symbol}")
+            except Exception as e:
+                logger.warning(f"Failed to plot Fibonacci levels: {e}")
+
+        # Add legend for EMA lines and Fibonacci
+        legend_items = []
+        if indicators:
+            if 'ema_9' in indicators and indicators['ema_9']:
+                legend_items.append('EMA 9')
+            if 'ema_21' in indicators and indicators['ema_21']:
+                legend_items.append('EMA 21')
+            if 'ema_50' in indicators and indicators['ema_50']:
+                legend_items.append('EMA 50')
+
+        if fib_labels:
+            legend_items.append('Fibonacci Levels')
+
+        if legend_items:
+            axes[0].legend(legend_items, loc='upper left', fontsize=8)
 
         plt.close(fig)
 

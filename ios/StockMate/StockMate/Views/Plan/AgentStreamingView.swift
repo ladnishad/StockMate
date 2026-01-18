@@ -1212,3 +1212,1515 @@ private struct CompletionBanner: View {
     }
     .background(terminalBg)
 }
+
+// MARK: - Agentic Mode Models
+
+/// Represents AI thinking/reasoning during investigation
+struct AgentThinking: Identifiable {
+    let id = UUID()
+    let text: String
+    let iteration: Int
+    let timestamp: Date
+}
+
+/// Represents a tool being called by the AI
+struct ToolCall: Identifiable {
+    let id = UUID()
+    let name: String
+    let arguments: [String: Any]
+    let iteration: Int
+    let timestamp: Date
+
+    var displayName: String {
+        switch name {
+        case "get_price": return "Checking Price"
+        case "get_market_context": return "Checking Market"
+        case "get_position": return "Checking Position"
+        case "get_and_analyze_chart": return "Analyzing Chart"
+        case "get_technicals": return "Getting Technicals"
+        case "get_support_resistance": return "Finding Key Levels"
+        case "get_fibonacci": return "Calculating Fibonacci"
+        case "get_fundamentals": return "Getting Fundamentals"
+        case "get_news": return "Checking News"
+        case "search_x": return "Searching X"
+        case "get_atr": return "Calculating ATR"
+        default: return name.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    var icon: String {
+        switch name {
+        case "get_price": return "dollarsign.circle"
+        case "get_market_context": return "chart.bar.xaxis"
+        case "get_position": return "person.crop.square"
+        case "get_and_analyze_chart": return "eye"
+        case "get_technicals": return "function"
+        case "get_support_resistance": return "arrow.up.arrow.down"
+        case "get_fibonacci": return "ruler"
+        case "get_fundamentals": return "building.columns"
+        case "get_news": return "newspaper"
+        case "search_x": return "at.badge.plus"
+        case "get_atr": return "waveform.path.ecg"
+        default: return "wrench"
+        }
+    }
+}
+
+/// Represents a tool result
+struct ToolResult: Identifiable {
+    let id = UUID()
+    let toolName: String
+    let result: [String: Any]
+    let iteration: Int
+    let timestamp: Date
+
+    /// Summary of the result for collapsed view
+    var summary: String {
+        // Extract key value from result based on tool type
+        if let price = result["price"] as? Double {
+            return String(format: "$%.2f", price)
+        }
+        if let direction = result["market_direction"] as? String {
+            return direction.capitalized
+        }
+        if let hasPosition = result["has_position"] as? Bool {
+            return hasPosition ? "Has Position" : "No Position"
+        }
+        if let trendQuality = result["trend_quality"] as? String {
+            return trendQuality.capitalized
+        }
+        if let sentiment = result["sentiment"] as? String {
+            return sentiment.capitalized
+        }
+        if let atrPct = result["atr_pct"] as? Double {
+            return String(format: "%.2f%%", atrPct)
+        }
+        if let valuation = result["valuation"] as? [String: Any],
+           let assessment = valuation["assessment"] as? String {
+            return assessment
+        }
+        return "View Details"
+    }
+}
+
+/// An item in the agentic conversation stream
+enum AgenticStreamItem: Identifiable {
+    case thinking(AgentThinking)
+    case toolCall(ToolCall)
+    case toolResult(ToolResult)
+
+    var id: UUID {
+        switch self {
+        case .thinking(let t): return t.id
+        case .toolCall(let c): return c.id
+        case .toolResult(let r): return r.id
+        }
+    }
+}
+
+// MARK: - Agentic Thinking Bubble (ChatGPT-style)
+
+struct AgentThinkingBubble: View {
+    let thinking: AgentThinking
+
+    private let accentCyan = Color(red: 0.0, green: 0.87, blue: 0.87)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Header
+            HStack(spacing: 8) {
+                Image(systemName: "brain.head.profile")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(accentCyan)
+
+                Text("AI Reasoning")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(accentCyan)
+
+                Spacer()
+
+                // Iteration badge
+                Text("Step \(thinking.iteration)")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.white.opacity(0.1))
+                    .clipShape(Capsule())
+            }
+
+            // Thinking text
+            Text(thinking.text)
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.85))
+                .lineSpacing(4)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(accentCyan.opacity(0.15), lineWidth: 1)
+                )
+        )
+    }
+}
+
+// MARK: - Tool Call Row
+
+struct ToolCallRow: View {
+    let toolCall: ToolCall
+    let isActive: Bool
+    @State private var pulseAnimation = false
+
+    private let accentAmber = Color(red: 1.0, green: 0.76, blue: 0.03)
+
+    var body: some View {
+        HStack(spacing: 12) {
+            // Tool icon with animation
+            ZStack {
+                Circle()
+                    .fill(accentAmber.opacity(0.15))
+                    .frame(width: 32, height: 32)
+
+                if isActive {
+                    Circle()
+                        .fill(accentAmber.opacity(0.2))
+                        .frame(width: 32, height: 32)
+                        .scaleEffect(pulseAnimation ? 1.4 : 1.0)
+                        .opacity(pulseAnimation ? 0 : 0.5)
+                        .onAppear {
+                            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: false)) {
+                                pulseAnimation = true
+                            }
+                        }
+
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: accentAmber))
+                        .scaleEffect(0.6)
+                } else {
+                    Image(systemName: toolCall.icon)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(accentAmber)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(toolCall.displayName)
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white)
+
+                // Show key argument if any
+                if let timeframe = toolCall.arguments["timeframe"] as? String {
+                    Text("Timeframe: \(timeframe)")
+                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.5))
+                } else if let tradeStyle = toolCall.arguments["trade_style"] as? String {
+                    Text("Style: \(tradeStyle)")
+                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.5))
+                }
+            }
+
+            Spacer()
+
+            if isActive {
+                Text("CALLING")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .foregroundStyle(accentAmber)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(accentAmber.opacity(0.15))
+                    .clipShape(Capsule())
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(isActive ? Color(red: 0.09, green: 0.10, blue: 0.12) : Color.clear)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(isActive ? accentAmber.opacity(0.2) : Color.clear, lineWidth: 1)
+                )
+        )
+    }
+}
+
+// MARK: - Tool Result Row (Collapsible)
+
+struct ToolResultRow: View {
+    let result: ToolResult
+    @Binding var isExpanded: Bool
+
+    private let accentGreen = Color(red: 0.0, green: 0.85, blue: 0.45)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header (always visible)
+            HStack(spacing: 12) {
+                // Checkmark
+                ZStack {
+                    Circle()
+                        .fill(accentGreen.opacity(0.15))
+                        .frame(width: 32, height: 32)
+
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(accentGreen)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(ToolCall(name: result.toolName, arguments: [:], iteration: 0, timestamp: Date()).displayName)
+                        .font(.system(size: 13, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white)
+
+                    Text(result.summary)
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundStyle(accentGreen)
+                }
+
+                Spacer()
+
+                // Expand/collapse chevron
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            }
+            .padding(12)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    isExpanded.toggle()
+                }
+            }
+
+            // Expanded content
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(result.result.keys.sorted()), id: \.self) { key in
+                        if let value = result.result[key] {
+                            HStack(alignment: .top, spacing: 8) {
+                                Text("\(key):")
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.5))
+
+                                Text(formatValue(value))
+                                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.8))
+                                    .lineLimit(3)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+                .padding(.leading, 44)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.02))
+        )
+    }
+
+    private func formatValue(_ value: Any) -> String {
+        if let dict = value as? [String: Any] {
+            // Truncate long dicts
+            let items = dict.prefix(3).map { "\($0.key): \($0.value)" }
+            let result = items.joined(separator: ", ")
+            return dict.count > 3 ? "\(result), ..." : result
+        }
+        if let array = value as? [Any] {
+            // Truncate long arrays
+            let items = array.prefix(3).map { "\($0)" }
+            let result = items.joined(separator: ", ")
+            return array.count > 3 ? "\(result), ..." : result
+        }
+        return "\(value)"
+    }
+}
+
+// MARK: - Agentic Streaming View (Main View)
+
+struct AgenticStreamingView: View {
+    let symbol: String
+    @Binding var streamItems: [AgenticStreamItem]
+    @Binding var isComplete: Bool
+    @Binding var finalPlan: [String: Any]?
+    @Binding var expandedToolResults: Set<UUID>
+    var onAcceptPlan: (() async -> Bool)?  // Callback when user accepts the plan
+
+    @State private var activeToolCallId: UUID? = nil
+
+    private let terminalBg = Color(red: 0.06, green: 0.07, blue: 0.09)
+    private let accentCyan = Color(red: 0.0, green: 0.87, blue: 0.87)
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    // Terminal header
+                    AgenticTerminalHeader(symbol: symbol)
+                        .padding(.bottom, 12)
+
+                    // Stream items
+                    ForEach(streamItems) { item in
+                        streamItemView(for: item)
+                            .id(item.id)
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .move(edge: .bottom)),
+                                removal: .opacity
+                            ))
+                    }
+
+                    // Final result
+                    if isComplete, let plan = finalPlan {
+                        FinalRecommendationCard(plan: plan, symbol: symbol, onAcceptPlan: onAcceptPlan)
+                            .padding(.top, 16)
+                            .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    }
+
+                    Spacer(minLength: 100)
+                }
+                .padding(20)
+            }
+            .onChange(of: streamItems.count) { _, _ in
+                if let lastItem = streamItems.last {
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        proxy.scrollTo(lastItem.id, anchor: .bottom)
+                    }
+                }
+            }
+        }
+        .background(terminalBg)
+    }
+
+    @ViewBuilder
+    private func streamItemView(for item: AgenticStreamItem) -> some View {
+        switch item {
+        case .thinking(let thinking):
+            AgentThinkingBubble(thinking: thinking)
+
+        case .toolCall(let toolCall):
+            ToolCallRow(
+                toolCall: toolCall,
+                isActive: activeToolCallId == toolCall.id
+            )
+            .onAppear { activeToolCallId = toolCall.id }
+
+        case .toolResult(let result):
+            ToolResultRow(
+                result: result,
+                isExpanded: Binding(
+                    get: { expandedToolResults.contains(result.id) },
+                    set: { if $0 { expandedToolResults.insert(result.id) } else { expandedToolResults.remove(result.id) } }
+                )
+            )
+            .onAppear { activeToolCallId = nil }
+        }
+    }
+}
+
+// MARK: - Agentic Terminal Header
+
+struct AgenticTerminalHeader: View {
+    let symbol: String
+    private let accentCyan = Color(red: 0.0, green: 0.87, blue: 0.87)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Terminal title bar
+            HStack(spacing: 8) {
+                Circle().fill(Color.red.opacity(0.8)).frame(width: 12, height: 12)
+                Circle().fill(Color.yellow.opacity(0.8)).frame(width: 12, height: 12)
+                Circle().fill(Color.green.opacity(0.8)).frame(width: 12, height: 12)
+                Spacer()
+                Text("stockmate-agent v3.0 (agentic)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.4))
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.03))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            // Command line
+            HStack(spacing: 0) {
+                Text("$ ")
+                    .foregroundStyle(accentCyan)
+                Text("investigate ")
+                    .foregroundStyle(.white.opacity(0.6))
+                Text("--stock ")
+                    .foregroundStyle(Color.purple.opacity(0.8))
+                Text(symbol)
+                    .foregroundStyle(accentCyan)
+                    .fontWeight(.semibold)
+                Text(" --mode agentic")
+                    .foregroundStyle(.white.opacity(0.4))
+            }
+            .font(.system(size: 14, weight: .regular, design: .monospaced))
+        }
+    }
+}
+
+// MARK: - Final Recommendation Card
+
+struct FinalRecommendationCard: View {
+    let plan: [String: Any]
+    let symbol: String
+    var onAcceptPlan: (() async -> Bool)?  // Returns true on success
+
+    // Track which trade style is expanded (recommended style auto-expands)
+    @State private var expandedStyle: String?
+    @State private var showFullPlanSheet: Bool = false
+    @State private var isAccepting: Bool = false
+    @State private var isAccepted: Bool = false
+
+    private let accentGreen = Color(red: 0.0, green: 0.85, blue: 0.45)
+    private let accentAmber = Color(red: 1.0, green: 0.76, blue: 0.03)
+    private let accentRed = Color(red: 1.0, green: 0.4, blue: 0.4)
+    private let accentCyan = Color(red: 0.0, green: 0.87, blue: 0.87)
+
+    private var recommendedStyle: String? {
+        plan["recommended_style"] as? String
+    }
+
+    private var recommendedPlan: [String: Any]? {
+        guard let style = recommendedStyle else { return nil }
+        return plan["\(style)_trade_plan"] as? [String: Any]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Header
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(accentGreen.opacity(0.2))
+                        .frame(width: 48, height: 48)
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(accentGreen)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("ANALYSIS COMPLETE")
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white)
+
+                    if let style = recommendedStyle, style != "none" {
+                        Text("Recommended: \(style.uppercased()) TRADE")
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(accentGreen)
+                    } else {
+                        Text("No Trade Recommended")
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(accentAmber)
+                    }
+                }
+
+                Spacer()
+            }
+
+            // Reasoning
+            if let reasoning = plan["recommendation_reasoning"] as? String {
+                Text(reasoning)
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .lineSpacing(3)
+            }
+
+            Divider().background(Color.white.opacity(0.1))
+
+            // Expandable trade plan sections
+            tradePlanSection("day", displayName: "Day Trade", plan: plan["day_trade_plan"] as? [String: Any])
+            tradePlanSection("swing", displayName: "Swing Trade", plan: plan["swing_trade_plan"] as? [String: Any])
+            tradePlanSection("position", displayName: "Position Trade", plan: plan["position_trade_plan"] as? [String: Any])
+
+            // Risk Warnings
+            if let warnings = plan["risk_warnings"] as? [String], !warnings.isEmpty {
+                Divider().background(Color.white.opacity(0.1))
+                riskWarningsSection(warnings)
+            }
+
+            // What to Watch
+            if let watchItems = plan["what_to_watch"] as? [String], !watchItems.isEmpty {
+                whatToWatchSection(watchItems)
+            }
+
+            // View Full Plan Button
+            if let style = recommendedStyle, style != "none", recommendedPlan != nil {
+                Divider().background(Color.white.opacity(0.1))
+
+                Button(action: { showFullPlanSheet = true }) {
+                    HStack {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 14, weight: .medium))
+                        Text("View Full \(style.capitalized) Trade Plan")
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                        Spacer()
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundStyle(accentCyan)
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(accentCyan.opacity(0.1))
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+
+            // Accept Plan Button
+            if let onAccept = onAcceptPlan, !isAccepted {
+                Button(action: {
+                    Task {
+                        isAccepting = true
+                        let success = await onAccept()
+                        isAccepting = false
+                        if success {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                isAccepted = true
+                            }
+                        }
+                    }
+                }) {
+                    HStack {
+                        if isAccepting {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                .scaleEffect(0.8)
+                        } else {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 16, weight: .medium))
+                        }
+                        Text(isAccepting ? "Saving Plan..." : "Accept Plan")
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        Spacer()
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.vertical, 14)
+                    .padding(.horizontal, 16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(accentGreen)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(isAccepting)
+            }
+
+            // Accepted confirmation
+            if isAccepted {
+                HStack {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 16, weight: .medium))
+                    Text("Plan Saved for Evaluation")
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    Spacer()
+                }
+                .foregroundStyle(accentGreen)
+                .padding(.vertical, 12)
+                .padding(.horizontal, 16)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(accentGreen.opacity(0.15))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(accentGreen.opacity(0.3), lineWidth: 1)
+                        )
+                )
+            }
+        }
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(accentGreen.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(accentGreen.opacity(0.25), lineWidth: 1)
+                )
+        )
+        .onAppear {
+            // Auto-expand recommended style
+            if let style = recommendedStyle, style != "none" {
+                expandedStyle = style
+            }
+        }
+        .sheet(isPresented: $showFullPlanSheet) {
+            if let style = recommendedStyle, let tradePlan = recommendedPlan {
+                AgenticPlanDetailSheet(
+                    symbol: symbol,
+                    tradeStyle: style,
+                    plan: tradePlan,
+                    riskWarnings: plan["risk_warnings"] as? [String] ?? [],
+                    whatToWatch: plan["what_to_watch"] as? [String] ?? []
+                )
+            }
+        }
+    }
+
+    // MARK: - Trade Plan Section (Expandable)
+
+    @ViewBuilder
+    private func tradePlanSection(_ styleKey: String, displayName: String, plan: [String: Any]?) -> some View {
+        if let plan = plan {
+            let isExpanded = expandedStyle == styleKey
+            let isRecommended = recommendedStyle == styleKey
+            let conviction = plan["conviction"] as? String ?? "low"
+            let suitable = plan["suitable"] as? Bool ?? false
+
+            VStack(alignment: .leading, spacing: 0) {
+                // Header row (tappable)
+                Button(action: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        expandedStyle = isExpanded ? nil : styleKey
+                    }
+                }) {
+                    HStack(spacing: 8) {
+                        // Recommended indicator
+                        if isRecommended {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 10))
+                                .foregroundStyle(accentGreen)
+                        }
+
+                        Text(displayName)
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(isRecommended ? .white : .white.opacity(0.7))
+
+                        convictionBadge(conviction)
+
+                        if !suitable {
+                            Text("Not Suitable")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.4))
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.4))
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    }
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                // Expanded details
+                if isExpanded {
+                    VStack(alignment: .leading, spacing: 12) {
+                        // Conviction reasoning
+                        if let reasoning = plan["conviction_reasoning"] as? String {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "lightbulb.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(accentAmber)
+                                    .frame(width: 16)
+                                Text(reasoning)
+                                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.7))
+                                    .lineSpacing(2)
+                            }
+                        }
+
+                        // Entry, Stop, Targets (if suitable)
+                        if suitable {
+                            levelDetailsView(plan)
+                        }
+
+                        // Full thesis
+                        if let thesis = plan["thesis"] as? String {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("THESIS")
+                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.5))
+                                Text(thesis)
+                                    .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.8))
+                                    .lineSpacing(2)
+                            }
+                            .padding(.top, 4)
+                        }
+
+                        // Holding period
+                        if let holdingPeriod = plan["holding_period"] as? String {
+                            HStack(spacing: 6) {
+                                Image(systemName: "clock")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.white.opacity(0.5))
+                                Text("Hold: \(holdingPeriod)")
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.6))
+                            }
+                        }
+                    }
+                    .padding(.leading, 16)
+                    .padding(.bottom, 12)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+
+                Divider().background(Color.white.opacity(0.08))
+            }
+        }
+    }
+
+    // MARK: - Level Details (Entry, Stop, Targets)
+
+    @ViewBuilder
+    private func levelDetailsView(_ plan: [String: Any]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Entry Zone
+            if let entryZone = plan["entry_zone"] as? [Double], entryZone.count >= 2 {
+                levelRow(
+                    icon: "arrow.right.circle.fill",
+                    label: "Entry",
+                    value: String(format: "$%.2f - $%.2f", entryZone[0], entryZone[1]),
+                    color: accentGreen
+                )
+            } else if let entryZone = plan["entry_zone"] as? [Any], entryZone.count >= 2 {
+                // Handle mixed types
+                let low = (entryZone[0] as? Double) ?? (entryZone[0] as? Int).map(Double.init) ?? 0
+                let high = (entryZone[1] as? Double) ?? (entryZone[1] as? Int).map(Double.init) ?? 0
+                if low > 0 && high > 0 {
+                    levelRow(
+                        icon: "arrow.right.circle.fill",
+                        label: "Entry",
+                        value: String(format: "$%.2f - $%.2f", low, high),
+                        color: accentGreen
+                    )
+                }
+            }
+
+            // Stop Loss
+            if let stopLoss = plan["stop_loss"] as? Double {
+                levelRow(
+                    icon: "xmark.octagon.fill",
+                    label: "Stop",
+                    value: String(format: "$%.2f", stopLoss),
+                    color: accentRed
+                )
+            } else if let stopLoss = plan["stop_loss"] as? Int {
+                levelRow(
+                    icon: "xmark.octagon.fill",
+                    label: "Stop",
+                    value: String(format: "$%.2f", Double(stopLoss)),
+                    color: accentRed
+                )
+            }
+
+            // Targets
+            if let targets = plan["targets"] as? [Double], !targets.isEmpty {
+                let targetStrings = targets.prefix(3).map { String(format: "$%.2f", $0) }
+                levelRow(
+                    icon: "target",
+                    label: "Targets",
+                    value: targetStrings.joined(separator: " → "),
+                    color: accentGreen
+                )
+            } else if let targets = plan["targets"] as? [Any], !targets.isEmpty {
+                let targetStrings = targets.prefix(3).compactMap { t -> String? in
+                    if let d = t as? Double { return String(format: "$%.2f", d) }
+                    if let i = t as? Int { return String(format: "$%.2f", Double(i)) }
+                    return nil
+                }
+                if !targetStrings.isEmpty {
+                    levelRow(
+                        icon: "target",
+                        label: "Targets",
+                        value: targetStrings.joined(separator: " → "),
+                        color: accentGreen
+                    )
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.white.opacity(0.03))
+        )
+    }
+
+    @ViewBuilder
+    private func levelRow(icon: String, label: String, value: String, color: Color) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+                .foregroundStyle(color)
+                .frame(width: 16)
+
+            Text(label)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.5))
+                .frame(width: 50, alignment: .leading)
+
+            Text(value)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.white)
+        }
+    }
+
+    // MARK: - Risk Warnings
+
+    @ViewBuilder
+    private func riskWarningsSection(_ warnings: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(accentAmber)
+                Text("RISK WARNINGS")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(accentAmber)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(warnings.prefix(5), id: \.self) { warning in
+                    HStack(alignment: .top, spacing: 6) {
+                        Text("•")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(accentAmber.opacity(0.7))
+                        Text(warning)
+                            .font(.system(size: 10, weight: .regular, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.7))
+                            .lineSpacing(2)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - What to Watch
+
+    @ViewBuilder
+    private func whatToWatchSection(_ items: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "eye.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(accentGreen)
+                Text("WHAT TO WATCH")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(accentGreen)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(items.prefix(5), id: \.self) { item in
+                    HStack(alignment: .top, spacing: 6) {
+                        Text("→")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(accentGreen.opacity(0.7))
+                        Text(item)
+                            .font(.system(size: 10, weight: .regular, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.7))
+                            .lineSpacing(2)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Conviction Badge
+
+    @ViewBuilder
+    private func convictionBadge(_ conviction: String) -> some View {
+        let color: Color = {
+            switch conviction.lowercased() {
+            case "high": return accentGreen
+            case "medium": return accentAmber
+            case "low": return accentRed
+            default: return .white.opacity(0.5)
+            }
+        }()
+
+        Text(conviction.uppercased())
+            .font(.system(size: 9, weight: .bold, design: .monospaced))
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15))
+            .clipShape(Capsule())
+    }
+}
+
+// MARK: - Agentic Plan Detail Sheet
+
+struct AgenticPlanDetailSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let symbol: String
+    let tradeStyle: String
+    let plan: [String: Any]
+    let riskWarnings: [String]
+    let whatToWatch: [String]
+
+    private let terminalBg = Color(red: 0.06, green: 0.07, blue: 0.09)
+    private let cardBg = Color(red: 0.10, green: 0.11, blue: 0.13)
+    private let accentGreen = Color(red: 0.0, green: 0.85, blue: 0.45)
+    private let accentAmber = Color(red: 1.0, green: 0.76, blue: 0.03)
+    private let accentRed = Color(red: 1.0, green: 0.4, blue: 0.4)
+    private let accentCyan = Color(red: 0.0, green: 0.87, blue: 0.87)
+
+    private var conviction: String { plan["conviction"] as? String ?? "low" }
+    private var suitable: Bool { plan["suitable"] as? Bool ?? false }
+    private var bias: String { plan["bias"] as? String ?? "neutral" }
+
+    private var convictionColor: Color {
+        switch conviction.lowercased() {
+        case "high": return accentGreen
+        case "medium": return accentAmber
+        case "low": return accentRed
+        default: return .white.opacity(0.5)
+        }
+    }
+
+    private var biasColor: Color {
+        switch bias.lowercased() {
+        case "bullish": return accentGreen
+        case "bearish": return accentRed
+        default: return accentAmber
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // Header Card
+                    headerCard
+
+                    // Price Levels Card
+                    priceLevelsCard
+
+                    // Thesis Card
+                    thesisCard
+
+                    // Risk Warnings
+                    if !riskWarnings.isEmpty {
+                        riskWarningsCard
+                    }
+
+                    // What to Watch
+                    if !whatToWatch.isEmpty {
+                        whatToWatchCard
+                    }
+
+                    Spacer(minLength: 40)
+                }
+                .padding(20)
+            }
+            .background(terminalBg)
+            .navigationTitle("\(symbol) \(tradeStyle.capitalized) Trade")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(accentCyan)
+                }
+            }
+            .toolbarBackground(terminalBg, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+        }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+    }
+
+    // MARK: - Header Card
+
+    private var headerCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Symbol and Style
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(symbol)
+                        .font(.system(size: 28, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white)
+
+                    Text("\(tradeStyle.uppercased()) TRADE PLAN")
+                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(accentCyan)
+                }
+
+                Spacer()
+
+                // Suitable badge
+                if suitable {
+                    VStack(spacing: 4) {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 24))
+                            .foregroundStyle(accentGreen)
+                        Text("SUITABLE")
+                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                            .foregroundStyle(accentGreen)
+                    }
+                } else {
+                    VStack(spacing: 4) {
+                        Image(systemName: "xmark.seal.fill")
+                            .font(.system(size: 24))
+                            .foregroundStyle(accentRed.opacity(0.7))
+                        Text("NOT IDEAL")
+                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                            .foregroundStyle(accentRed.opacity(0.7))
+                    }
+                }
+            }
+
+            Divider().background(Color.white.opacity(0.1))
+
+            // Conviction & Bias Row
+            HStack(spacing: 20) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("CONVICTION")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.5))
+                    Text(conviction.uppercased())
+                        .font(.system(size: 16, weight: .bold, design: .monospaced))
+                        .foregroundStyle(convictionColor)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("BIAS")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.5))
+                    Text(bias.uppercased())
+                        .font(.system(size: 16, weight: .bold, design: .monospaced))
+                        .foregroundStyle(biasColor)
+                }
+
+                if let holdingPeriod = plan["holding_period"] as? String {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("HOLD TIME")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.5))
+                        Text(holdingPeriod)
+                            .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.white)
+                    }
+                }
+
+                Spacer()
+            }
+
+            // Conviction Reasoning
+            if let reasoning = plan["conviction_reasoning"] as? String {
+                Text(reasoning)
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .lineSpacing(3)
+            }
+        }
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(cardBg)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(convictionColor.opacity(0.3), lineWidth: 1)
+                )
+        )
+    }
+
+    // MARK: - Price Levels Card
+
+    private var priceLevelsCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 8) {
+                Image(systemName: "chart.line.uptrend.xyaxis")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(accentCyan)
+                Text("PRICE LEVELS")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(accentCyan)
+            }
+
+            // Entry Zone
+            if let entryZone = plan["entry_zone"] as? [Double], entryZone.count >= 2 {
+                priceLevelRow(
+                    label: "ENTRY ZONE",
+                    value: String(format: "$%.2f - $%.2f", entryZone[0], entryZone[1]),
+                    icon: "arrow.right.circle.fill",
+                    color: accentCyan
+                )
+            }
+
+            // Stop Loss
+            if let stopLoss = plan["stop_loss"] as? Double {
+                priceLevelRow(
+                    label: "STOP LOSS",
+                    value: String(format: "$%.2f", stopLoss),
+                    icon: "xmark.octagon.fill",
+                    color: accentRed
+                )
+            }
+
+            // Targets
+            if let targets = plan["targets"] as? [Double], !targets.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "target")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(accentGreen)
+                        Text("TARGETS")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+
+                    HStack(spacing: 12) {
+                        ForEach(Array(targets.enumerated()), id: \.offset) { index, target in
+                            VStack(spacing: 4) {
+                                Text("T\(index + 1)")
+                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(accentGreen.opacity(0.7))
+                                Text(String(format: "$%.2f", target))
+                                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(accentGreen)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(accentGreen.opacity(0.1))
+                            )
+
+                            if index < targets.count - 1 {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(.white.opacity(0.3))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(cardBg)
+        )
+    }
+
+    private func priceLevelRow(label: String, value: String, icon: String, color: Color) -> some View {
+        HStack {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(color)
+                Text(label)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            Spacer()
+            Text(value)
+                .font(.system(size: 16, weight: .bold, design: .monospaced))
+                .foregroundStyle(color)
+        }
+    }
+
+    // MARK: - Thesis Card
+
+    private var thesisCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "text.quote")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(accentAmber)
+                Text("THESIS")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(accentAmber)
+            }
+
+            if let thesis = plan["thesis"] as? String {
+                Text(thesis)
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineSpacing(4)
+            }
+        }
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(cardBg)
+        )
+    }
+
+    // MARK: - Risk Warnings Card
+
+    private var riskWarningsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(accentAmber)
+                Text("RISK WARNINGS")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(accentAmber)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(riskWarnings, id: \.self) { warning in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("•")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(accentAmber.opacity(0.7))
+                        Text(warning)
+                            .font(.system(size: 11, weight: .regular, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.7))
+                            .lineSpacing(2)
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(cardBg)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(accentAmber.opacity(0.2), lineWidth: 1)
+                )
+        )
+    }
+
+    // MARK: - What to Watch Card
+
+    private var whatToWatchCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "eye.fill")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(accentGreen)
+                Text("WHAT TO WATCH")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundStyle(accentGreen)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(whatToWatch, id: \.self) { item in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("→")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(accentGreen.opacity(0.7))
+                        Text(item)
+                            .font(.system(size: 11, weight: .regular, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.7))
+                            .lineSpacing(2)
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(cardBg)
+        )
+    }
+}
+
+// MARK: - Agentic View Preview
+
+#Preview("Agentic Streaming") {
+    AgenticStreamingView(
+        symbol: "NVDA",
+        streamItems: .constant(PreviewData.agenticStreamItems),
+        isComplete: .constant(true),
+        finalPlan: .constant(PreviewData.agenticFinalPlan),
+        expandedToolResults: .constant([])
+    )
+}
+
+#Preview("Agentic In Progress") {
+    AgenticStreamingView(
+        symbol: "AAPL",
+        streamItems: .constant(PreviewData.agenticInProgressItems),
+        isComplete: .constant(false),
+        finalPlan: .constant(nil),
+        expandedToolResults: .constant([])
+    )
+}
+
+// MARK: - Preview Data
+
+private enum PreviewData {
+    static let agenticStreamItems: [AgenticStreamItem] = [
+        .thinking(AgentThinking(
+            text: "Let me start by checking the current price and market context to understand where NVDA is trading today.",
+            iteration: 1,
+            timestamp: Date()
+        )),
+        .toolCall(ToolCall(
+            name: "get_price",
+            arguments: ["symbol": "NVDA"],
+            iteration: 1,
+            timestamp: Date()
+        )),
+        .toolResult(ToolResult(
+            toolName: "get_price",
+            result: ["price": 148.50, "change_pct": 2.3, "bid": 148.45, "ask": 148.55],
+            iteration: 1,
+            timestamp: Date()
+        )),
+        .thinking(AgentThinking(
+            text: "Price is $148.50, up 2.3% today. Good momentum. Let me analyze the daily chart to understand the current pattern and trend structure.",
+            iteration: 2,
+            timestamp: Date()
+        )),
+        .toolCall(ToolCall(
+            name: "get_and_analyze_chart",
+            arguments: ["symbol": "NVDA", "timeframe": "1d", "trade_style": "swing"],
+            iteration: 2,
+            timestamp: Date()
+        )),
+        .toolResult(ToolResult(
+            toolName: "get_and_analyze_chart",
+            result: ["trend_quality": "strong_uptrend", "pattern": "bull_flag", "ema_alignment": "bullish", "key_observation": "Clean consolidation after breakout"],
+            iteration: 2,
+            timestamp: Date()
+        )),
+        .thinking(AgentThinking(
+            text: "Beautiful bull flag pattern on the daily! EMAs are stacked bullish and volume is decreasing in the consolidation - classic accumulation. Let me check fundamentals to confirm the setup has strong backing.",
+            iteration: 3,
+            timestamp: Date()
+        )),
+        .toolCall(ToolCall(
+            name: "get_fundamentals",
+            arguments: ["symbol": "NVDA"],
+            iteration: 3,
+            timestamp: Date()
+        )),
+        .toolResult(ToolResult(
+            toolName: "get_fundamentals",
+            result: ["pe_ratio": 45.2, "eps_growth": 30.5, "revenue_growth": 25.3, "profit_margin": 55.2],
+            iteration: 3,
+            timestamp: Date()
+        )),
+        .thinking(AgentThinking(
+            text: "Strong fundamentals with 30% EPS growth and healthy margins. Now let me check news sentiment and X/Twitter for real-time trader sentiment.",
+            iteration: 4,
+            timestamp: Date()
+        )),
+        .toolCall(ToolCall(
+            name: "get_news",
+            arguments: ["symbol": "NVDA", "days_back": 7],
+            iteration: 4,
+            timestamp: Date()
+        )),
+        .toolResult(ToolResult(
+            toolName: "get_news",
+            result: ["sentiment": "bullish", "headline_count": 12, "key_theme": "AI chip demand surging"],
+            iteration: 4,
+            timestamp: Date()
+        )),
+        .toolCall(ToolCall(
+            name: "search_x",
+            arguments: ["query": "$NVDA sentiment traders"],
+            iteration: 5,
+            timestamp: Date()
+        )),
+        .toolResult(ToolResult(
+            toolName: "search_x",
+            result: ["sentiment_analysis": "bullish", "volume": "high", "key_themes": ["breakout", "accumulation", "AI demand"]],
+            iteration: 5,
+            timestamp: Date()
+        ))
+    ]
+
+    static let agenticFinalPlan: [String: Any] = [
+        "symbol": "NVDA",
+        "recommended_style": "swing",
+        "recommendation_reasoning": "Clean bull flag at 61.8% Fibonacci retracement with decreasing volume in consolidation. Strong fundamentals (30% EPS growth, 55% margins) and bullish sentiment across news and X/Twitter support the setup. Daily chart shows textbook accumulation pattern.",
+        "day_trade_plan": [
+            "conviction": "low",
+            "conviction_reasoning": "ATR of 1.8% provides limited intraday range for day trading. Better opportunities in swing timeframe.",
+            "suitable": false,
+            "bias": "neutral",
+            "thesis": "Insufficient volatility for day trading. Wait for earnings or catalyst for increased range. Current consolidation pattern suggests accumulation but intraday swings are too narrow for reliable day trade setups.",
+            "entry_zone": [148.20, 148.80],
+            "stop_loss": 147.50,
+            "targets": [149.50, 150.20],
+            "holding_period": "1-3 hours"
+        ] as [String: Any],
+        "swing_trade_plan": [
+            "conviction": "high",
+            "conviction_reasoning": "Perfect bull flag setup with all signals aligned - technical pattern, fundamentals, and sentiment all bullish. Volume declining in consolidation shows healthy accumulation. 61.8% Fib holding as support.",
+            "suitable": true,
+            "bias": "bullish",
+            "thesis": "Enter on breakout above $150 flag resistance with stop at $144.50 below flag low. The bull flag measured move projects to $175, with intermediate resistance at $162 (1.618 Fib extension). Strong fundamentals with 30% EPS growth and 55% margins support higher prices. News catalyst potential with AI chip demand narrative.",
+            "entry_zone": [147.00, 148.50],
+            "stop_loss": 144.50,
+            "targets": [155.00, 162.00, 175.00],
+            "holding_period": "5-10 days"
+        ] as [String: Any],
+        "position_trade_plan": [
+            "conviction": "medium",
+            "conviction_reasoning": "Weekly uptrend intact but approaching 52-week high resistance at $175. Better entry on pullback to 50 EMA around $140. Long-term AI thesis remains compelling.",
+            "suitable": true,
+            "bias": "bullish",
+            "thesis": "NVDA remains the premier AI chip play with unmatched market position. Weekly chart shows healthy uptrend with higher lows. Consider scaling in on pullbacks to key moving averages. Risk is elevated P/E at 45x but growth justifies premium. Position for multi-quarter AI infrastructure buildout.",
+            "entry_zone": [140.00, 145.00],
+            "stop_loss": 132.00,
+            "targets": [175.00, 200.00, 225.00],
+            "holding_period": "1-3 months"
+        ] as [String: Any],
+        "risk_warnings": ["Approaching 52-week high resistance at $175", "Elevated P/E ratio of 45x limits upside", "Chip sector rotation risk on macro shifts", "Earnings in 3 weeks - high volatility expected"],
+        "what_to_watch": ["Break above $150 confirms bull flag breakout", "Volume expansion on breakout validates move", "NVDA earnings in 3 weeks - key catalyst", "Watch SMH (semiconductor ETF) for sector health"]
+    ]
+
+    static let agenticInProgressItems: [AgenticStreamItem] = [
+        .thinking(AgentThinking(
+            text: "Let me start by checking the current price and market context for AAPL.",
+            iteration: 1,
+            timestamp: Date()
+        )),
+        .toolCall(ToolCall(
+            name: "get_price",
+            arguments: ["symbol": "AAPL"],
+            iteration: 1,
+            timestamp: Date()
+        )),
+        .toolResult(ToolResult(
+            toolName: "get_price",
+            result: ["price": 178.25, "change_pct": -0.5],
+            iteration: 1,
+            timestamp: Date()
+        )),
+        .thinking(AgentThinking(
+            text: "AAPL is at $178.25, down slightly today. Let me check the chart patterns...",
+            iteration: 2,
+            timestamp: Date()
+        )),
+        .toolCall(ToolCall(
+            name: "get_and_analyze_chart",
+            arguments: ["symbol": "AAPL", "timeframe": "1d", "trade_style": "swing"],
+            iteration: 2,
+            timestamp: Date()
+        ))
+    ]
+}
+
+// MARK: - Final Recommendation Card Preview
+
+#Preview("Final Recommendation Card") {
+    ScrollView {
+        FinalRecommendationCard(plan: PreviewData.agenticFinalPlan, symbol: "NVDA")
+            .padding()
+    }
+    .background(Color(red: 0.06, green: 0.07, blue: 0.09))
+}
+
+#Preview("Plan Detail Sheet") {
+    AgenticPlanDetailSheet(
+        symbol: "NVDA",
+        tradeStyle: "swing",
+        plan: PreviewData.agenticFinalPlan["swing_trade_plan"] as! [String: Any],
+        riskWarnings: PreviewData.agenticFinalPlan["risk_warnings"] as! [String],
+        whatToWatch: PreviewData.agenticFinalPlan["what_to_watch"] as! [String]
+    )
+}

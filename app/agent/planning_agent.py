@@ -31,6 +31,7 @@ from app.agent.tools import (
     get_chart_patterns,
     get_position_status,
     get_market_context,
+    get_fibonacci_levels,
 )
 from app.storage.plan_store import TradingPlan, get_plan_store
 from app.storage.conversation_store import get_conversation_store
@@ -196,22 +197,49 @@ When search is available, ALWAYS search for:
 
 Focus on recent, relevant information. Ignore outdated articles or old posts.
 
+## Fibonacci Level Strategy
+Fibonacci levels are critical for precision trading - institutional traders and algorithms watch these levels, creating self-fulfilling prophecies.
+
+**ENTRIES - Look for entries at key retracement levels:**
+- 38.2%: Shallow retracement in strong trends (highest probability but requires confirmation)
+- 50%: The psychological midpoint, most commonly used retracement
+- 61.8%: The "golden ratio", optimal risk/reward for swing trades
+- 78.6%: Deep retracement, higher risk but often marks major reversals
+
+**STOP LOSSES - Place stops beyond the next Fibonacci level with 5-10% buffer:**
+- If entering at 61.8%, stop goes below 78.6% or the swing low (whichever is further)
+- If entering at 50%, stop goes below 61.8%
+- If entering at 38.2%, stop goes below 50%
+- Never place stops exactly at Fibonacci levels - they get hunted. Use buffers.
+
+**TARGETS - Use Fibonacci extension levels for profit targets:**
+- Target 1: 1.272 extension (conservative, high probability)
+- Target 2: 1.618 extension (moderate, the golden extension)
+- Target 3: 2.618 extension (aggressive, trend extension plays)
+
+**VALIDATION - Always validate Fib levels against structural support/resistance:**
+- Fibonacci + volume node = highest probability zone
+- Fibonacci + prior swing high/low = strong confluence
+- Fibonacci + EMA convergence = institutional interest zone
+- Isolated Fibonacci levels without confluence = lower reliability
+
 ## When Creating a Plan - Level Placement by Bias
 
 ### For BULLISH (Long) Plans:
-- Entry should be at support or on a pullback, not chasing
-- Stop loss MUST be BELOW entry (below support, swing low, or EMA)
-- Targets should be ABOVE entry (at resistance levels or Fib extensions)
+- Entry should be at support, Fibonacci retracement, or on a pullback - not chasing
+- Stop loss MUST be BELOW entry (below next Fib level, swing low, or support)
+- Targets should be ABOVE entry (at Fib extensions, resistance levels, or measured moves)
 
 ### For BEARISH (Short) Plans:
-- Entry should be at resistance or on a bounce into overhead supply
-- Stop loss MUST be ABOVE entry (above resistance, swing high, or EMA)
-- Targets should be BELOW entry (at support levels where you cover)
+- Entry should be at resistance, Fibonacci retracement, or on a bounce into overhead supply
+- Stop loss MUST be ABOVE entry (above next Fib level, swing high, or resistance)
+- Targets should be BELOW entry (at Fib extensions or support levels where you cover)
 
 ### For Both:
 - Risk/reward should be at least 2:1 for swing trades
 - Consider the broader market direction
 - Factor in any news catalysts or social sentiment into your thesis
+- When Fibonacci levels are available, USE THEM for precise level placement
 
 ## Level Reliability Assessment (Institutional-Grade Analysis)
 
@@ -309,6 +337,9 @@ PLAN_GENERATION_PROMPT = """Based on the comprehensive data below, create a deta
 ## Key Levels
 {levels_data}
 
+## Fibonacci Levels
+{fibonacci_data}
+
 ## Volume Analysis
 {volume_data}
 
@@ -365,12 +396,15 @@ Respond in this exact JSON format:
     "thesis": "2-3 sentence explanation of why this trade makes sense or why you're passing. Include any relevant news/catalyst info.",
     "entry_zone_low": <price or null if no trade>,
     "entry_zone_high": <price or null>,
+    "fib_entry_level": "38.2%" | "50%" | "61.8%" | "78.6%" | null (if entry aligns with a Fib retracement),
     "stop_loss": <price or null - MUST be at STRONG/INSTITUTIONAL level with bounce_quality > 50>,
-    "stop_reasoning": "MUST reference level reliability: e.g., 'Below $145.50 [STRONG] - 4 touches, 2 high-vol, bounce: 72'",
+    "stop_reasoning": "MUST reference level reliability AND Fibonacci: e.g., 'Below $145.50 [STRONG] - 4 touches, bounce: 72, below 78.6% Fib'",
+    "fib_stop_level": "50%" | "61.8%" | "78.6%" | "100%" | null (Fib level below/above stop),
     "target_1": <price - conservative target at STRONG/INSTITUTIONAL level>,
     "target_2": <price - moderate target>,
     "target_3": <price - aggressive target or null>,
-    "target_reasoning": "MUST reference level reliability for targets",
+    "target_reasoning": "MUST reference level reliability AND Fibonacci extensions if applicable",
+    "fib_target_levels": ["1.272", "1.618", "2.618"] or [] (Fib extensions used for targets),
     "risk_reward": <ratio like 2.5>,
     "position_size_pct": <1-5, percentage of account>,
     "key_supports": [<price>, <price> - prioritize STRONG/INSTITUTIONAL levels],
@@ -472,6 +506,7 @@ class StockPlanningAgent:
         self._volume_data: Dict[str, Any] = {}
         self._patterns_data: Dict[str, Any] = {}
         self._position_data: Dict[str, Any] = {}
+        self._fibonacci_data: Dict[str, Any] = {}
         self._current_plan: Optional[TradingPlan] = None
 
     async def _get_provider(self) -> AIProvider:
@@ -542,6 +577,13 @@ class StockPlanningAgent:
             logger.error(f"Error getting position status: {e}")
             self._position_data = {"error": str(e)}
 
+        # Get Fibonacci levels for precision trade planning
+        try:
+            self._fibonacci_data = await get_fibonacci_levels(self.symbol)
+        except Exception as e:
+            logger.error(f"Error getting Fibonacci levels: {e}")
+            self._fibonacci_data = {"error": str(e)}
+
         # Load existing plan
         self._current_plan = await self._plan_store.get_plan(self.user_id, self.symbol)
 
@@ -552,6 +594,7 @@ class StockPlanningAgent:
             "volume": self._volume_data,
             "patterns": self._patterns_data,
             "position": self._position_data,
+            "fibonacci": self._fibonacci_data,
             "has_plan": self._current_plan is not None,
         }
 
@@ -676,6 +719,42 @@ Value Area Low: ${vol_profile.get('value_area_low', 'N/A')}
             else:
                 patterns_str = "No significant patterns detected"
 
+        # Fibonacci levels
+        fib = self._fibonacci_data
+        if fib.get("error"):
+            fibonacci_str = f"Fibonacci levels unavailable: {fib.get('error')}"
+        else:
+            retracements = fib.get("retracement_levels", {})
+            extensions = fib.get("extension_levels", {})
+            current_price = price_data.get('price', 0)
+
+            # Describe current price position vs Fibonacci
+            nearest_level = fib.get("nearest_level", "")
+            nearest_price = fib.get("nearest_price", 0)
+            at_entry = fib.get("at_entry_level", False)
+
+            position_desc = ""
+            if at_entry and nearest_level in ["0.382", "0.500", "0.618", "0.786"]:
+                position_desc = f"Currently AT {nearest_level} retracement (${nearest_price:.2f}) - POTENTIAL ENTRY ZONE"
+            elif nearest_level:
+                position_desc = f"Near {nearest_level} level (${nearest_price:.2f})"
+
+            fibonacci_str = f"""Fibonacci Analysis:
+Swing Range: ${fib.get('swing_low', 'N/A'):.2f} - ${fib.get('swing_high', 'N/A'):.2f} (trend: {fib.get('trend', 'unknown')})
+Current Price: ${current_price:.2f} - {position_desc}
+
+Key Retracements (potential entry zones):
+  38.2%: ${retracements.get('0.382', 0):.2f}
+  50.0%: ${retracements.get('0.500', 0):.2f}
+  61.8%: ${retracements.get('0.618', 0):.2f} (golden ratio)
+  78.6%: ${retracements.get('0.786', 0):.2f}
+
+Extension Targets (potential profit targets):
+  1.272: ${extensions.get('1.272', 0):.2f} (conservative)
+  1.618: ${extensions.get('1.618', 0):.2f} (golden extension)
+  2.618: ${extensions.get('2.618', 0):.2f} (aggressive)
+"""
+
         # Position
         pos = self._position_data
         if pos.get("has_position"):
@@ -718,6 +797,7 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
             "market_data": market_str,
             "technical_data": tech_str,
             "levels_data": levels_str,
+            "fibonacci_data": fibonacci_str,
             "volume_data": volume_str,
             "patterns_data": patterns_str,
             "position_data": position_str,
@@ -987,6 +1067,7 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
             market_data=data["market_data"],
             technical_data=data["technical_data"],
             levels_data=data["levels_data"],
+            fibonacci_data=data["fibonacci_data"],
             volume_data=data["volume_data"],
             patterns_data=data["patterns_data"],
             market_context=data["market_context"],
@@ -1289,6 +1370,45 @@ ATR (14): ${levels.get('atr', 0):.2f}
             else:
                 patterns_str = "No significant chart patterns detected"
 
+        # Fibonacci levels (enhanced formatting for smart prompts)
+        fib = self._fibonacci_data
+        if fib.get("error"):
+            fibonacci_str = f"Fibonacci levels unavailable: {fib.get('error')}"
+        else:
+            retracements = fib.get("retracement_levels", {})
+            extensions = fib.get("extension_levels", {})
+
+            # Describe current price position vs Fibonacci
+            nearest_level = fib.get("nearest_level", "")
+            nearest_price = fib.get("nearest_price", 0)
+            at_entry = fib.get("at_entry_level", False)
+
+            position_desc = ""
+            if at_entry and nearest_level in ["0.382", "0.500", "0.618", "0.786"]:
+                position_desc = f"**AT {nearest_level} RETRACEMENT - POTENTIAL ENTRY ZONE**"
+            elif nearest_level:
+                dist_pct = abs(current_price - nearest_price) / current_price * 100
+                position_desc = f"Near {nearest_level} level ({dist_pct:.1f}% away)"
+
+            fibonacci_str = f"""Fibonacci Analysis (Institutional Levels):
+Swing Range: ${fib.get('swing_low', 0):.2f} - ${fib.get('swing_high', 0):.2f}
+Trend Direction: {fib.get('trend', 'unknown').upper()}
+Current Price: ${current_price:.2f} - {position_desc}
+
+Retracement Levels (Entry Zones):
+  - 38.2%: ${retracements.get('0.382', 0):.2f} (shallow retracement, strong trend)
+  - 50.0%: ${retracements.get('0.500', 0):.2f} (psychological midpoint, most common)
+  - 61.8%: ${retracements.get('0.618', 0):.2f} (golden ratio, optimal R/R)
+  - 78.6%: ${retracements.get('0.786', 0):.2f} (deep retracement, reversal zone)
+
+Extension Levels (Profit Targets):
+  - 1.272: ${extensions.get('1.272', 0):.2f} (conservative target)
+  - 1.618: ${extensions.get('1.618', 0):.2f} (golden extension, moderate target)
+  - 2.618: ${extensions.get('2.618', 0):.2f} (aggressive target, trend extension)
+
+**Use these levels for precise entry, stop, and target placement**
+"""
+
         # Position data
         pos = self._position_data
         if pos.get("has_position"):
@@ -1309,6 +1429,7 @@ ATR (14): ${levels.get('atr', 0):.2f}
             "market_data": market_str,
             "technical_data": tech_str,
             "levels_data": levels_str,
+            "fibonacci_data": fibonacci_str,
             "volume_data": volume_str,
             "patterns_data": patterns_str,
             "market_context": market_context_str,

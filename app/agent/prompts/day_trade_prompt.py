@@ -47,11 +47,27 @@ Call: analyze_chart_vision(symbol, chart_image, "day")
 - Analyzes your 5-min chart
 - Look for: Intraday trends, candle patterns, volume spikes
 
+### 7. Fibonacci Levels
+Call: get_fibonacci_levels(symbol, bars, "day")
+- Gets: Retracement levels (38.2%, 50%, 61.8%, 78.6%)
+- Gets: Extension levels (127.2%, 161.8%, 200%, 261.8%)
+- Use for: Intraday pullback entries, profit targets
+- Key levels: 61.8% and 78.6% for reversals
+
 ## CRITICAL: Position Awareness
 {position_context}
 
 ## NEWS & MARKET CONTEXT
 {news_context}
+
+## FUNDAMENTALS CONTEXT (Low Weight for Day Trades)
+{fundamentals_context}
+
+**Note**: Fundamentals have LOW WEIGHT for day trades - intraday momentum dominates.
+However, ALWAYS check for earnings risk:
+- If earnings are TODAY or TOMORROW: This is HIGH RISK for day trades
+- Avoid holding into earnings announcements (10-30% gap risk)
+- Even intraday, pre-earnings volatility can cause unexpected moves
 
 ## REAL-TIME SENTIMENT (You have X/Twitter search - USE IT!)
 You have access to real-time X (Twitter) search. **Actively search X for this stock** to find:
@@ -220,6 +236,7 @@ def build_day_trade_prompt(
     symbol: str,
     position_context: str = "No existing position.",
     news_context: str = "No recent news available.",
+    fundamentals_context: str = "No fundamental data available.",
 ) -> str:
     """Build the day trade agent prompt with context.
 
@@ -227,6 +244,7 @@ def build_day_trade_prompt(
         symbol: Stock ticker symbol
         position_context: Formatted position context string
         news_context: News and sentiment context string
+        fundamentals_context: Fundamental data context string
 
     Returns:
         Complete day trade agent prompt
@@ -234,4 +252,5 @@ def build_day_trade_prompt(
     return DAY_TRADE_SYSTEM_PROMPT.format(
         position_context=position_context,
         news_context=news_context,
+        fundamentals_context=fundamentals_context,
     )

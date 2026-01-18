@@ -74,6 +74,9 @@ class TradingPlan:
     # Validation warnings (if price levels don't match bias)
     validation_warnings: List[str] = field(default_factory=list)
 
+    # Link to source analysis (when approved from V2/agentic analysis)
+    source_analysis_id: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         data = asdict(self)
@@ -392,18 +395,26 @@ class DatabasePlanStore:
                 # Update
                 await conn.execute(
                     """UPDATE trading_plans
-                       SET plan_data = $1, status = $2, updated_at = $3
-                       WHERE user_id = $4 AND symbol = $5""",
+                       SET plan_data = $1, status = $2, updated_at = $3,
+                           source_analysis_id = COALESCE($4, source_analysis_id),
+                           social_sentiment = $5, social_buzz = $6, sentiment_source = $7
+                       WHERE user_id = $8 AND symbol = $9""",
                     json.dumps(plan_data), plan.status, now,
+                    plan.source_analysis_id,
+                    plan.social_sentiment or '', plan.social_buzz or '', plan.sentiment_source or '',
                     plan.user_id, plan.symbol.upper()
                 )
             else:
                 # Insert
                 await conn.execute(
-                    """INSERT INTO trading_plans (id, user_id, symbol, plan_data, status, created_at, updated_at)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                    """INSERT INTO trading_plans
+                       (id, user_id, symbol, plan_data, status, created_at, updated_at,
+                        source_analysis_id, social_sentiment, social_buzz, sentiment_source)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
                     plan.id, plan.user_id, plan.symbol.upper(),
-                    json.dumps(plan_data), plan.status, now, now
+                    json.dumps(plan_data), plan.status, now, now,
+                    plan.source_analysis_id,
+                    plan.social_sentiment or '', plan.social_buzz or '', plan.sentiment_source or ''
                 )
 
         logger.info(f"Saved trading plan for {plan.symbol} (user: {plan.user_id})")
