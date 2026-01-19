@@ -989,23 +989,114 @@ final class TradingPlanViewModel: ObservableObject {
         return false
     }
 
-    /// Start over - clear everything and regenerate
+    /// Start over - clear everything and regenerate from scratch
+    /// Uses the regenerate endpoint which archives the current plan and generates fresh
     func startOver() async {
         // Clear session state
         clearSession()
 
-        // Clear current plan
+        // Clear current plan and UI state
         withAnimation {
             self.plan = nil
+            self.draftPlan = nil
             self.error = nil
             self.subagentProgress = [:]
             self.isV2Mode = false
             self.isAnalyzersSectionExpanded = true
             self.orchestratorSteps = []
+            self.analysisSteps = []
+            self.isAnalysisComplete = false
         }
 
-        // Start fresh plan generation
-        await startPlanSession()
+        isLoading = true
+        updatePhase = .gatheringData
+
+        // Initialize analysis steps for agent-style display
+        initializeAnalysisSteps()
+
+        var receivedPlan = false
+
+        do {
+            // Use the regenerate endpoint which archives current plan and generates fresh
+            let stream = APIService.shared.regeneratePlanStream(symbol: symbol)
+
+            for try await event in stream {
+                print("[Regenerate] Event: \(event.type), stepType: \(event.stepType ?? "nil"), status: \(event.status ?? "nil")")
+
+                switch event.type {
+                case "plan_archived":
+                    // Plan was archived, continue with generation
+                    print("[Regenerate] Previous plan archived")
+
+                case "step":
+                    await handleStepEvent(event)
+
+                case "phase":
+                    await handlePhaseEvent(event.phase)
+
+                case "subagent_progress":
+                    if let subagentsData = event.subagents {
+                        await handleSubagentProgress(subagentsData)
+                    }
+
+                case "subagent_complete":
+                    if let agentName = event.agentName {
+                        await handleSubagentComplete(agentName, findings: event.agentFindings ?? [])
+                    }
+
+                case "orchestrator_step":
+                    if let stepType = event.stepType {
+                        await handleOrchestratorStep(
+                            stepType: stepType,
+                            status: event.stepStatus,
+                            findings: event.stepFindings ?? []
+                        )
+                    }
+
+                case "plan_complete", "plan", "final_result":
+                    print("[Regenerate] Received plan event")
+                    if let newPlan = event.plan {
+                        receivedPlan = true
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                            self.draftPlan = newPlan
+                            self.sessionStatus = "draft"
+                            self.updatePhase = .complete
+                            self.isAnalysisComplete = true
+                            self.markAllSubagentsComplete()
+                        }
+                    }
+
+                case "error":
+                    throw NSError(
+                        domain: "PlanRegeneration",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: event.message ?? "Unknown error"]
+                    )
+
+                default:
+                    break
+                }
+            }
+            print("[Regenerate] Stream ended, receivedPlan: \(receivedPlan)")
+
+            // Brief pause before transitioning
+            if receivedPlan {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            withAnimation {
+                updatePhase = .idle
+            }
+
+        } catch {
+            print("[Regenerate] Error: \(error.localizedDescription)")
+            withAnimation {
+                self.error = error.localizedDescription
+                updatePhase = .idle
+                analysisSteps = []
+            }
+        }
+
+        isLoading = false
     }
 
     /// Set an approved plan from V2 generation manager

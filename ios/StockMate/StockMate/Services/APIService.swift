@@ -642,6 +642,84 @@ actor APIService {
         }
     }
 
+    /// Regenerate trading plan from scratch with real-time streaming
+    /// Archives the current plan and generates a fresh one using the orchestrator
+    /// Returns an AsyncThrowingStream of events as the AI generates the new plan
+    nonisolated func regeneratePlanStream(
+        symbol: String
+    ) -> AsyncThrowingStream<PlanStreamEvent, Error> {
+        let keychain = KeychainHelper.shared
+        let userId = keychain.userId ?? "default"
+        return AsyncThrowingStream { continuation in
+            Task {
+                // Regenerate endpoint - archives current plan and generates fresh
+                let url = URL(string: "\(AppConfiguration.apiBaseURL)/plan/\(symbol.uppercased())/regenerate")!
+
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                if let token = keychain.accessToken {
+                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                }
+                request.httpBody = "{}".data(using: .utf8)
+
+                // Increase timeout for streaming
+                request.timeoutInterval = 120
+
+                do {
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+
+                    guard let httpResponse = response as? HTTPURLResponse,
+                          (200...299).contains(httpResponse.statusCode) else {
+                        continuation.finish(throwing: APIServiceError.invalidResponse)
+                        return
+                    }
+
+                    var buffer = ""
+
+                    for try await byte in bytes {
+                        guard let char = String(bytes: [byte], encoding: .utf8) else { continue }
+                        buffer += char
+
+                        // SSE format: "data: {json}\n\n"
+                        while let range = buffer.range(of: "\n\n") {
+                            let line = String(buffer[..<range.lowerBound])
+                            buffer = String(buffer[range.upperBound...])
+
+                            if line.hasPrefix("data: ") {
+                                let jsonString = String(line.dropFirst(6))
+
+                                // Check for stream end
+                                if jsonString == "[DONE]" {
+                                    continuation.finish()
+                                    return
+                                }
+
+                                // Parse JSON event
+                                if let data = jsonString.data(using: .utf8) {
+                                    let decoder = JSONDecoder()
+                                    do {
+                                        let event = try decoder.decode(PlanStreamEvent.self, from: data)
+                                        continuation.yield(event)
+                                    } catch {
+                                        // Log decode error but continue streaming
+                                        print("SSE decode error: \(error), JSON: \(jsonString.prefix(200))")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    continuation.finish()
+
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     /// Evaluate a trading plan
     func evaluateTradingPlan(symbol: String) async throws -> EvaluationResponse {
         var components = URLComponents(string: "\(baseURL)/chat/\(symbol.uppercased())/evaluate")!

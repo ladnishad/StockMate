@@ -25,7 +25,11 @@ class TradingPlan:
     id: str
     user_id: str
     symbol: str
-    status: str = "active"  # active, invalidated, completed, stopped_out
+    status: str = "active"  # active, invalidated, completed, stopped_out, archived
+
+    # Versioning support
+    version: int = 1  # Plan version number (increments on regeneration)
+    previous_plan_id: Optional[str] = None  # Link to previous version of this plan
 
     # Plan details
     bias: str = ""  # bullish, bearish, neutral
@@ -84,6 +88,9 @@ class TradingPlan:
         data["key_supports"] = json.dumps(data["key_supports"])
         data["key_resistances"] = json.dumps(data["key_resistances"])
         data["validation_warnings"] = json.dumps(data["validation_warnings"])
+        # Ensure version has a default value
+        if data.get("version") is None:
+            data["version"] = 1
         return data
 
     @classmethod
@@ -94,6 +101,9 @@ class TradingPlan:
         data["key_supports"] = json.loads(data.get("key_supports", "[]"))
         data["key_resistances"] = json.loads(data.get("key_resistances", "[]"))
         data["validation_warnings"] = json.loads(data.get("validation_warnings", "[]"))
+        # Handle versioning fields with defaults for old plans
+        data["version"] = data.get("version", 1) or 1
+        data["previous_plan_id"] = data.get("previous_plan_id")
         # Migrate old field names
         data = _migrate_plan_data(data)
         return cls(**data)
@@ -135,6 +145,9 @@ class PlanStore:
                     symbol TEXT NOT NULL,
                     status TEXT DEFAULT 'active',
 
+                    version INTEGER DEFAULT 1,
+                    previous_plan_id TEXT,
+
                     bias TEXT,
                     thesis TEXT,
                     original_thesis TEXT DEFAULT '',
@@ -174,9 +187,27 @@ class PlanStore:
                     evaluation_notes TEXT,
                     validation_warnings TEXT DEFAULT '[]',
 
-                    UNIQUE(user_id, symbol)
+                    source_analysis_id TEXT
                 )
             """)
+            # Create index for user_id + symbol (but not unique to allow archived plans)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_trading_plans_user_symbol
+                ON trading_plans (user_id, symbol)
+            """)
+            # Add version columns if they don't exist (for existing databases)
+            try:
+                await db.execute("ALTER TABLE trading_plans ADD COLUMN version INTEGER DEFAULT 1")
+            except Exception:
+                pass  # Column already exists
+            try:
+                await db.execute("ALTER TABLE trading_plans ADD COLUMN previous_plan_id TEXT")
+            except Exception:
+                pass  # Column already exists
+            try:
+                await db.execute("ALTER TABLE trading_plans ADD COLUMN source_analysis_id TEXT")
+            except Exception:
+                pass  # Column already exists
             await db.commit()
 
         self._initialized = True
@@ -193,29 +224,43 @@ class PlanStore:
         data = plan.to_dict()
 
         async with aiosqlite.connect(self.db_path) as db:
-            # Upsert
-            columns = ", ".join(data.keys())
-            placeholders = ", ".join(["?" for _ in data])
-            updates = ", ".join([f"{k} = excluded.{k}" for k in data.keys() if k != "id"])
-
-            await db.execute(f"""
-                INSERT INTO trading_plans ({columns})
-                VALUES ({placeholders})
-                ON CONFLICT(user_id, symbol) DO UPDATE SET {updates}
-            """, list(data.values()))
+            # Check if plan with this ID exists
+            existing = await db.execute(
+                "SELECT id FROM trading_plans WHERE id = ?",
+                (plan.id,)
+            )
+            if await existing.fetchone():
+                # Update existing plan
+                updates = ", ".join([f"{k} = ?" for k in data.keys() if k != "id"])
+                values = [v for k, v in data.items() if k != "id"]
+                values.append(plan.id)
+                await db.execute(f"""
+                    UPDATE trading_plans SET {updates} WHERE id = ?
+                """, values)
+            else:
+                # Insert new plan
+                columns = ", ".join(data.keys())
+                placeholders = ", ".join(["?" for _ in data])
+                await db.execute(f"""
+                    INSERT INTO trading_plans ({columns})
+                    VALUES ({placeholders})
+                """, list(data.values()))
             await db.commit()
 
         logger.info(f"Saved trading plan for {plan.symbol} (user: {plan.user_id})")
         return plan
 
     async def get_plan(self, user_id: str, symbol: str) -> Optional[TradingPlan]:
-        """Get trading plan for a user and symbol."""
+        """Get the active trading plan for a user and symbol."""
         await self._ensure_table()
 
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            # Only return active plans (not archived ones)
             async with db.execute(
-                "SELECT * FROM trading_plans WHERE user_id = ? AND symbol = ?",
+                """SELECT * FROM trading_plans
+                   WHERE user_id = ? AND symbol = ? AND status = 'active'
+                   ORDER BY version DESC LIMIT 1""",
                 (user_id, symbol.upper())
             ) as cursor:
                 row = await cursor.fetchone()
@@ -340,23 +385,89 @@ class PlanStore:
             await db.execute(f"""
                 UPDATE trading_plans
                 SET {', '.join(updates)}
-                WHERE user_id = ? AND symbol = ?
+                WHERE user_id = ? AND symbol = ? AND status = 'active'
             """, values)
             await db.commit()
 
         return await self.get_plan(user_id, symbol)
 
     async def delete_plan(self, user_id: str, symbol: str) -> bool:
-        """Delete a trading plan."""
+        """Delete a trading plan (only active plans)."""
         await self._ensure_table()
 
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "DELETE FROM trading_plans WHERE user_id = ? AND symbol = ?",
+                "DELETE FROM trading_plans WHERE user_id = ? AND symbol = ? AND status = 'active'",
                 (user_id, symbol.upper())
             )
             await db.commit()
             return cursor.rowcount > 0
+
+    async def archive_plan(self, user_id: str, symbol: str) -> Optional[TradingPlan]:
+        """Archive the active plan for regeneration.
+
+        Changes the plan status to 'archived' so a new plan can be created.
+        Returns the archived plan if successful, None if no active plan exists.
+        """
+        await self._ensure_table()
+
+        # Get the current active plan
+        current_plan = await self.get_plan(user_id, symbol)
+        if not current_plan:
+            return None
+
+        now = datetime.utcnow().isoformat()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """UPDATE trading_plans
+                   SET status = 'archived', updated_at = ?
+                   WHERE user_id = ? AND symbol = ? AND status = 'active'""",
+                (now, user_id, symbol.upper())
+            )
+            await db.commit()
+
+        current_plan.status = "archived"
+        current_plan.updated_at = now
+        logger.info(f"Archived trading plan {current_plan.id} for {symbol} (user: {user_id})")
+        return current_plan
+
+    async def get_plan_versions(
+        self, user_id: str, symbol: str, limit: int = 10
+    ) -> List[TradingPlan]:
+        """Get all versions of a plan for a symbol (including archived).
+
+        Returns plans ordered by version descending (newest first).
+        """
+        await self._ensure_table()
+
+        plans = []
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """SELECT * FROM trading_plans
+                   WHERE user_id = ? AND symbol = ?
+                   ORDER BY version DESC, created_at DESC
+                   LIMIT ?""",
+                (user_id, symbol.upper(), limit)
+            ) as cursor:
+                async for row in cursor:
+                    plans.append(TradingPlan.from_row(row))
+        return plans
+
+    async def get_next_version(self, user_id: str, symbol: str) -> int:
+        """Get the next version number for a plan."""
+        await self._ensure_table()
+
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """SELECT MAX(version) as max_version FROM trading_plans
+                   WHERE user_id = ? AND symbol = ?""",
+                (user_id, symbol.upper())
+            ) as cursor:
+                row = await cursor.fetchone()
+                current_max = row[0] if row and row[0] else 0
+                return current_max + 1
 
 
 class DatabasePlanStore:
@@ -381,31 +492,35 @@ class DatabasePlanStore:
             plan.created_at = now
         plan.updated_at = now
 
+        # Ensure version has a default value
+        if plan.version is None:
+            plan.version = 1
+
         # Convert to dict for JSONB storage
         plan_data = asdict(plan)
 
         async with get_connection() as conn:
-            # Check if exists
+            # Check if this specific plan ID exists
             existing = await conn.fetchval(
-                "SELECT id FROM trading_plans WHERE user_id = $1 AND symbol = $2",
-                plan.user_id, plan.symbol.upper()
+                "SELECT id FROM trading_plans WHERE id = $1",
+                plan.id
             )
 
             if existing:
-                # Update
+                # Update existing plan by ID
                 await conn.execute(
                     """UPDATE trading_plans
                        SET plan_data = $1, status = $2, updated_at = $3,
                            source_analysis_id = COALESCE($4, source_analysis_id),
                            social_sentiment = $5, social_buzz = $6, sentiment_source = $7
-                       WHERE user_id = $8 AND symbol = $9""",
+                       WHERE id = $8""",
                     json.dumps(plan_data), plan.status, now,
                     plan.source_analysis_id,
                     plan.social_sentiment or '', plan.social_buzz or '', plan.sentiment_source or '',
-                    plan.user_id, plan.symbol.upper()
+                    plan.id
                 )
             else:
-                # Insert
+                # Insert new plan
                 await conn.execute(
                     """INSERT INTO trading_plans
                        (id, user_id, symbol, plan_data, status, created_at, updated_at,
@@ -421,17 +536,23 @@ class DatabasePlanStore:
         return plan
 
     async def get_plan(self, user_id: str, symbol: str) -> Optional[TradingPlan]:
-        """Get trading plan for a user and symbol from Postgres."""
+        """Get the active trading plan for a user and symbol from Postgres."""
         from app.storage.postgres import get_connection
 
         async with get_connection() as conn:
             row = await conn.fetchrow(
-                "SELECT plan_data FROM trading_plans WHERE user_id = $1 AND symbol = $2",
+                """SELECT plan_data FROM trading_plans
+                   WHERE user_id = $1 AND symbol = $2 AND status = 'active'
+                   ORDER BY (plan_data->>'version')::int DESC NULLS LAST
+                   LIMIT 1""",
                 user_id, symbol.upper()
             )
             if row and row["plan_data"]:
                 data = json.loads(row["plan_data"]) if isinstance(row["plan_data"], str) else row["plan_data"]
                 data = _migrate_plan_data(data)
+                # Handle versioning fields with defaults for old plans
+                data["version"] = data.get("version", 1) or 1
+                data["previous_plan_id"] = data.get("previous_plan_id")
                 return TradingPlan(**data)
         return None
 
@@ -550,12 +671,12 @@ class DatabasePlanStore:
         return await self.save_plan(plan)
 
     async def delete_plan(self, user_id: str, symbol: str) -> bool:
-        """Delete a trading plan from Postgres."""
+        """Delete a trading plan from Postgres (only active plans)."""
         from app.storage.postgres import get_connection
 
         async with get_connection() as conn:
             result = await conn.execute(
-                "DELETE FROM trading_plans WHERE user_id = $1 AND symbol = $2",
+                "DELETE FROM trading_plans WHERE user_id = $1 AND symbol = $2 AND status = 'active'",
                 user_id, symbol.upper()
             )
             deleted = "DELETE 1" in result
@@ -563,6 +684,73 @@ class DatabasePlanStore:
         if deleted:
             logger.info(f"Deleted trading plan for {symbol} (user: {user_id})")
         return deleted
+
+    async def archive_plan(self, user_id: str, symbol: str) -> Optional[TradingPlan]:
+        """Archive the active plan for regeneration.
+
+        Changes the plan status to 'archived' so a new plan can be created.
+        Returns the archived plan if successful, None if no active plan exists.
+        """
+        from app.storage.postgres import get_connection
+
+        # Get the current active plan
+        current_plan = await self.get_plan(user_id, symbol)
+        if not current_plan:
+            return None
+
+        now = datetime.utcnow().isoformat()
+
+        # Update the plan status to archived
+        current_plan.status = "archived"
+        current_plan.updated_at = now
+
+        # Save the updated plan
+        await self.save_plan(current_plan)
+
+        logger.info(f"Archived trading plan {current_plan.id} for {symbol} (user: {user_id})")
+        return current_plan
+
+    async def get_plan_versions(
+        self, user_id: str, symbol: str, limit: int = 10
+    ) -> List[TradingPlan]:
+        """Get all versions of a plan for a symbol (including archived).
+
+        Returns plans ordered by version descending (newest first).
+        """
+        from app.storage.postgres import get_connection
+
+        plans = []
+        async with get_connection() as conn:
+            rows = await conn.fetch(
+                """SELECT plan_data FROM trading_plans
+                   WHERE user_id = $1 AND symbol = $2
+                   ORDER BY (plan_data->>'version')::int DESC NULLS LAST,
+                            created_at DESC
+                   LIMIT $3""",
+                user_id, symbol.upper(), limit
+            )
+            for row in rows:
+                if row["plan_data"]:
+                    data = json.loads(row["plan_data"]) if isinstance(row["plan_data"], str) else row["plan_data"]
+                    data = _migrate_plan_data(data)
+                    data["version"] = data.get("version", 1) or 1
+                    data["previous_plan_id"] = data.get("previous_plan_id")
+                    plans.append(TradingPlan(**data))
+        return plans
+
+    async def get_next_version(self, user_id: str, symbol: str) -> int:
+        """Get the next version number for a plan."""
+        from app.storage.postgres import get_connection
+
+        async with get_connection() as conn:
+            row = await conn.fetchrow(
+                """SELECT MAX((plan_data->>'version')::int) as max_version
+                   FROM trading_plans
+                   WHERE user_id = $1 AND symbol = $2""",
+                user_id, symbol.upper()
+            )
+            current_max = row["max_version"] if row and row["max_version"] else 0
+            return current_max + 1
 
 
 # Singleton instances

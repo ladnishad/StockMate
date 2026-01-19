@@ -3533,6 +3533,263 @@ async def generate_plan_v2_stream(
     )
 
 
+@app.post(
+    "/plan/{symbol}/regenerate",
+    summary="Regenerate trading plan from scratch",
+    description="Archive the current plan and generate a fresh plan using the orchestrator. "
+                "This starts the plan generation from scratch with fresh data and analysis.",
+)
+async def regenerate_plan(
+    symbol: str,
+    user: User = Depends(get_current_user),
+):
+    """Regenerate a trading plan from scratch.
+
+    This endpoint:
+    1. Archives the current active TradingPlan (if exists)
+    2. Archives the current accepted PlanAnalysis (if exists)
+    3. Runs the orchestrator to generate a fresh plan
+    4. Returns Server-Sent Events with progress updates
+
+    The new plan will have an incremented version number and link to the
+    previous plan for history tracking.
+    """
+    from app.agent.sdk.orchestrator import TradePlanOrchestrator
+    from app.storage.plan_analysis_store import get_plan_analysis_store, PlanAnalysis
+    from app.storage.plan_store import get_plan_store
+    from app.agent.schemas.streaming import StreamEvent
+
+    symbol = symbol.upper()
+    user_id = user.id
+
+    async def regenerate_stream():
+        try:
+            plan_store = get_plan_store()
+            analysis_store = get_plan_analysis_store()
+
+            # Step 1: Archive the existing TradingPlan (if any)
+            archived_plan = await plan_store.archive_plan(user_id, symbol)
+            previous_plan_id = archived_plan.id if archived_plan else None
+            previous_version = archived_plan.version if archived_plan else 0
+
+            if archived_plan:
+                logger.info(f"Archived plan {archived_plan.id} (version {archived_plan.version}) for regeneration")
+                # Emit archive event
+                archive_event = {
+                    "type": "plan_archived",
+                    "archived_plan_id": archived_plan.id,
+                    "archived_version": archived_plan.version,
+                    "timestamp": time.time(),
+                }
+                yield f"data: {json.dumps(archive_event)}\n\n"
+
+            # Step 2: Archive any accepted PlanAnalysis for this symbol
+            latest_analysis = await analysis_store.get_latest_analysis(user_id, symbol)
+            if latest_analysis and latest_analysis.status == "accepted":
+                await analysis_store.archive_previous_analyses(user_id, symbol, "")
+                logger.info(f"Archived accepted analysis for {symbol}")
+
+            # Step 3: Run the orchestrator with force_new=True
+            orchestrator = TradePlanOrchestrator()
+            saved_analysis_id = None
+            new_version = previous_version + 1
+
+            async for event in orchestrator.generate_plan_stream(
+                symbol=symbol,
+                user_id=user_id,
+                force_new=True,
+                agentic_mode=True,
+            ):
+                # Intercept final_result to save the analysis with versioning
+                if event.type == "final_result" and (event.plan or event.agentic_plan):
+                    try:
+                        # Extract sub-agent reports from the plan data
+                        day_report = None
+                        swing_report = None
+                        position_report = None
+                        selected_style = None
+                        selection_reasoning = ""
+
+                        if event.agentic_plan:
+                            # Agentic mode
+                            day_report = event.agentic_plan.get("day_trade_plan")
+                            swing_report = event.agentic_plan.get("swing_trade_plan")
+                            position_report = event.agentic_plan.get("position_trade_plan")
+                            selected_style = event.agentic_plan.get("recommended_style") or event.selected_style
+                            selection_reasoning = event.agentic_plan.get("recommendation_reasoning") or event.selection_reasoning or ""
+
+                            analysis = PlanAnalysis.create(
+                                user_id=user_id,
+                                symbol=symbol,
+                                selected_style=selected_style,
+                                selection_reasoning=selection_reasoning,
+                                analysis_data={
+                                    "agentic_plan": event.agentic_plan,
+                                    "is_agentic": True,
+                                    "regenerated": True,
+                                    "previous_plan_id": previous_plan_id,
+                                    "version": new_version,
+                                },
+                                day_trade_report=day_report,
+                                swing_trade_report=swing_report,
+                                position_trade_report=position_report,
+                                market_context=None,
+                                news_context=None,
+                            )
+                        else:
+                            # V2 mode
+                            if event.alternatives:
+                                for alt in event.alternatives:
+                                    style = alt.get("trade_style")
+                                    if style == "day":
+                                        day_report = alt
+                                    elif style == "swing":
+                                        swing_report = alt
+                                    elif style == "position":
+                                        position_report = alt
+
+                            selected_style = event.selected_style or event.plan.get("trade_style")
+                            if selected_style == "day":
+                                day_report = event.plan
+                            elif selected_style == "swing":
+                                swing_report = event.plan
+                            elif selected_style == "position":
+                                position_report = event.plan
+
+                            selection_reasoning = event.selection_reasoning or ""
+
+                            analysis = PlanAnalysis.create(
+                                user_id=user_id,
+                                symbol=symbol,
+                                selected_style=selected_style,
+                                selection_reasoning=selection_reasoning,
+                                analysis_data={
+                                    "selected_plan": event.plan,
+                                    "alternatives": event.alternatives or [],
+                                    "selection_reasoning": event.selection_reasoning,
+                                    "regenerated": True,
+                                    "previous_plan_id": previous_plan_id,
+                                    "version": new_version,
+                                },
+                                day_trade_report=day_report,
+                                swing_trade_report=swing_report,
+                                position_trade_report=position_report,
+                                market_context=event.plan.get("market_context") if event.plan else None,
+                                news_context=event.plan.get("news_context") if event.plan else None,
+                            )
+
+                        # Archive any previous draft analyses
+                        await analysis_store.archive_previous_analyses(user_id, symbol, analysis.id)
+
+                        # Save the new analysis
+                        await analysis_store.save_analysis(analysis)
+                        saved_analysis_id = analysis.id
+                        logger.info(f"Saved regenerated analysis {analysis.id} (version {new_version}) for {symbol}")
+
+                        # Yield modified event with analysis_id and version info
+                        if event.agentic_plan:
+                            from app.agent.schemas.streaming import StreamEvent as SE
+                            modified_event = SE(
+                                type="final_result",
+                                timestamp=event.timestamp,
+                                agentic_plan=event.agentic_plan,
+                                selected_style=selected_style,
+                                selection_reasoning=selection_reasoning,
+                                analysis_id=saved_analysis_id,
+                            )
+                        else:
+                            modified_event = StreamEvent.final_result(
+                                plan=event.plan,
+                                alternatives=event.alternatives or [],
+                                selected_style=event.selected_style,
+                                selection_reasoning=event.selection_reasoning,
+                                analysis_id=saved_analysis_id,
+                            )
+
+                        # Add regeneration info to the event
+                        event_data = modified_event.to_dict()
+                        event_data["regenerated"] = True
+                        event_data["version"] = new_version
+                        event_data["previous_plan_id"] = previous_plan_id
+                        yield f"data: {json.dumps(event_data)}\n\n"
+                        continue
+
+                    except Exception as save_error:
+                        logger.error(f"Failed to save regenerated analysis for {symbol}: {save_error}", exc_info=True)
+                        yield event.to_sse()
+                        continue
+
+                # Pass through other events
+                yield event.to_sse()
+
+            # Signal stream completion
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.error(f"Regenerate plan error for {symbol}: {str(e)}")
+            import time
+            error_event = {
+                "type": "error",
+                "error_message": str(e),
+                "timestamp": time.time(),
+            }
+            yield f"data: {json.dumps(error_event)}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        regenerate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@app.get(
+    "/plan/{symbol}/versions",
+    summary="Get all versions of a trading plan",
+    description="Retrieve the history of all plan versions for a symbol, including archived plans.",
+)
+async def get_plan_versions(
+    symbol: str,
+    limit: int = 10,
+    user: User = Depends(get_current_user),
+):
+    """Get all versions of a trading plan for a symbol.
+
+    Returns plans ordered by version descending (newest first),
+    including both active and archived plans.
+    """
+    from app.storage.plan_store import get_plan_store
+
+    symbol = symbol.upper()
+    user_id = user.id
+
+    plan_store = get_plan_store()
+    plans = await plan_store.get_plan_versions(user_id, symbol, limit)
+
+    return {
+        "symbol": symbol,
+        "total_versions": len(plans),
+        "versions": [
+            {
+                "id": plan.id,
+                "version": plan.version,
+                "status": plan.status,
+                "bias": plan.bias,
+                "tradeStyle": plan.trade_style,
+                "confidence": plan.confidence,
+                "createdAt": plan.created_at,
+                "updatedAt": plan.updated_at,
+                "previousPlanId": plan.previous_plan_id,
+            }
+            for plan in plans
+        ]
+    }
+
+
 @app.get(
     "/plan/{symbol}/analysis/{analysis_id}",
     summary="Get V2 analysis by ID",
