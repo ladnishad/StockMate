@@ -515,6 +515,7 @@ class TradePlanOrchestrator:
         symbol: str,
         user_id: str,
         force_new: bool = True,
+        agentic_mode: bool = True,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Generate trading plan with streaming progress.
 
@@ -524,6 +525,9 @@ class TradePlanOrchestrator:
             symbol: Stock ticker symbol
             user_id: User ID
             force_new: Force new plan generation
+            agentic_mode: When True, uses iterative AI tool-calling where the AI
+                decides what to investigate. When False, uses parallel sub-agents
+                (legacy V2 mode). Currently both modes use the same implementation.
 
         Yields:
             StreamEvent objects for each progress update
