@@ -22,18 +22,34 @@ from datetime import datetime, timedelta
 import logging
 
 from app.tools.market_data import fetch_price_bars, fetch_snapshots
-from app.tools.indicators import calculate_ema, calculate_rsi, analyze_volume
+from app.tools.indicators import (
+    calculate_ema,
+    calculate_rsi,
+    analyze_volume,
+    calculate_macd,
+    calculate_atr,
+    calculate_adx,
+    calculate_stochastic,
+    detect_divergences,
+)
 from app.tools.analysis import run_analysis
+from app.models.data import Indicator
 
 logger = logging.getLogger(__name__)
 
 # Market indices (using ETFs as proxies)
+# Core equity indices + context indicators for comprehensive market analysis
 MARKET_INDICES = {
     "SPY": "S&P 500",
     "QQQ": "Nasdaq 100",
     "DIA": "Dow Jones",
     "IWM": "Russell 2000 (Small Caps)",
+    "VXX": "VIX Volatility",     # Volatility regime detection
+    "TLT": "20+ Year Treasury",  # Rate sensitivity / risk-off context
 }
+
+# Core equity indices (used for bullish/bearish counting)
+CORE_INDICES = ["SPY", "QQQ", "DIA", "IWM"]
 
 # SPDR Sector ETFs (11 standard sectors)
 SECTOR_ETFS = {
@@ -66,129 +82,694 @@ SECTOR_STOCKS = {
 }
 
 
-def get_market_overview(days_back: int = 30) -> Dict:
-    """Get overview of major market indices health.
+# =============================================================================
+# HELPER FUNCTIONS FOR ENHANCED MARKET OVERVIEW
+# =============================================================================
 
-    Analyzes the S&P 500, Nasdaq, Dow Jones, and Russell 2000 to determine
-    overall market direction and strength. This is the first step in top-down
-    analysis.
+
+def _determine_volatility_regime(vxx_data: Optional[Dict]) -> Dict:
+    """Determine volatility regime based on VXX analysis.
 
     Args:
-        days_back: Number of days of historical data (default: 30)
+        vxx_data: Analysis data for VXX containing rsi, change_pct
+
+    Returns:
+        Dictionary with volatility regime and related metrics
+    """
+    if not vxx_data:
+        return {"regime": "unknown", "vxx_rsi": None, "interpretation": "VXX data unavailable"}
+
+    rsi = vxx_data.get("rsi", 50)
+    change_pct = vxx_data.get("change_pct", 0)
+
+    if rsi > 70 or change_pct > 10:
+        regime = "high_fear"
+        interpretation = "Elevated volatility - defensive positioning recommended"
+    elif rsi > 55 or change_pct > 5:
+        regime = "elevated"
+        interpretation = "Above-average volatility - use tighter stops"
+    elif rsi < 30 or change_pct < -10:
+        regime = "complacent"
+        interpretation = "Low volatility - potential for volatility expansion"
+    else:
+        regime = "normal"
+        interpretation = "Normal volatility conditions"
+
+    return {
+        "regime": regime,
+        "vxx_rsi": round(rsi, 1) if rsi else None,
+        "vxx_change_pct": round(change_pct, 2) if change_pct else None,
+        "interpretation": interpretation,
+    }
+
+
+def _analyze_timeframe(
+    symbol: str,
+    timeframe: str,
+    days_back: int,
+) -> Optional[Dict]:
+    """Analyze a single timeframe for an index with enhanced indicators.
+
+    Args:
+        symbol: Index symbol
+        timeframe: "1d", "1h", or "15m"
+        days_back: Number of days of data to fetch
+
+    Returns:
+        Dictionary with timeframe analysis or None on error
+    """
+    try:
+        bars = fetch_price_bars(symbol, timeframe=timeframe, days_back=days_back)
+
+        if not bars or len(bars) < 15:
+            return None
+
+        current_price = bars[-1].close
+
+        # Core indicators
+        ema_20 = calculate_ema(bars, period=20)
+        rsi = calculate_rsi(bars, period=14)
+
+        # Enhanced indicators (with safety checks for bar count)
+        macd = None
+        if len(bars) >= 35:  # Need 26 + 9 bars for MACD
+            macd = calculate_macd(bars)
+
+        adx = None
+        if len(bars) >= 28:  # Need 14 * 2 bars for ADX
+            adx = calculate_adx(bars)
+
+        stochastic = None
+        if len(bars) >= 20:  # Need 14 + 3 + 3 bars for Stochastic
+            stochastic = calculate_stochastic(bars)
+
+        # Calculate signal score (0-100)
+        signal_score = 0
+        max_score = 0
+
+        # EMA signal (20 points)
+        max_score += 20
+        if ema_20.signal == "bullish":
+            signal_score += 20
+        elif ema_20.signal == "neutral":
+            signal_score += 10
+
+        # RSI signal (20 points)
+        max_score += 20
+        if 40 <= rsi.value <= 60:
+            signal_score += 20  # Healthy momentum zone
+        elif 30 <= rsi.value <= 70:
+            signal_score += 15  # Acceptable zone
+        elif rsi.value < 30:
+            signal_score += 10  # Oversold (potential bounce)
+        # Overbought gets 0
+
+        # MACD signal (20 points)
+        if macd:
+            max_score += 20
+            if macd.signal == "bullish":
+                signal_score += 20
+            elif macd.signal == "neutral":
+                signal_score += 10
+
+        # ADX trend strength (20 points)
+        if adx:
+            max_score += 20
+            if adx.value >= 25 and adx.metadata.get("trend_direction") == "bullish":
+                signal_score += 20  # Strong bullish trend
+            elif adx.value >= 25 and adx.metadata.get("trend_direction") == "bearish":
+                signal_score += 0   # Strong bearish trend
+            elif adx.value >= 20:
+                signal_score += 10  # Emerging trend
+            else:
+                signal_score += 5   # Weak/no trend
+
+        # Stochastic signal (20 points)
+        if stochastic:
+            max_score += 20
+            if stochastic.signal == "bullish" and not stochastic.metadata.get("is_overbought"):
+                signal_score += 20
+            elif stochastic.signal == "neutral":
+                signal_score += 10
+            elif stochastic.metadata.get("is_oversold"):
+                signal_score += 15  # Potential reversal
+
+        # Normalize to percentage
+        signal_pct = (signal_score / max_score) * 100 if max_score > 0 else 50
+
+        # Determine signal
+        if signal_pct >= 65:
+            signal = "bullish"
+        elif signal_pct <= 35:
+            signal = "bearish"
+        else:
+            signal = "neutral"
+
+        return {
+            "timeframe": timeframe,
+            "signal": signal,
+            "signal_strength": round(signal_pct, 0),
+            "price": round(current_price, 2),
+            "rsi": round(rsi.value, 1),
+            "ema_20_signal": ema_20.signal,
+            "macd_signal": macd.signal if macd else None,
+            "macd_histogram": macd.metadata.get("histogram") if macd else None,
+            "adx_value": round(adx.value, 1) if adx else None,
+            "trend_strength": adx.metadata.get("trend_strength") if adx else None,
+            "stochastic_k": round(stochastic.metadata.get("percent_k", 0), 1) if stochastic else None,
+            "stochastic_signal": stochastic.signal if stochastic else None,
+        }
+
+    except Exception as e:
+        logger.warning(f"Error analyzing {symbol} on {timeframe}: {e}")
+        return None
+
+
+def _calculate_timeframe_confluence(
+    daily: Optional[Dict],
+    hourly: Optional[Dict],
+    m15: Optional[Dict],
+) -> Dict:
+    """Calculate confluence score across timeframes.
+
+    Args:
+        daily: Daily timeframe analysis
+        hourly: Hourly timeframe analysis
+        m15: 15-minute timeframe analysis
+
+    Returns:
+        Dictionary with confluence metrics
+    """
+    available_tfs = []
+    signals = []
+
+    if daily:
+        available_tfs.append("1d")
+        signals.append(daily.get("signal"))
+    if hourly:
+        available_tfs.append("1h")
+        signals.append(hourly.get("signal"))
+    if m15:
+        available_tfs.append("15m")
+        signals.append(m15.get("signal"))
+
+    if not signals:
+        return {
+            "alignment": "unknown",
+            "confluence_score": 0,
+            "aligned_timeframes": [],
+            "conflicting_timeframes": [],
+        }
+
+    # Count alignment
+    bullish_count = signals.count("bullish")
+    bearish_count = signals.count("bearish")
+    total = len(signals)
+
+    # Determine alignment
+    if bullish_count == total:
+        alignment = "full_bullish"
+        confluence_score = 100
+    elif bearish_count == total:
+        alignment = "full_bearish"
+        confluence_score = 100
+    elif bullish_count > bearish_count:
+        alignment = "partial_bullish"
+        confluence_score = (bullish_count / total) * 100
+    elif bearish_count > bullish_count:
+        alignment = "partial_bearish"
+        confluence_score = (bearish_count / total) * 100
+    else:
+        alignment = "mixed"
+        confluence_score = 50
+
+    # Identify aligned and conflicting timeframes
+    aligned = []
+    conflicting = []
+    majority_signal = "bullish" if bullish_count >= bearish_count else "bearish"
+
+    for i, tf in enumerate(available_tfs):
+        if signals[i] == majority_signal:
+            aligned.append(tf)
+        elif signals[i] != "neutral":
+            conflicting.append(tf)
+
+    return {
+        "alignment": alignment,
+        "confluence_score": round(confluence_score, 0),
+        "aligned_timeframes": aligned,
+        "conflicting_timeframes": conflicting,
+        "bullish_count": bullish_count,
+        "bearish_count": bearish_count,
+        "neutral_count": signals.count("neutral"),
+    }
+
+
+def _calculate_momentum_score(
+    macd: Optional[Indicator],
+    stochastic: Optional[Indicator],
+    rsi: Indicator,
+) -> Dict:
+    """Calculate combined momentum score from MACD and Stochastic.
+
+    Args:
+        macd: MACD indicator result
+        stochastic: Stochastic indicator result
+        rsi: RSI indicator result
+
+    Returns:
+        Dictionary with momentum metrics
+    """
+    score = 0
+    max_score = 0
+
+    # MACD component (40 points)
+    if macd:
+        max_score += 40
+        histogram = macd.metadata.get("histogram", 0)
+        if macd.signal == "bullish":
+            score += 30
+            if histogram and histogram > 0:
+                score += 10  # Positive histogram
+        elif macd.signal == "neutral":
+            score += 20
+        else:
+            if histogram and histogram < 0:
+                score += 0  # Negative histogram in bearish
+            else:
+                score += 10  # Improving
+
+    # Stochastic component (40 points)
+    if stochastic:
+        max_score += 40
+        if stochastic.signal == "bullish":
+            score += 30
+            if stochastic.metadata.get("bullish_crossover"):
+                score += 10  # Fresh crossover
+        elif stochastic.signal == "neutral":
+            score += 20
+        else:
+            if stochastic.metadata.get("is_overbought"):
+                score += 5  # Potential reversal warning
+
+    # RSI component (20 points)
+    max_score += 20
+    if 50 <= rsi.value <= 60:
+        score += 20  # Bullish momentum
+    elif 40 <= rsi.value < 50:
+        score += 15  # Neutral-bullish
+    elif rsi.value < 30:
+        score += 10  # Oversold (potential bounce)
+    elif rsi.value > 70:
+        score += 5   # Overbought warning
+    else:
+        score += 10
+
+    momentum_pct = (score / max_score) * 100 if max_score > 0 else 50
+
+    # Determine momentum label
+    if momentum_pct >= 70:
+        label = "strong_bullish"
+    elif momentum_pct >= 55:
+        label = "bullish"
+    elif momentum_pct >= 45:
+        label = "neutral"
+    elif momentum_pct >= 30:
+        label = "bearish"
+    else:
+        label = "strong_bearish"
+
+    return {
+        "score": round(momentum_pct, 0),
+        "label": label,
+        "macd_contribution": macd.signal if macd else None,
+        "stochastic_contribution": stochastic.signal if stochastic else None,
+        "rsi_contribution": round(rsi.value, 1),
+    }
+
+
+def _detect_warnings(
+    divergence: Optional[Indicator],
+    rsi: Indicator,
+    stochastic: Optional[Indicator],
+    atr: Optional[Indicator],
+) -> List[Dict]:
+    """Detect potential warning conditions.
+
+    Args:
+        divergence: Divergence detection result
+        rsi: RSI indicator result
+        stochastic: Stochastic indicator result
+        atr: ATR indicator result
+
+    Returns:
+        List of warning dictionaries
+    """
+    warnings = []
+
+    # Divergence warnings
+    if divergence and divergence.value and divergence.value > 0:
+        div_types = divergence.metadata.get("divergence_types", [])
+        for div_type in div_types:
+            warnings.append({
+                "type": "divergence",
+                "severity": "high" if "regular" in str(div_type) else "medium",
+                "message": f"{str(div_type).replace('_', ' ').title()} divergence detected",
+                "action": "Consider reducing position size or tightening stops",
+            })
+
+    # Overbought/Oversold warnings
+    if rsi.value > 75:
+        warnings.append({
+            "type": "overbought",
+            "severity": "medium",
+            "message": f"RSI overbought at {rsi.value:.1f}",
+            "action": "Watch for reversal signals before new longs",
+        })
+    elif rsi.value < 25:
+        warnings.append({
+            "type": "oversold",
+            "severity": "medium",
+            "message": f"RSI oversold at {rsi.value:.1f}",
+            "action": "Watch for reversal signals before new shorts",
+        })
+
+    # Stochastic extreme warnings
+    if stochastic:
+        if stochastic.metadata.get("is_overbought") and stochastic.metadata.get("bearish_crossover"):
+            warnings.append({
+                "type": "stochastic_reversal",
+                "severity": "high",
+                "message": "Stochastic bearish crossover in overbought zone",
+                "action": "Potential short-term top - consider taking profits",
+            })
+        elif stochastic.metadata.get("is_oversold") and stochastic.metadata.get("bullish_crossover"):
+            warnings.append({
+                "type": "stochastic_reversal",
+                "severity": "medium",
+                "message": "Stochastic bullish crossover in oversold zone",
+                "action": "Potential short-term bottom - watch for confirmation",
+            })
+
+    # High volatility warning
+    if atr and atr.metadata.get("volatility") == "high":
+        warnings.append({
+            "type": "high_volatility",
+            "severity": "medium",
+            "message": f"ATR indicates high volatility ({atr.metadata.get('atr_percentage', 0):.1f}%)",
+            "action": "Adjust position sizing and use wider stops",
+        })
+
+    return warnings
+
+
+def get_market_overview(days_back: int = 90) -> Dict:
+    """Get comprehensive overview of major market indices health.
+
+    Analyzes the S&P 500, Nasdaq, Dow Jones, Russell 2000, VIX volatility (VXX),
+    and Treasury bonds (TLT) to determine overall market direction, strength,
+    and risk conditions.
+
+    Enhanced Features:
+    - Multi-timeframe analysis (daily, hourly, 15-minute)
+    - Volatility regime detection via VXX
+    - Advanced momentum scoring (MACD + Stochastic)
+    - Trend strength assessment (ADX)
+    - Divergence warnings
+
+    Args:
+        days_back: Number of days of historical data (default: 90)
 
     Returns:
         Dictionary containing:
-        - indices: List of index data (symbol, name, price, change %, signal)
+        - indices: List of index data with enhanced signals
         - market_signal: Overall market sentiment ("bullish", "bearish", "neutral")
-        - bullish_count: Number of bullish indices
-        - bearish_count: Number of bearish indices
+        - volatility_regime: Current volatility state (high_fear, elevated, normal, complacent)
+        - momentum_score: Combined momentum assessment (0-100)
+        - trend_strength: Market trend strength from ADX
+        - timeframe_alignment: Multi-TF confluence data
+        - risk_context: Risk-on/risk-off based on TLT behavior
+        - warnings: List of active warnings (divergences, overbought, etc.)
         - summary: Text summary of market health
 
     Example:
         >>> overview = get_market_overview()
         >>> print(overview['market_signal'])  # "bullish"
-        >>> print(overview['summary'])  # "3/4 indices bullish - strong market"
-        >>> for index in overview['indices']:
-        >>>     print(f"{index['name']}: {index['signal']} ({index['change_pct']}%)")
+        >>> print(overview['volatility_regime']['regime'])  # "normal"
+        >>> print(overview['timeframe_alignment']['daily_consensus'])  # "bullish"
+        >>> for warning in overview['warnings']:
+        >>>     print(f"WARNING: {warning['message']}")
     """
-    logger.info(f"Analyzing market overview ({len(MARKET_INDICES)} indices)")
+    logger.info(f"Analyzing enhanced market overview ({len(MARKET_INDICES)} indices)")
 
     indices_data = []
-    bullish_count = 0
-    bearish_count = 0
+    all_warnings = []
+
+    # Track VXX and TLT separately for context
+    vxx_data = None
+    tlt_data = None
+
+    # Aggregate momentum and trend data for core indices
+    momentum_scores = []
+    trend_strengths = []
+
+    # Multi-timeframe data for core indices
+    mtf_analyses = {}
 
     for symbol, name in MARKET_INDICES.items():
         try:
-            # Fetch data
-            bars = fetch_price_bars(symbol, timeframe="1d", days_back=days_back)
+            # === DAILY ANALYSIS (Primary) ===
+            daily_analysis = _analyze_timeframe(symbol, "1d", days_back)
 
-            if not bars or len(bars) < 20:
+            if not daily_analysis:
                 logger.warning(f"Insufficient data for {symbol}")
                 continue
 
-            current_price = bars[-1].close
-            open_price = bars[0].open
-            change_pct = ((current_price - open_price) / open_price) * 100
+            # === MULTI-TIMEFRAME (for core indices only) ===
+            hourly_analysis = None
+            m15_analysis = None
 
-            # Calculate indicators
+            # Only run MTF for core indices (not VXX/TLT to save API calls)
+            if symbol in CORE_INDICES:
+                hourly_analysis = _analyze_timeframe(symbol, "1h", 7)  # 7 days hourly
+                m15_analysis = _analyze_timeframe(symbol, "15m", 5)    # 5 days 15m (handles weekends)
+
+                mtf_analyses[symbol] = {
+                    "daily": daily_analysis,
+                    "hourly": hourly_analysis,
+                    "m15": m15_analysis,
+                    "confluence": _calculate_timeframe_confluence(
+                        daily_analysis, hourly_analysis, m15_analysis
+                    ),
+                }
+
+            # === ENHANCED INDICATORS (from daily data) ===
+            bars = fetch_price_bars(symbol, timeframe="1d", days_back=days_back)
+
+            if not bars or len(bars) < 20:
+                continue
+
+            # Core indicators
             ema_20 = calculate_ema(bars, period=20)
             ema_50 = calculate_ema(bars, period=50) if len(bars) >= 50 else None
             rsi = calculate_rsi(bars, period=14)
             volume = analyze_volume(bars)
 
-            # Determine signal
-            signal_factors = 0
-            max_factors = 0
+            # Enhanced indicators
+            macd = calculate_macd(bars) if len(bars) >= 35 else None
+            atr = calculate_atr(bars) if len(bars) >= 15 else None
+            adx = calculate_adx(bars) if len(bars) >= 28 else None
+            stochastic = calculate_stochastic(bars) if len(bars) >= 20 else None
+            divergence = detect_divergences(bars) if len(bars) >= 50 else None
 
-            # Factor 1: Price above EMA 20
-            max_factors += 1
-            if ema_20.signal == "bullish":
-                signal_factors += 1
-
-            # Factor 2: Price above EMA 50
-            if ema_50:
-                max_factors += 1
-                if ema_50.signal == "bullish":
-                    signal_factors += 1
-
-            # Factor 3: RSI bullish (40-70)
-            max_factors += 1
-            if 40 <= rsi.value <= 70:
-                signal_factors += 1
-
-            # Factor 4: Volume confirmation
-            max_factors += 1
-            if volume.signal == "bullish":
-                signal_factors += 1
-
-            # Determine signal
-            signal_pct = (signal_factors / max_factors) * 100
-            if signal_pct >= 60:
-                signal = "bullish"
-                bullish_count += 1
-            elif signal_pct <= 40:
-                signal = "bearish"
-                bearish_count += 1
+            # Calculate DAILY change (today vs yesterday, not period change)
+            current_price = bars[-1].close
+            if len(bars) >= 2:
+                prev_close = bars[-2].close  # Yesterday's close
+                change_pct = ((current_price - prev_close) / prev_close) * 100
             else:
-                signal = "neutral"
+                # Fallback to intraday change if only 1 bar
+                change_pct = ((current_price - bars[-1].open) / bars[-1].open) * 100
 
-            indices_data.append({
+            # === MOMENTUM SCORE ===
+            momentum = _calculate_momentum_score(macd, stochastic, rsi)
+
+            # === TREND STRENGTH ===
+            trend_data = None
+            if adx:
+                trend_data = {
+                    "adx": round(adx.value, 1),
+                    "strength": adx.metadata.get("trend_strength"),
+                    "direction": adx.metadata.get("trend_direction"),
+                    "is_trending": adx.metadata.get("is_trending", False),
+                }
+
+            # === DETECT WARNINGS ===
+            index_warnings = _detect_warnings(divergence, rsi, stochastic, atr)
+            for w in index_warnings:
+                w["symbol"] = symbol
+            all_warnings.extend(index_warnings)
+
+            # === USE ENHANCED SIGNAL FROM TIMEFRAME ANALYSIS ===
+            signal = daily_analysis["signal"]
+            signal_strength = daily_analysis["signal_strength"]
+
+            # === STORE CONTEXT DATA ===
+            if symbol == "VXX":
+                vxx_data = {
+                    "rsi": rsi.value,
+                    "change_pct": change_pct,
+                    "signal": signal,
+                    "atr_pct": atr.metadata.get("atr_percentage") if atr else None,
+                }
+            elif symbol == "TLT":
+                tlt_data = {
+                    "change_pct": change_pct,
+                    "signal": signal,
+                }
+
+            # Track momentum and trend for core indices only
+            if symbol in CORE_INDICES:
+                momentum_scores.append(momentum["score"])
+                if adx:
+                    trend_strengths.append(adx.value)
+
+            # === BUILD INDEX DATA ===
+            # Determine if price is above EMAs (direct comparison, not signal threshold)
+            above_ema20 = current_price > ema_20.value
+            above_ema50 = current_price > ema_50.value if ema_50 else None
+
+            index_entry = {
                 "symbol": symbol,
                 "name": name,
                 "price": round(current_price, 2),
                 "change_pct": round(change_pct, 2),
                 "signal": signal,
-                "signal_strength": round(signal_pct, 0),
+                "signal_strength": signal_strength,
+                # Core indicators
                 "rsi": round(rsi.value, 1),
-                "above_ema20": ema_20.signal == "bullish",
-                "above_ema50": ema_50.signal == "bullish" if ema_50 else None,
-            })
+                "above_ema20": above_ema20,
+                "above_ema50": above_ema50,
+                # Enhanced indicators
+                "macd_signal": macd.signal if macd else None,
+                "macd_histogram": round(macd.metadata.get("histogram", 0), 4) if macd and macd.metadata.get("histogram") else None,
+                "adx": trend_data,
+                "stochastic_k": round(stochastic.metadata.get("percent_k", 0), 1) if stochastic else None,
+                "momentum": momentum,
+                # Volatility context
+                "atr_pct": round(atr.metadata.get("atr_percentage", 0), 2) if atr and atr.metadata.get("atr_percentage") else None,
+                "volatility": atr.metadata.get("volatility") if atr else None,
+                # Multi-timeframe (for core indices)
+                "timeframes": mtf_analyses.get(symbol),
+                # Warnings for this index
+                "warnings": [w for w in index_warnings],
+            }
+
+            indices_data.append(index_entry)
 
         except Exception as e:
             logger.error(f"Error analyzing {symbol}: {e}")
             continue
 
-    # Determine overall market signal
-    total_indices = len(indices_data)
-    if bullish_count >= total_indices * 0.6:
-        market_signal = "bullish"
-        summary = f"{bullish_count}/{total_indices} indices bullish - strong market"
-    elif bearish_count >= total_indices * 0.6:
-        market_signal = "bearish"
-        summary = f"{bearish_count}/{total_indices} indices bearish - weak market"
-    else:
-        market_signal = "neutral"
-        summary = f"Mixed signals - {bullish_count} bullish, {bearish_count} bearish"
+    # === OVERALL MARKET SIGNAL (based on core indices only) ===
+    core_indices = [i for i in indices_data if i["symbol"] in CORE_INDICES]
+    core_bullish = sum(1 for i in core_indices if i["signal"] == "bullish")
+    core_bearish = sum(1 for i in core_indices if i["signal"] == "bearish")
+    total_core = len(core_indices)
 
-    logger.info(f"Market Overview: {market_signal} - {summary}")
+    if total_core > 0:
+        if core_bullish >= total_core * 0.6:
+            market_signal = "bullish"
+            summary = f"{core_bullish}/{total_core} core indices bullish - strong market"
+        elif core_bearish >= total_core * 0.6:
+            market_signal = "bearish"
+            summary = f"{core_bearish}/{total_core} core indices bearish - weak market"
+        else:
+            market_signal = "neutral"
+            summary = f"Mixed signals - {core_bullish} bullish, {core_bearish} bearish"
+    else:
+        market_signal = "unknown"
+        summary = "Insufficient data for market assessment"
+
+    # === VOLATILITY REGIME ===
+    volatility_regime = _determine_volatility_regime(vxx_data)
+
+    # === AGGREGATE MOMENTUM ===
+    avg_momentum = sum(momentum_scores) / len(momentum_scores) if momentum_scores else 50
+    overall_momentum = {
+        "score": round(avg_momentum, 0),
+        "label": "bullish" if avg_momentum >= 55 else "bearish" if avg_momentum <= 45 else "neutral",
+    }
+
+    # === AGGREGATE TREND STRENGTH ===
+    avg_trend = sum(trend_strengths) / len(trend_strengths) if trend_strengths else 0
+    overall_trend = {
+        "average_adx": round(avg_trend, 1),
+        "is_trending": avg_trend >= 25,
+        "strength": "strong" if avg_trend >= 40 else "moderate" if avg_trend >= 25 else "weak",
+    }
+
+    # === AGGREGATE TIMEFRAME ALIGNMENT ===
+    all_daily_signals = [mtf["daily"]["signal"] for mtf in mtf_analyses.values() if mtf.get("daily")]
+    all_hourly_signals = [mtf["hourly"]["signal"] for mtf in mtf_analyses.values() if mtf.get("hourly")]
+    all_m15_signals = [mtf["m15"]["signal"] for mtf in mtf_analyses.values() if mtf.get("m15")]
+
+    def majority_signal(signals):
+        if not signals:
+            return "unknown"
+        bull = signals.count("bullish")
+        bear = signals.count("bearish")
+        neut = signals.count("neutral")
+        total = len(signals)
+        # Need majority (>50%) to call a consensus, otherwise neutral
+        if bull > total / 2:
+            return "bullish"
+        elif bear > total / 2:
+            return "bearish"
+        return "neutral"
+
+    daily_consensus = majority_signal(all_daily_signals)
+    hourly_consensus = majority_signal(all_hourly_signals)
+    m15_consensus = majority_signal(all_m15_signals)
+
+    timeframe_alignment = {
+        "daily_consensus": daily_consensus,
+        "hourly_consensus": hourly_consensus,
+        "m15_consensus": m15_consensus,
+        "full_alignment": (
+            daily_consensus == hourly_consensus == m15_consensus
+            and daily_consensus != "unknown"
+        ) if all_hourly_signals and all_m15_signals else False,
+        "per_index": {sym: data["confluence"] for sym, data in mtf_analyses.items()},
+    }
+
+    # === RISK-OFF DETECTION (TLT) ===
+    risk_context = "neutral"
+    if tlt_data:
+        # If TLT is rising while equities are falling, it's risk-off
+        if tlt_data["change_pct"] > 1 and market_signal == "bearish":
+            risk_context = "risk_off"
+            summary += " | TLT rising suggests flight to safety"
+        elif tlt_data["change_pct"] < -1 and market_signal == "bullish":
+            risk_context = "risk_on"
+
+    logger.info(f"Enhanced Market Overview: {market_signal} - {summary}")
 
     return {
         "indices": indices_data,
         "market_signal": market_signal,
-        "bullish_count": bullish_count,
-        "bearish_count": bearish_count,
-        "neutral_count": total_indices - bullish_count - bearish_count,
-        "total_indices": total_indices,
+        "bullish_count": core_bullish,
+        "bearish_count": core_bearish,
+        "neutral_count": total_core - core_bullish - core_bearish,
+        "total_indices": total_core,  # Count of core indices (excludes VXX, TLT)
+        # NEW: Enhanced fields
+        "volatility_regime": volatility_regime,
+        "momentum_score": overall_momentum,
+        "trend_strength": overall_trend,
+        "timeframe_alignment": timeframe_alignment,
+        "risk_context": risk_context,
+        "warnings": all_warnings,
+        # Summary
         "summary": summary,
         "timestamp": datetime.utcnow(),
     }
@@ -539,10 +1120,12 @@ def get_quick_market_status() -> Dict:
         change = current_price - prev_close
         change_pct = (change / prev_close) * 100
 
-        if change_pct > 0:
-            up_count += 1
-        elif change_pct < 0:
-            down_count += 1
+        # Only count core equity indices for direction (exclude VXX, TLT)
+        if symbol in CORE_INDICES:
+            if change_pct > 0:
+                up_count += 1
+            elif change_pct < 0:
+                down_count += 1
 
         # Get real-time quote data
         quote = snapshot.get("latest_quote")

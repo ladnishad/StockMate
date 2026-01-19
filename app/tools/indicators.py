@@ -1307,7 +1307,7 @@ def calculate_stochastic(
     price_bars: List[PriceBar],
     k_period: int = 14,
     d_period: int = 3,
-    smooth_k: int = 3,
+    smooth_k: int = 1,
 ) -> Indicator:
     """Calculate Stochastic Oscillator (%K and %D).
 
@@ -1319,11 +1319,18 @@ def calculate_stochastic(
 
     Best used in ranging markets or for timing entries in trending markets.
 
+    Stochastic Types:
+    - Fast Stochastic (smooth_k=1): %K = raw, %D = SMA(raw, d_period)
+      More responsive, matches TradingView/Polygon defaults
+    - Slow Stochastic (smooth_k=3): %K = SMA(raw, 3), %D = SMA(%K, d_period)
+      Smoother, reduces whipsaw signals
+
     Args:
         price_bars: List of PriceBar objects (OHLCV data)
         k_period: Lookback period for %K (default: 14)
         d_period: Smoothing period for %D (default: 3)
-        smooth_k: Smoothing for slow stochastic (default: 3)
+        smooth_k: Smoothing for %K. Use 1 for Fast Stochastic (default),
+            3 for Slow Stochastic
 
     Returns:
         Indicator object with stochastic values and trading signal
