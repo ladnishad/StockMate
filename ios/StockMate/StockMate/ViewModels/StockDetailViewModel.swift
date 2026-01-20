@@ -40,15 +40,13 @@ class StockDetailViewModel: ObservableObject {
             return cached
         }
 
-        // Fallback to pre-loaded data from detail (only 1M and 1W are pre-loaded)
+        // Fallback to pre-loaded data from detail (only 1W is pre-loaded)
         guard let detail = detail else { return [] }
         switch selectedTimeframe {
-        case .oneMonth:
-            return detail.bars1d
         case .oneWeek:
             return detail.bars1h
         default:
-            // All other timeframes (including 1D) need to be fetched on-demand
+            // All other timeframes (including 1D and 1M) need to be fetched on-demand
             return []
         }
     }
@@ -255,10 +253,10 @@ class StockDetailViewModel: ObservableObject {
             return
         }
 
-        // Check if it's a pre-loaded timeframe from detail (only 1M and 1W)
+        // Check if it's a pre-loaded timeframe from detail (only 1W)
         switch timeframe {
-        case .oneMonth, .oneWeek:
-            // These are pre-loaded in detail, no need to fetch
+        case .oneWeek:
+            // This is pre-loaded in detail, no need to fetch
             return
         default:
             break
