@@ -69,6 +69,61 @@ class StockDetailViewModel: ObservableObject {
         return (minLow - padding)...(maxHigh + padding)
     }
 
+    // MARK: - Timeframe-Specific Change Calculations
+
+    /// The starting price for the current timeframe
+    /// Uses first bar's open price as approximation of previous close
+    var timeframeStartPrice: Double? {
+        guard !chartBars.isEmpty else { return nil }
+        return chartBars.first?.open
+    }
+
+    /// Dollar change for the selected timeframe
+    var timeframeChange: Double {
+        // For 1D, use the API's accurate daily change
+        if selectedTimeframe == .oneDay {
+            return detail?.change ?? 0
+        }
+
+        guard let detail = detail,
+              let startPrice = timeframeStartPrice else {
+            return detail?.change ?? 0
+        }
+        return detail.currentPrice - startPrice
+    }
+
+    /// Percentage change for the selected timeframe
+    var timeframeChangePct: Double {
+        // For 1D, use the API's accurate daily change percentage
+        if selectedTimeframe == .oneDay {
+            return detail?.changePct ?? 0
+        }
+
+        guard let detail = detail,
+              let startPrice = timeframeStartPrice,
+              startPrice > 0 else {
+            return detail?.changePct ?? 0
+        }
+        return ((detail.currentPrice - startPrice) / startPrice) * 100
+    }
+
+    /// Whether the price is up for the selected timeframe
+    var isTimeframeUp: Bool {
+        timeframeChange >= 0
+    }
+
+    /// Formatted dollar change for the selected timeframe
+    var formattedTimeframeChange: String {
+        let sign = timeframeChange >= 0 ? "+" : ""
+        return "\(sign)\(String(format: "%.2f", timeframeChange))"
+    }
+
+    /// Formatted percentage change for the selected timeframe
+    var formattedTimeframeChangePct: String {
+        let sign = timeframeChangePct >= 0 ? "+" : ""
+        return "\(sign)\(String(format: "%.2f", timeframeChangePct))%"
+    }
+
     // MARK: - Initialization
 
     init(symbol: String) {
