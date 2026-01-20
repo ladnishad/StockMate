@@ -71,14 +71,20 @@ class StockDetailViewModel: ObservableObject {
 
     // MARK: - Timeframe-Specific Change Calculations
 
-    /// The starting price for the current timeframe (first bar's close price)
+    /// The starting price for the current timeframe
+    /// Uses first bar's open price as approximation of previous close
     var timeframeStartPrice: Double? {
         guard !chartBars.isEmpty else { return nil }
-        return chartBars.first?.close
+        return chartBars.first?.open
     }
 
     /// Dollar change for the selected timeframe
     var timeframeChange: Double {
+        // For 1D, use the API's accurate daily change
+        if selectedTimeframe == .oneDay {
+            return detail?.change ?? 0
+        }
+
         guard let detail = detail,
               let startPrice = timeframeStartPrice else {
             return detail?.change ?? 0
@@ -88,6 +94,11 @@ class StockDetailViewModel: ObservableObject {
 
     /// Percentage change for the selected timeframe
     var timeframeChangePct: Double {
+        // For 1D, use the API's accurate daily change percentage
+        if selectedTimeframe == .oneDay {
+            return detail?.changePct ?? 0
+        }
+
         guard let detail = detail,
               let startPrice = timeframeStartPrice,
               startPrice > 0 else {
