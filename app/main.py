@@ -1,7 +1,9 @@
 """FastAPI application for StockMate - Intelligent Stock Analysis Backend."""
 
+import asyncio
 import json
 import logging
+from datetime import datetime
 from typing import List, Optional, Any
 from contextlib import asynccontextmanager
 
@@ -46,6 +48,15 @@ from app.models.watchlist import (
     StockDetailResponse,
     PriceBarResponse,
 )
+from app.models.scanner import (
+    ScannerResult,
+    ScannerResponse,
+    AllScannersResponse,
+    ScannerStatusResponse,
+    AddFromScannerRequest,
+    TradingStyle,
+)
+from app.services.market_scanner_service import get_scanner_service
 
 # Configure logging
 logging.basicConfig(
@@ -909,6 +920,284 @@ async def market_scan(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Market scan failed: {str(e)}"
+        )
+
+
+# =============================================================================
+# Scanner Endpoints - Automated Stock Discovery
+# =============================================================================
+
+
+@app.get(
+    "/scanner",
+    summary="Get all scanner results",
+    description="""
+    Get scan results for all three trading styles (day, swing, position).
+
+    Returns the most recent scan results with up to 10 stocks per style,
+    ranked by confidence score. Results include pattern descriptions,
+    confidence grades (A+ to C), and key price levels.
+
+    Results are cached between scans. Use /scanner/refresh to trigger a new scan.
+    """,
+    response_model=AllScannersResponse,
+)
+async def get_all_scanner_results(
+    user: Optional[User] = Depends(get_optional_user),
+):
+    """Get scan results for all trading styles."""
+    try:
+        scanner = get_scanner_service()
+
+        # Get user's watchlist to mark "already watching"
+        user_watchlist = None
+        if user:
+            wl_store = get_watchlist_store()
+            if hasattr(wl_store, 'get_watchlist'):
+                if asyncio.iscoroutinefunction(wl_store.get_watchlist):
+                    items = await wl_store.get_watchlist(user.id)
+                else:
+                    items = wl_store.get_watchlist(user.id)
+                user_watchlist = {item["symbol"] for item in items}
+
+        # Get cached results (or trigger scan if none exist)
+        store = scanner._store
+
+        # Handle both sync and async stores
+        if asyncio.iscoroutinefunction(store.get_all_results):
+            all_results = await store.get_all_results(user_watchlist)
+        else:
+            all_results = store.get_all_results(user_watchlist)
+
+        # Check if we have any results
+        has_results = any(len(results) > 0 for results in all_results.values())
+
+        if not has_results:
+            # No results, run a scan
+            logger.info("No cached scanner results, running scan")
+            return await scanner.run_scan(scan_name="on_demand")
+
+        # Get responses (handle async)
+        if asyncio.iscoroutinefunction(store.get_response):
+            day_response = await store.get_response(TradingStyle.DAY, user_watchlist)
+            swing_response = await store.get_response(TradingStyle.SWING, user_watchlist)
+            position_response = await store.get_response(TradingStyle.POSITION, user_watchlist)
+        else:
+            day_response = store.get_response(TradingStyle.DAY, user_watchlist)
+            swing_response = store.get_response(TradingStyle.SWING, user_watchlist)
+            position_response = store.get_response(TradingStyle.POSITION, user_watchlist)
+
+        # Get last scan time (handle async stores that don't have _last_scan_time)
+        last_scan_time = getattr(store, '_last_scan_time', None) or datetime.utcnow()
+
+        return AllScannersResponse(
+            day=day_response,
+            swing=swing_response,
+            position=position_response,
+            scan_time=last_scan_time,
+            next_scheduled_scan=scanner._get_next_scheduled_scan_time(),
+        )
+
+    except Exception as e:
+        logger.error(f"Error getting scanner results: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get scanner results: {str(e)}"
+        )
+
+
+@app.post(
+    "/scanner/refresh",
+    summary="Trigger on-demand scan",
+    description="""
+    Trigger an immediate scan for all trading styles.
+
+    This runs the same scan logic as scheduled scans but on-demand.
+    No rate limiting - use responsibly.
+
+    Returns results for all three styles after scan completes.
+    """,
+    response_model=AllScannersResponse,
+)
+async def refresh_scanner(
+    user: Optional[User] = Depends(get_optional_user),
+):
+    """Trigger an on-demand scan."""
+    try:
+        scanner = get_scanner_service()
+
+        logger.info("Running on-demand scanner refresh")
+        result = await scanner.run_scan(scan_name="on_demand")
+
+        # Update is_watching flags if user is authenticated
+        if user:
+            store = get_watchlist_store()
+            if hasattr(store, 'get_watchlist'):
+                if asyncio.iscoroutinefunction(store.get_watchlist):
+                    items = await store.get_watchlist(user.id)
+                else:
+                    items = store.get_watchlist(user.id)
+                user_watchlist = {item["symbol"] for item in items}
+
+                # Update is_watching in results
+                for scanner_result in result.day.results:
+                    scanner_result.is_watching = scanner_result.symbol in user_watchlist
+                for scanner_result in result.swing.results:
+                    scanner_result.is_watching = scanner_result.symbol in user_watchlist
+                for scanner_result in result.position.results:
+                    scanner_result.is_watching = scanner_result.symbol in user_watchlist
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error running scanner refresh: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Scanner refresh failed: {str(e)}"
+        )
+
+
+@app.get(
+    "/scanner/status",
+    summary="Get scanner status",
+    description="""
+    Get the current scanner status including:
+    - Last scan time
+    - Next scheduled scan time
+    - Whether a scan is currently running
+    - Number of results per style
+    """,
+    response_model=ScannerStatusResponse,
+)
+async def get_scanner_status():
+    """Get current scanner status."""
+    try:
+        scanner = get_scanner_service()
+        return await scanner.get_status()
+
+    except Exception as e:
+        logger.error(f"Error getting scanner status: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get scanner status: {str(e)}"
+        )
+
+
+@app.get(
+    "/scanner/{style}",
+    summary="Get scanner results for a specific style",
+    description="""
+    Get scan results for a specific trading style.
+
+    Styles:
+    - **day**: Day trading patterns (gaps, momentum, intraday reversals)
+    - **swing**: Swing trading patterns (multi-day setups, pullbacks, breakouts)
+    - **position**: Position trading patterns (weekly/monthly setups, base breakouts)
+
+    Returns up to 10 stocks ranked by confidence score.
+    """,
+    response_model=ScannerResponse,
+)
+async def get_scanner_results_by_style(
+    style: str,
+    user: Optional[User] = Depends(get_optional_user),
+):
+    """Get scan results for a specific trading style."""
+    try:
+        # Validate style
+        try:
+            trading_style = TradingStyle(style.lower())
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid style: {style}. Must be 'day', 'swing', or 'position'"
+            )
+
+        scanner = get_scanner_service()
+
+        # Get user's watchlist to mark "already watching"
+        user_watchlist = None
+        if user:
+            wl_store = get_watchlist_store()
+            if hasattr(wl_store, 'get_watchlist'):
+                if asyncio.iscoroutinefunction(wl_store.get_watchlist):
+                    items = await wl_store.get_watchlist(user.id)
+                else:
+                    items = wl_store.get_watchlist(user.id)
+                user_watchlist = {item["symbol"] for item in items}
+
+        store = scanner._store
+        if asyncio.iscoroutinefunction(store.get_response):
+            return await store.get_response(trading_style, user_watchlist)
+        else:
+            return store.get_response(trading_style, user_watchlist)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting scanner results for {style}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get scanner results: {str(e)}"
+        )
+
+
+@app.post(
+    "/scanner/{symbol}/add",
+    summary="Add scanned stock to watchlist",
+    description="""
+    Add a stock from scanner results to the user's watchlist.
+
+    Includes scanner metadata (source and reason) for tracking
+    where the stock recommendation came from.
+
+    The stock page will show: "Added from: {source} - {reason}"
+    """,
+)
+async def add_from_scanner(
+    symbol: str,
+    request: AddFromScannerRequest,
+    user: User = Depends(get_current_user),
+):
+    """Add a scanned stock to watchlist with scanner metadata."""
+    try:
+        symbol = symbol.upper()
+        store = get_watchlist_store()
+
+        # Add to watchlist with scanner metadata
+        if asyncio.iscoroutinefunction(store.add_symbol):
+            result = await store.add_symbol(
+                user_id=user.id,
+                symbol=symbol,
+                scanner_source=request.scanner_source,
+                scanner_reason=request.scanner_reason,
+            )
+        else:
+            result = store.add_symbol(
+                user_id=user.id,
+                symbol=symbol,
+                scanner_source=request.scanner_source,
+                scanner_reason=request.scanner_reason,
+            )
+
+        logger.info(
+            f"Added {symbol} to watchlist from scanner: "
+            f"{request.scanner_source} - {request.scanner_reason}"
+        )
+
+        return {
+            "status": "ok",
+            "message": f"Added {symbol} to watchlist",
+            "symbol": symbol,
+            "scanner_source": request.scanner_source,
+            "scanner_reason": request.scanner_reason,
+        }
+
+    except Exception as e:
+        logger.error(f"Error adding {symbol} from scanner: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to add {symbol} to watchlist: {str(e)}"
         )
 
 

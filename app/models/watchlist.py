@@ -13,6 +13,14 @@ class WatchlistItem(BaseModel):
     notes: Optional[str] = Field(None, description="User notes about this stock")
     alerts_enabled: bool = Field(False, description="Whether alerts are enabled for this stock")
 
+    # Scanner metadata (populated when added from scanner)
+    scanner_source: Optional[str] = Field(
+        None, description="Scanner that flagged this stock (e.g., 'Day Trade Scanner')"
+    )
+    scanner_reason: Optional[str] = Field(
+        None, description="Why scanner flagged this stock (e.g., 'Breakout Setup')"
+    )
+
     # Live data (populated on fetch)
     current_price: Optional[float] = Field(None, description="Current stock price")
     change: Optional[float] = Field(None, description="Price change")
@@ -27,6 +35,8 @@ class WatchlistItem(BaseModel):
                 "added_at": "2025-01-10T10:30:00Z",
                 "notes": "Strong fundamentals",
                 "alerts_enabled": True,
+                "scanner_source": "Day Trade Scanner",
+                "scanner_reason": "Breakout Setup",
                 "current_price": 175.50,
                 "change": 2.35,
                 "change_pct": 1.36,

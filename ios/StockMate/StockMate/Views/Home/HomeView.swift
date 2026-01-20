@@ -8,6 +8,7 @@ struct HomeView: View {
     @State private var showingChat = false
     @State private var showingLogoutConfirmation = false
     @State private var showingSettings = false
+    @State private var showingScanner = false
 
     var body: some View {
         NavigationStack {
@@ -88,6 +89,15 @@ struct HomeView: View {
 
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 16) {
+                        // Scanner button
+                        Button {
+                            showingScanner = true
+                        } label: {
+                            Image(systemName: "waveform.badge.magnifyingglass")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(Color.blue)
+                        }
+
                         // AI Chat button
                         Button {
                             showingChat = true
@@ -137,6 +147,9 @@ struct HomeView: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
                     .environmentObject(authManager)
+            }
+            .fullScreenCover(isPresented: $showingScanner) {
+                ScannerView()
             }
             .alert("Error", isPresented: .constant(viewModel.error != nil)) {
                 Button("Retry") {

@@ -99,6 +99,8 @@ class WatchlistStore:
                 "added_at": metadata.get("added_at", datetime.utcnow().isoformat()),
                 "notes": metadata.get("notes"),
                 "alerts_enabled": metadata.get("alerts_enabled", False),
+                "scanner_source": metadata.get("scanner_source"),
+                "scanner_reason": metadata.get("scanner_reason"),
             })
 
         return items
@@ -109,6 +111,8 @@ class WatchlistStore:
         symbol: str,
         notes: Optional[str] = None,
         alerts_enabled: bool = False,
+        scanner_source: Optional[str] = None,
+        scanner_reason: Optional[str] = None,
     ) -> dict:
         """Add symbol to user's watchlist.
 
@@ -117,6 +121,8 @@ class WatchlistStore:
             symbol: Stock ticker symbol
             notes: Optional user notes
             alerts_enabled: Whether to enable alerts
+            scanner_source: Scanner that flagged this stock (e.g., 'Day Trade Scanner')
+            scanner_reason: Why scanner flagged this stock (e.g., 'Breakout Setup')
 
         Returns:
             The created watchlist item
@@ -143,6 +149,8 @@ class WatchlistStore:
             "added_at": added_at,
             "notes": notes,
             "alerts_enabled": alerts_enabled,
+            "scanner_source": scanner_source,
+            "scanner_reason": scanner_reason,
         }
 
         user_data["last_updated"] = added_at
@@ -155,6 +163,8 @@ class WatchlistStore:
             "added_at": added_at,
             "notes": notes,
             "alerts_enabled": alerts_enabled,
+            "scanner_source": scanner_source,
+            "scanner_reason": scanner_reason,
         }
 
     def remove_symbol(self, user_id: str, symbol: str) -> bool:
@@ -282,7 +292,7 @@ class DatabaseWatchlistStore:
         items = []
         async with get_connection() as conn:
             rows = await conn.fetch(
-                """SELECT symbol, notes, alerts_enabled, added_at
+                """SELECT symbol, notes, alerts_enabled, added_at, scanner_source, scanner_reason
                    FROM watchlist WHERE user_id = $1 ORDER BY added_at DESC""",
                 user_id
             )
@@ -292,6 +302,8 @@ class DatabaseWatchlistStore:
                     "added_at": row["added_at"],
                     "notes": row["notes"],
                     "alerts_enabled": row["alerts_enabled"],
+                    "scanner_source": row.get("scanner_source"),
+                    "scanner_reason": row.get("scanner_reason"),
                 })
         return items
 
@@ -301,8 +313,22 @@ class DatabaseWatchlistStore:
         symbol: str,
         notes: Optional[str] = None,
         alerts_enabled: bool = False,
+        scanner_source: Optional[str] = None,
+        scanner_reason: Optional[str] = None,
     ) -> dict:
-        """Add symbol to user's watchlist in database."""
+        """Add symbol to user's watchlist in database.
+
+        Args:
+            user_id: User identifier
+            symbol: Stock ticker symbol
+            notes: Optional user notes
+            alerts_enabled: Whether to enable alerts
+            scanner_source: Scanner that flagged this stock (e.g., 'Day Trade Scanner')
+            scanner_reason: Why scanner flagged this stock (e.g., 'Breakout Setup')
+
+        Returns:
+            The created watchlist item
+        """
         from app.storage.postgres import get_connection
 
         symbol = symbol.upper()
@@ -326,13 +352,15 @@ class DatabaseWatchlistStore:
                     "added_at": row["added_at"],
                     "notes": row["notes"],
                     "alerts_enabled": row["alerts_enabled"],
+                    "scanner_source": row.get("scanner_source"),
+                    "scanner_reason": row.get("scanner_reason"),
                 }
 
             # Insert new
             await conn.execute(
-                """INSERT INTO watchlist (id, user_id, symbol, notes, alerts_enabled, added_at)
-                   VALUES ($1, $2, $3, $4, $5, $6)""",
-                item_id, user_id, symbol, notes, alerts_enabled, now
+                """INSERT INTO watchlist (id, user_id, symbol, notes, alerts_enabled, added_at, scanner_source, scanner_reason)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                item_id, user_id, symbol, notes, alerts_enabled, now, scanner_source, scanner_reason
             )
 
         logger.info(f"Added {symbol} to watchlist for user {user_id}")
@@ -341,6 +369,8 @@ class DatabaseWatchlistStore:
             "added_at": now,
             "notes": notes,
             "alerts_enabled": alerts_enabled,
+            "scanner_source": scanner_source,
+            "scanner_reason": scanner_reason,
         }
 
     async def remove_symbol(self, user_id: str, symbol: str) -> bool:
