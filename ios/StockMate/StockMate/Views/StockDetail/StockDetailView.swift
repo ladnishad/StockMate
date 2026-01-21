@@ -957,39 +957,42 @@ private struct EmptyChartPlaceholder: View {
 
 private struct ChartTypeToggle: View {
     @Binding var selected: ChartType
+    @Namespace private var animation
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 2) {
             ForEach(ChartType.allCases) { chartType in
                 Button {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                         selected = chartType
                     }
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 5) {
                         Image(systemName: chartType.icon)
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: 12, weight: .medium))
 
                         Text(chartType.rawValue)
                             .font(.system(size: 12, weight: selected == chartType ? .semibold : .medium))
                     }
-                    .foregroundStyle(selected == chartType ? .primary : .secondary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(
-                        Capsule()
-                            .fill(selected == chartType ? Color(.systemGray5) : Color.clear)
-                    )
+                    .foregroundStyle(selected == chartType ? .primary : .tertiary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 7)
+                    .background {
+                        if selected == chartType {
+                            Capsule()
+                                .fill(Color(.systemGray5))
+                                .matchedGeometryEffect(id: "chartTypeSelection", in: animation)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
+        .padding(3)
         .background(
             Capsule()
-                .fill(Color(.secondarySystemBackground))
+                .fill(Color(.tertiarySystemBackground))
         )
     }
 }

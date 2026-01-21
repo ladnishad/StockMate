@@ -292,7 +292,7 @@ enum ChartType: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .line: return "chart.line.uptrend.xyaxis"
-        case .candlestick: return "chart.bar.fill"
+        case .candlestick: return "chart.bar.xaxis"
         }
     }
 }

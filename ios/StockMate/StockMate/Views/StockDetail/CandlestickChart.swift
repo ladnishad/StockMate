@@ -13,9 +13,12 @@ struct CandlestickChart: View {
     @State private var selectedIndex: Int?
     @State private var selectedBar: PriceBar?
 
-    private var accentColor: Color {
-        isUp ? Color(.systemGreen) : Color(.systemRed)
-    }
+    // MARK: - Cached DateFormatter for performance
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeZone = TimeZone(identifier: "America/New_York")
+        return formatter
+    }()
 
     /// Calculate candlestick body width based on bar count
     private var candleWidth: CGFloat {
@@ -107,9 +110,9 @@ struct CandlestickChart: View {
                             }
                         }
                         .chartYScale(domain: yAxisDomain)
-                        .chartXScale(domain: -1...(bars.count))
+                        .chartXScale(domain: -0.5...Double(bars.count - 1) + 0.5)
                         .chartOverlay { proxy in
-                            GeometryReader { geo in
+                            GeometryReader { _ in
                                 Rectangle()
                                     .fill(Color.clear)
                                     .contentShape(Rectangle())
@@ -119,8 +122,9 @@ struct CandlestickChart: View {
                                                 let xPosition = value.location.x
                                                 if let plotFrame = proxy.plotFrame {
                                                     let plotWidth = plotFrame.width
-                                                    let xRatio = xPosition / plotWidth
-                                                    let index = Int((xRatio * CGFloat(bars.count)).rounded())
+                                                    guard plotWidth > 0, bars.count > 0 else { return }
+                                                    let xRatio = max(0, min(xPosition / plotWidth, 1))
+                                                    let index = Int((xRatio * CGFloat(bars.count - 1)).rounded())
                                                     let clampedIndex = max(0, min(index, bars.count - 1))
                                                     selectedIndex = clampedIndex
                                                     selectedBar = bars[clampedIndex]
@@ -192,26 +196,21 @@ struct CandlestickChart: View {
 
     private func formatTime(for bar: PriceBar) -> String {
         guard let date = bar.date else { return "" }
-        let formatter = DateFormatter()
-        formatter.timeZone = TimeZone(identifier: "America/New_York")
+        let formatter = Self.timeFormatter
 
         switch timeframe {
         case .oneDay:
             formatter.dateFormat = "h:mm a"
-            return formatter.string(from: date)
         case .oneWeek:
             formatter.dateFormat = "E h:mm a"
-            return formatter.string(from: date)
         case .oneMonth, .threeMonths:
             formatter.dateFormat = "MMM d"
-            return formatter.string(from: date)
         case .sixMonths, .oneYear, .yearToDate:
             formatter.dateFormat = "MMM d, yyyy"
-            return formatter.string(from: date)
         case .fiveYears, .all:
             formatter.dateFormat = "MMM yyyy"
-            return formatter.string(from: date)
         }
+        return formatter.string(from: date)
     }
 
     // MARK: - Session Detection (for 1D timeframe)
@@ -288,18 +287,21 @@ struct CandlestickChart: View {
     @ViewBuilder
     private func sessionBackgroundView(width: CGFloat, height: CGFloat) -> some View {
         let boundaries = sessionBoundaries()
-        let stepX = bars.count > 1 ? width / CGFloat(bars.count - 1) : width
+        guard bars.count > 1 else { return AnyView(EmptyView()) }
+        let stepX = width / CGFloat(bars.count - 1)
 
-        ForEach(Array(boundaries.enumerated()), id: \.offset) { _, boundary in
-            let startX = CGFloat(boundary.startIndex) * stepX
-            let endX = CGFloat(boundary.endIndex) * stepX
-            let rectWidth = max(endX - startX, 1)
+        AnyView(
+            ForEach(Array(boundaries.enumerated()), id: \.offset) { _, boundary in
+                let startX = CGFloat(boundary.startIndex) * stepX
+                let endX = CGFloat(boundary.endIndex) * stepX
+                let rectWidth = max(endX - startX, candleWidth * 2)
 
-            Rectangle()
-                .fill(boundary.label == "Market" ? Color(.systemGray6).opacity(0.6) : Color.clear)
-                .frame(width: rectWidth, height: height)
-                .position(x: (startX + endX) / 2, y: height / 2)
-        }
+                Rectangle()
+                    .fill(boundary.label == "Market" ? Color(.systemGray6).opacity(0.6) : Color.clear)
+                    .frame(width: rectWidth, height: height)
+                    .position(x: (startX + endX) / 2, y: height / 2)
+            }
+        )
     }
 
     // MARK: - Session Labels View
@@ -307,13 +309,17 @@ struct CandlestickChart: View {
     @ViewBuilder
     private func sessionLabelsView(width: CGFloat) -> some View {
         let boundaries = sessionBoundaries()
-        let stepX = bars.count > 1 ? width / CGFloat(bars.count - 1) : width
+        guard bars.count > 1, !boundaries.isEmpty else {
+            EmptyView()
+            return
+        }
+        let stepX = width / CGFloat(bars.count - 1)
 
         HStack(spacing: 0) {
             ForEach(Array(boundaries.enumerated()), id: \.offset) { idx, boundary in
                 let startX = CGFloat(boundary.startIndex) * stepX
                 let endX = CGFloat(boundary.endIndex) * stepX
-                let sectionWidth = max(endX - startX, 1)
+                let sectionWidth = max(endX - startX, 30)
 
                 Text(boundary.label)
                     .font(.system(size: 9, weight: .medium))
@@ -335,10 +341,14 @@ struct CandlestickChart: View {
 
     @ViewBuilder
     private func selectedBarOverlay(bar: PriceBar, index: Int, width: CGFloat, height: CGFloat) -> some View {
-        let stepX = bars.count > 1 ? width / CGFloat(bars.count - 1) : width
+        let stepX = bars.count > 1 ? width / CGFloat(bars.count - 1) : width / 2
         let x = CGFloat(index) * stepX
 
-        // Price tooltip
+        // Calculate tooltip width for proper edge clamping
+        let tooltipWidth: CGFloat = 160
+        let clampedX = min(max(x, tooltipWidth / 2 + 8), width - tooltipWidth / 2 - 8)
+
+        // Price tooltip - positioned at top of chart
         VStack(spacing: 4) {
             // OHLC row
             HStack(spacing: 8) {
@@ -354,7 +364,7 @@ struct CandlestickChart: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
 
-                Text(formatVolume(bar.volume))
+                Text("Vol: \(formatVolume(bar.volume))")
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(.tertiary)
             }
@@ -364,9 +374,9 @@ struct CandlestickChart: View {
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color(.secondarySystemGroupedBackground))
-                .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
+                .shadow(color: .black.opacity(0.15), radius: 6, x: 0, y: 2)
         )
-        .position(x: min(max(x, 70), width - 70), y: 36)
+        .position(x: clampedX, y: 32)
     }
 
     // MARK: - Volume Formatting
