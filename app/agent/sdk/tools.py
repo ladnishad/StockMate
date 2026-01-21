@@ -831,6 +831,7 @@ async def analyze_chart_vision(
     chart_image_base64: str,
     trade_style: Literal["day", "swing", "position"],
     provider: "AIProvider",
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Analyze chart image using the user's selected AI provider.
 
@@ -839,6 +840,7 @@ async def analyze_chart_vision(
         chart_image_base64: Base64-encoded chart image
         trade_style: Trade style for analysis context
         provider: AI provider instance (Claude or Grok) for vision analysis
+        user_id: User ID for usage tracking (optional)
 
     Returns:
         Dictionary with vision analysis results
@@ -884,6 +886,25 @@ Respond with JSON:
             prompt=prompt,
             model_type="planning",
         )
+
+        # Track usage for vision analysis
+        if user_id:
+            try:
+                from app.services.usage_tracker import get_usage_tracker
+                from app.models.usage import OperationType, ModelProvider as UsageModelProvider
+                tracker = get_usage_tracker()
+                usage_provider = UsageModelProvider.GROK if provider.supports_x_search else UsageModelProvider.CLAUDE
+                await tracker.track_ai_response(
+                    user_id=user_id,
+                    provider=usage_provider,
+                    model=provider.get_model("planning"),
+                    operation_type=OperationType.IMAGE_ANALYSIS,
+                    response=response,
+                    symbol=symbol,
+                    endpoint=f"/create-plan-v2-stream/vision-{trade_style}",
+                )
+            except Exception as track_err:
+                logger.warning(f"Failed to track vision usage for {symbol}: {track_err}")
 
         # Parse response from AIResponse.content
         response_text = response.content

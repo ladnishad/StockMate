@@ -148,6 +148,10 @@ app.add_middleware(
 # Include authentication router
 app.include_router(auth_router)
 
+# Include admin router
+from app.admin import admin_router
+app.include_router(admin_router)
+
 # Add rate limiting
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded

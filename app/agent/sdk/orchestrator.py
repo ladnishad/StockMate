@@ -28,8 +28,10 @@ from app.agent.sdk.tools import (
     get_news_sentiment,
 )
 from app.agent.providers.factory import get_user_provider
-from app.agent.providers import AIMessage, AIProvider, SearchParameters
+from app.agent.providers import AIMessage, AIProvider, SearchParameters, ModelProvider
 from app.agent.providers.grok_provider import get_x_search_parameters
+from app.services.usage_tracker import get_usage_tracker
+from app.models.usage import OperationType, ModelProvider as UsageModelProvider
 
 logger = logging.getLogger(__name__)
 
@@ -797,6 +799,7 @@ class TradePlanOrchestrator:
                             chart_result["chart_image_base64"],
                             trade_style,
                             provider,  # Pass user's selected provider for vision analysis
+                            context.user_id,  # Pass user_id for usage tracking
                             max_attempts=2,  # Quick retry for vision
                             delay=0.5,
                         )
@@ -1091,6 +1094,22 @@ Return ONLY the JSON object, no other text."""
                     max_attempts=2,  # Retry once on failure
                     delay=1.0,
                 )
+
+                # Track usage for sub-agent analysis
+                try:
+                    tracker = get_usage_tracker()
+                    usage_provider = UsageModelProvider.GROK if provider.supports_x_search else UsageModelProvider.CLAUDE
+                    await tracker.track_ai_response(
+                        user_id=context.user_id,
+                        provider=usage_provider,
+                        model=provider.get_model("planning"),
+                        operation_type=OperationType.SUBAGENT,
+                        response=plan_response,
+                        symbol=symbol,
+                        endpoint=f"/create-plan-v2-stream/{agent_name}",
+                    )
+                except Exception as track_err:
+                    logger.warning(f"[{agent_name}] Failed to track usage: {track_err}")
 
                 # Capture X/social citations from Grok response
                 x_citations = []
@@ -1647,6 +1666,22 @@ Return ONLY valid JSON."""
                 max_attempts=2,  # Retry once on failure
                 delay=1.0,
             )
+
+            # Track usage for synthesis
+            try:
+                tracker = get_usage_tracker()
+                usage_provider = UsageModelProvider.GROK if provider.supports_x_search else UsageModelProvider.CLAUDE
+                await tracker.track_ai_response(
+                    user_id=context.user_id if context else self._user_id,
+                    provider=usage_provider,
+                    model=provider.get_model("planning"),
+                    operation_type=OperationType.ORCHESTRATOR,
+                    response=synthesis_response,
+                    symbol=symbol,
+                    endpoint="/create-plan-v2-stream/synthesis",
+                )
+            except Exception as track_err:
+                logger.warning(f"[Orchestrator] Failed to track synthesis usage: {track_err}")
 
             synthesis_text = synthesis_response.content.strip()
             synthesis = {}

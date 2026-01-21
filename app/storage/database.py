@@ -172,9 +172,54 @@ class Database:
                 CREATE TABLE IF NOT EXISTS user_settings (
                     user_id TEXT PRIMARY KEY,
                     model_provider TEXT DEFAULT 'grok',
+                    is_admin INTEGER DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
+            """)
+
+            # Migration: Add is_admin column if it doesn't exist
+            try:
+                await conn.execute(
+                    "ALTER TABLE user_settings ADD COLUMN is_admin INTEGER DEFAULT 0"
+                )
+            except Exception:
+                pass  # Column already exists
+
+            # API usage tracking table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS api_usage (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    operation_type TEXT NOT NULL,
+                    input_tokens INTEGER DEFAULT 0,
+                    output_tokens INTEGER DEFAULT 0,
+                    total_tokens INTEGER DEFAULT 0,
+                    estimated_cost REAL DEFAULT 0,
+                    tool_calls INTEGER DEFAULT 0,
+                    tool_cost REAL DEFAULT 0,
+                    symbol TEXT,
+                    endpoint TEXT,
+                    created_at TEXT NOT NULL
+                )
+            """)
+
+            # Create indexes for efficient usage queries
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_usage_user
+                ON api_usage (user_id, created_at)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_usage_provider
+                ON api_usage (provider, created_at)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_usage_date
+                ON api_usage (created_at)
             """)
 
             await conn.commit()

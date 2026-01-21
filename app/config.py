@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # CORS Configuration (comma-separated list of allowed origins for production)
     cors_origins: str = ""  # e.g., "https://yourdomain.com,capacitor://localhost"
 
+    # Admin Configuration
+    # Comma-separated list of user IDs (Supabase UUIDs) or emails that have admin access
+    admin_users: str = ""  # e.g., "user-uuid-1,user-uuid-2" or "admin@example.com"
+
     @property
     def is_production(self) -> bool:
         """Check if running in production environment."""
@@ -87,6 +91,13 @@ class Settings(BaseSettings):
         """Get list of CORS origins."""
         if self.cors_origins:
             return [origin.strip() for origin in self.cors_origins.split(",")]
+        return []
+
+    @property
+    def admin_user_list(self) -> list[str]:
+        """Get list of admin user IDs or emails."""
+        if self.admin_users:
+            return [user.strip().lower() for user in self.admin_users.split(",")]
         return []
 
     model_config = {

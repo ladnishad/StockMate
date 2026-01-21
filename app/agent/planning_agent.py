@@ -22,6 +22,8 @@ from app.config import get_settings
 from app.agent.providers.factory import get_user_provider
 from app.agent.providers import AIMessage, AIProvider, ModelProvider, SearchParameters
 from app.agent.providers.grok_provider import get_x_search_parameters
+from app.services.usage_tracker import get_usage_tracker
+from app.models.usage import OperationType, ModelProvider as UsageModelProvider
 from app.agent.tools import (
     get_current_price,
     get_key_levels,
@@ -839,6 +841,22 @@ R-Multiple: {pos.get('r_multiple', 'N/A')}
                 max_tokens=4000,  # Increased for web search results
                 search_parameters=search_params,
             )
+
+            # Track usage
+            try:
+                tracker = get_usage_tracker()
+                usage_provider = UsageModelProvider.GROK if provider.supports_x_search else UsageModelProvider.CLAUDE
+                await tracker.track_ai_response(
+                    user_id=self.user_id,
+                    provider=usage_provider,
+                    model=provider.get_model("planning"),
+                    operation_type=OperationType.PLAN_GENERATION,
+                    response=response,
+                    symbol=self.symbol,
+                    endpoint="/create-plan",
+                )
+            except Exception as track_err:
+                logger.warning(f"Failed to track plan generation usage: {track_err}")
 
             # Extract text from response
             response_text = response.content
@@ -1867,6 +1885,22 @@ Invalidation: {plan.invalidation_criteria}
                 max_tokens=1500,
             )
 
+            # Track usage
+            try:
+                tracker = get_usage_tracker()
+                usage_provider = UsageModelProvider.GROK if provider.supports_x_search else UsageModelProvider.CLAUDE
+                await tracker.track_ai_response(
+                    user_id=self.user_id,
+                    provider=usage_provider,
+                    model=provider.get_model("planning"),
+                    operation_type=OperationType.PLAN_EVALUATION,
+                    response=response,
+                    symbol=self.symbol,
+                    endpoint="/evaluate-plan",
+                )
+            except Exception as track_err:
+                logger.warning(f"Failed to track evaluation usage: {track_err}")
+
             response_text = response.content
 
             # Parse JSON response
@@ -2057,6 +2091,22 @@ Answer the user's question based on this data. If they ask to create or update a
                 model_type="fast",  # Use fast model for chat
                 max_tokens=1500,
             )
+
+            # Track usage
+            try:
+                tracker = get_usage_tracker()
+                usage_provider = UsageModelProvider.GROK if provider.supports_x_search else UsageModelProvider.CLAUDE
+                await tracker.track_ai_response(
+                    user_id=self.user_id,
+                    provider=usage_provider,
+                    model=provider.get_model("fast"),
+                    operation_type=OperationType.CHAT,
+                    response=response,
+                    symbol=self.symbol,
+                    endpoint="/chat",
+                )
+            except Exception as track_err:
+                logger.warning(f"Failed to track chat usage: {track_err}")
 
             response_text = response.content
 
