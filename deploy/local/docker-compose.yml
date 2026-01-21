@@ -1,0 +1,33 @@
+# Docker Compose for local iOS development
+# Runs API connecting to dev Supabase via pooler (IPv4)
+#
+# Prerequisites:
+#   1. Create .env in this folder with Supabase POOLER connection string
+#
+# Usage:
+#   ./scripts/run-local.sh
+#   # or directly:
+#   docker-compose -f deploy/local/docker-compose.yml up --build
+
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=local
+      - LOG_LEVEL=DEBUG
+      - CORS_ORIGINS=*
+    volumes:
+      # Mount app code for hot reloading
+      - ../../app:/app/app:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
