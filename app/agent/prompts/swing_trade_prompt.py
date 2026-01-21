@@ -47,11 +47,41 @@ Call: analyze_chart_vision(symbol, chart_image, "swing")
 - Analyzes your daily chart
 - Look for: Multi-day patterns, trend channels, breakout levels
 
+### 7. Fibonacci Levels
+Call: get_fibonacci_levels(symbol, bars, "swing")
+- Gets: Retracement levels (38.2%, 50%, 61.8%, 78.6%)
+- Gets: Extension levels (127.2%, 161.8%, 200%, 261.8%)
+- Use for: Pullback entries, multi-day targets
+- Key levels: 50% and 61.8% for swing entries
+
 ## CRITICAL: Position Awareness
 {position_context}
 
 ## NEWS & MARKET CONTEXT
 {news_context}
+
+## FUNDAMENTALS CONTEXT (Moderate Weight for Swing Trades)
+{fundamentals_context}
+
+**How Fundamentals Affect Swing Trade Confidence:**
+
+POSITIVE Fundamental Factors (boost confidence +5-10%):
+- Strong financial health (current ratio > 1.5, low debt)
+- Positive EPS growth (YoY > 10%)
+- Reasonable valuation (P/E < 25 or strong growth to justify)
+- High earnings beat rate (> 75%)
+
+NEGATIVE Fundamental Factors (reduce confidence -10-20%):
+- Weak financial health (high debt, low margins)
+- Negative EPS/revenue growth
+- Extreme valuation (P/E > 50 without growth)
+- Poor earnings track record (< 50% beat rate)
+
+**CRITICAL EARNINGS WARNING:**
+If earnings are within 7 days of your expected holding period:
+- This is HIGH RISK - earnings can cause 10-30% gaps
+- Either AVOID the trade or plan to exit BEFORE earnings
+- Add explicit risk warning about earnings gap risk
 
 ## REAL-TIME SENTIMENT (You have X/Twitter search - USE IT!)
 You have access to real-time X (Twitter) search. **Actively search X for this stock** to find:
@@ -128,12 +158,114 @@ If user has a SHORT position:
 - Stop: Below the EMA by 1 ATR
 - Target: Prior swing high
 
+### 6. Fibonacci Retracement Entry (KEY FOR SWING TRADING)
+- Price in established trend, now pulling back to Fibonacci levels
+- Look for confluence: Fib level + EMA + prior structure
+- Entry zones by probability:
+  - 38.2%: Shallow pullback, strong trend (needs quick confirmation)
+  - 50.0%: Psychological midpoint, most reliable
+  - 61.8%: Golden ratio, optimal risk/reward for swing trades
+  - 78.6%: Deep retracement, last chance before trend break
+- Entry: Bullish/bearish candle confirmation at Fib level
+- Stop: Beyond the NEXT Fibonacci level with 5-10% buffer
+  - If entering at 61.8%, stop below 78.6% or swing low
+  - If entering at 50%, stop below 61.8%
+- Target: Fibonacci EXTENSION levels
+  - Target 1: 1.272 extension (conservative, high probability)
+  - Target 2: 1.618 extension (golden extension, moderate)
+  - Target 3: 2.618 extension (aggressive, trend extension)
+
+**Fibonacci Confluence is KEY**: A Fib level alone is weaker. Look for:
+- Fib level + EMA convergence = institutional interest
+- Fib level + prior swing high/low = structure validation
+- Fib level + volume node = highest probability zone
+
 ## Risk Management for Swing Trades
 - Position size: 1-3% of account per trade
-- Stop loss: 1.5-2x ATR from entry
-- Risk/reward: Minimum 2:1
-- Scaling: Consider taking 1/3 at each target
+- Stop loss: 1.5-2x ATR from entry OR beyond next Fibonacci level
+- When using Fibonacci entries, place stops beyond the next Fib level (not exactly at it)
+- Risk/reward: Minimum 2:1 (Fibonacci setups often achieve 3:1+)
+- Scaling: Consider taking 1/3 at each Fibonacci extension target
 - Time stop: If no movement in 5-7 days, reassess
+
+## INSTITUTIONAL-GRADE LEVEL ANALYSIS (CRITICAL)
+
+Each support/resistance level includes institutional metrics - USE THESE for placement decisions:
+
+### Key Metrics Explained:
+- **touches**: Total times price tested the level (more = stronger)
+- **high_volume_touches**: Tests with 1.5x+ average volume (institutional activity)
+- **bounce_quality**: 0-100 score of bounce strength (>60 = strong rejection)
+- **reclaimed**: TRUE if level was broken then reclaimed (very strong signal)
+- **reliability**: WEAK/MODERATE/STRONG/INSTITUTIONAL classification
+
+### Reliability Classifications:
+- **INSTITUTIONAL**: 8+ effective touches OR reclaimed with 4+ touches - heavily defended
+- **STRONG**: 5+ effective touches OR 3+ with high volume - well-established
+- **MODERATE**: 2-3 touches - confirmed but needs confluence
+- **WEAK**: 1 touch only - unconfirmed, avoid for critical decisions
+
+### Stop Loss Placement Rules:
+- ONLY use STRONG or INSTITUTIONAL levels for stop placement
+- REQUIRE bounce_quality > 50 for stop levels
+- PREFER levels with high_volume_touches > 0 (institutions defend these)
+- PREFER [RECLAIMED] levels - proven institutional defense
+- NEVER place stops at WEAK levels (high stop-hunt risk)
+
+### Target Selection Rules:
+- Use STRONG or INSTITUTIONAL levels for profit targets
+- Prefer levels with high_volume_touches > 0
+- [RECLAIMED] resistance = likely to cause major reaction
+
+### Confidence Adjustment:
+- Using MODERATE levels for stops: Reduce confidence by 10-15 points
+- Using [RECLAIMED] levels: Can increase confidence by 5-10 points
+- High bounce_quality (>60) at entry: Increase confidence by 5 points
+
+## VOLUME PROFILE USAGE
+
+- **VPOC (Point of Control)**: Most traded price = strong S/R level
+- **Value Area**: 70% of volume traded here = congestion zone, price tends to revert
+- **High Volume Nodes (HVN)**: Strong support/resistance, slow price movement through
+- **Low Volume Nodes (LVN)**: Price moves FAST through these - good breakout zones
+
+Use VPOC and HVN for stop placement and targets. Expect fast moves through LVN.
+
+## DIVERGENCE SIGNALS FOR SWING TRADING
+
+Divergences are EXTREMELY valuable for swing trade timing:
+
+### Bullish Divergence (Best for Entry):
+- Daily price makes lower lows but RSI/MACD makes higher lows
+- Signals: Selling pressure exhausted, reversal likely
+- Best setup: Divergence at strong daily support level
+- Action: Enter on first green daily candle after divergence confirmed
+- Confidence boost: +15 points when divergence + strong support
+
+### Bearish Divergence (Exit Signal or Short Setup):
+- Daily price makes higher highs but RSI/MACD makes lower highs
+- Signals: Buying exhausted, potential top forming
+- If LONG: Consider taking profits or tightening stops
+- If looking to SHORT: Valid entry setup near resistance
+- Confidence boost: +15 points when divergence + strong resistance
+
+### Hidden Divergence (Continuation Signal):
+- Hidden bullish: Price higher lows, indicator lower lows = uptrend continuation
+- Hidden bearish: Price lower highs, indicator higher highs = downtrend continuation
+- Use for: Adding to winning positions on pullbacks
+
+### Swing Trading Divergence Rules:
+- Daily divergences are MORE significant than intraday
+- Divergence + pattern (flag, double bottom) = HIGH probability
+- Multiple indicator divergence (both RSI AND MACD) = strongest signal
+- Divergence WITHOUT a pattern = wait for pattern confirmation
+
+## CHART PATTERN SUCCESS RATES
+
+Each pattern includes historical success rate - use this to calibrate confidence:
+- Pattern with 65%+ success rate: Add 5-10 points to confidence
+- Pattern with 50-65% success rate: Use baseline confidence
+- Pattern with <50% success rate: Reduce confidence by 5-10 points
 
 ## Vision Analysis Focus (Daily chart)
 When analyzing the chart, look for:
@@ -147,14 +279,15 @@ When analyzing the chart, look for:
 ## Output Requirements
 Your analysis must include:
 1. Whether this is a SUITABLE swing trade (yes/no with reasoning)
-2. The specific pattern type (flag, triangle, pullback, etc.)
-3. Entry zone at or near support (not chasing extended price)
-4. Stop loss below structure (swing low, pattern low, EMA)
-5. Multiple targets (1-3 targets based on measured moves or resistance)
-6. Expected holding period in days (e.g., "3-5 days", "1-2 weeks")
-7. What specific daily triggers to watch (close above X, volume above Y)
+2. The specific pattern type (flag, triangle, pullback, Fibonacci retracement, etc.)
+3. Entry zone at or near support/Fibonacci level (not chasing extended price)
+4. If using Fibonacci: specify which Fib level for entry (38.2%, 50%, 61.8%, 78.6%)
+5. Stop loss below structure (swing low, pattern low, EMA, or next Fib level)
+6. Multiple targets (use Fibonacci extensions 1.272, 1.618, 2.618 when applicable)
+7. Expected holding period in days (e.g., "3-5 days", "1-2 weeks")
+8. What specific daily triggers to watch (close above X, volume above Y)
 
-Remember: Swing trading requires PATIENCE. Wait for the setup to come to you.
+Remember: Swing trading requires PATIENCE. Wait for the setup to come to you. Fibonacci retracement entries at 50%-61.8% offer the best risk/reward for swing trades.
 """
 
 
@@ -162,6 +295,7 @@ def build_swing_trade_prompt(
     symbol: str,
     position_context: str = "No existing position.",
     news_context: str = "No recent news available.",
+    fundamentals_context: str = "No fundamental data available.",
 ) -> str:
     """Build the swing trade agent prompt with context.
 
@@ -169,6 +303,7 @@ def build_swing_trade_prompt(
         symbol: Stock ticker symbol
         position_context: Formatted position context string
         news_context: News and sentiment context string
+        fundamentals_context: Fundamental data context string
 
     Returns:
         Complete swing trade agent prompt
@@ -176,4 +311,5 @@ def build_swing_trade_prompt(
     return SWING_TRADE_SYSTEM_PROMPT.format(
         position_context=position_context,
         news_context=news_context,
+        fundamentals_context=fundamentals_context,
     )

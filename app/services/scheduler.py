@@ -1,7 +1,8 @@
 """Market hours scheduler.
 
 Manages starting and stopping of monitoring during US market hours.
-Handles market holidays and early closes.
+Uses Alpaca's /v2/clock endpoint for accurate market status with
+local timezone-based fallback for resilience.
 """
 
 import logging
@@ -10,178 +11,177 @@ from typing import Callable, Optional, List
 from zoneinfo import ZoneInfo
 import asyncio
 
+from app.services.alpaca_clock import (
+    get_market_clock,
+    get_clock_service,
+    MarketClockData,
+)
+
 logger = logging.getLogger(__name__)
 
 # US Eastern timezone (handles DST automatically)
 ET = ZoneInfo("America/New_York")
 
-# Regular market hours
-MARKET_OPEN = time(9, 30)  # 9:30 AM ET
-MARKET_CLOSE = time(16, 0)  # 4:00 PM ET
-
-# 2024-2025 US Market Holidays (NYSE/NASDAQ)
-MARKET_HOLIDAYS = {
-    # 2024
-    "2024-01-01",  # New Year's Day
-    "2024-01-15",  # Martin Luther King Jr. Day
-    "2024-02-19",  # Presidents Day
-    "2024-03-29",  # Good Friday
-    "2024-05-27",  # Memorial Day
-    "2024-06-19",  # Juneteenth
-    "2024-07-04",  # Independence Day
-    "2024-09-02",  # Labor Day
-    "2024-11-28",  # Thanksgiving
-    "2024-12-25",  # Christmas
-    # 2025
-    "2025-01-01",  # New Year's Day
-    "2025-01-20",  # Martin Luther King Jr. Day
-    "2025-02-17",  # Presidents Day
-    "2025-04-18",  # Good Friday
-    "2025-05-26",  # Memorial Day
-    "2025-06-19",  # Juneteenth
-    "2025-07-04",  # Independence Day
-    "2025-09-01",  # Labor Day
-    "2025-11-27",  # Thanksgiving
-    "2025-12-25",  # Christmas
-}
-
-# Early close days (1:00 PM ET close)
-EARLY_CLOSE_DAYS = {
-    "2024-07-03",  # Day before Independence Day
-    "2024-11-29",  # Day after Thanksgiving
-    "2024-12-24",  # Christmas Eve
-    "2025-07-03",  # Day before Independence Day
-    "2025-11-28",  # Day after Thanksgiving
-    "2025-12-24",  # Christmas Eve
-}
-
 
 def is_market_open() -> bool:
     """Check if the US stock market is currently open.
 
+    This function uses Alpaca's /v2/clock endpoint for accurate market status,
+    with automatic fallback to local timezone calculations if the API is unavailable.
+
     Returns:
         True if market is open, False otherwise
     """
-    now = datetime.now(ET)
-    today_str = now.strftime("%Y-%m-%d")
-
-    # Check if today is a holiday
-    if today_str in MARKET_HOLIDAYS:
+    try:
+        clock = get_market_clock()
+        return clock.is_open
+    except Exception as e:
+        logger.error(f"Error checking market status: {e}")
+        # Emergency fallback - assume closed to be safe
         return False
-
-    # Check if weekend
-    if now.weekday() >= 5:  # Saturday = 5, Sunday = 6
-        return False
-
-    # Get market close time (early close or regular)
-    close_time = time(13, 0) if today_str in EARLY_CLOSE_DAYS else MARKET_CLOSE
-
-    # Check if within market hours
-    current_time = now.time()
-    return MARKET_OPEN <= current_time < close_time
 
 
 def get_next_market_open() -> datetime:
     """Get the next market open time.
 
+    This function uses Alpaca's /v2/clock endpoint for accurate timing,
+    with automatic fallback to local timezone calculations if the API is unavailable.
+
     Returns:
-        datetime of next market open in ET
+        datetime of next market open in ET (timezone-aware)
     """
-    now = datetime.now(ET)
-    today_str = now.strftime("%Y-%m-%d")
+    try:
+        clock = get_market_clock()
 
-    # If market is open now, return now
-    if is_market_open():
-        return now
+        # If market is currently open, return now
+        if clock.is_open:
+            return datetime.now(ET)
 
-    # Start checking from today
-    check_date = now.date()
+        return clock.next_open
 
-    # Check up to 10 days ahead (handles long weekends + holidays)
-    for _ in range(10):
-        date_str = check_date.strftime("%Y-%m-%d")
-
-        # Skip weekends and holidays
-        if check_date.weekday() < 5 and date_str not in MARKET_HOLIDAYS:
-            open_datetime = datetime.combine(check_date, MARKET_OPEN, tzinfo=ET)
-
-            # If it's today and past market open but before close, return today
-            if check_date == now.date() and now.time() >= MARKET_OPEN:
-                close_time = time(13, 0) if date_str in EARLY_CLOSE_DAYS else MARKET_CLOSE
-                if now.time() < close_time:
-                    return now
-                # Market closed today, check tomorrow
-                check_date += timedelta(days=1)
-                continue
-
-            # If it's today and before market open, return today's open
-            if check_date == now.date() and now.time() < MARKET_OPEN:
-                return open_datetime
-
-            # Future date
-            if check_date > now.date():
-                return open_datetime
-
-        check_date += timedelta(days=1)
-
-    # Fallback: next Monday at market open
-    days_until_monday = (7 - now.weekday()) % 7 or 7
-    next_monday = now.date() + timedelta(days=days_until_monday)
-    return datetime.combine(next_monday, MARKET_OPEN, tzinfo=ET)
+    except Exception as e:
+        logger.error(f"Error getting next market open: {e}")
+        # Emergency fallback - return tomorrow's open
+        now = datetime.now(ET)
+        tomorrow = now.date() + timedelta(days=1)
+        return datetime.combine(tomorrow, time(9, 30), tzinfo=ET)
 
 
 def get_market_close_time() -> Optional[datetime]:
     """Get today's market close time if market is open.
 
+    This function uses Alpaca's /v2/clock endpoint for accurate timing,
+    with automatic fallback to local timezone calculations if the API is unavailable.
+
     Returns:
         datetime of today's close in ET, or None if market is closed
     """
-    if not is_market_open():
+    try:
+        clock = get_market_clock()
+
+        if not clock.is_open:
+            return None
+
+        return clock.next_close
+
+    except Exception as e:
+        logger.error(f"Error getting market close time: {e}")
         return None
-
-    now = datetime.now(ET)
-    today_str = now.strftime("%Y-%m-%d")
-    close_time = time(13, 0) if today_str in EARLY_CLOSE_DAYS else MARKET_CLOSE
-
-    return datetime.combine(now.date(), close_time, tzinfo=ET)
 
 
 def seconds_until_market_open() -> float:
     """Get seconds until next market open.
 
+    This function uses Alpaca's /v2/clock endpoint for accurate timing.
+
     Returns:
         Seconds until market open (0 if currently open)
     """
-    if is_market_open():
+    try:
+        clock = get_market_clock()
+
+        if clock.is_open:
+            return 0
+
+        now = datetime.now(ET)
+        delta = clock.next_open - now
+        return max(0, delta.total_seconds())
+
+    except Exception as e:
+        logger.error(f"Error calculating seconds until market open: {e}")
         return 0
-
-    next_open = get_next_market_open()
-    now = datetime.now(ET)
-    delta = next_open - now
-
-    return max(0, delta.total_seconds())
 
 
 def seconds_until_market_close() -> float:
     """Get seconds until market close.
 
+    This function uses Alpaca's /v2/clock endpoint for accurate timing.
+
     Returns:
         Seconds until close (0 if market is closed)
     """
-    close_time = get_market_close_time()
-    if not close_time:
+    try:
+        clock = get_market_clock()
+
+        if not clock.is_open:
+            return 0
+
+        now = datetime.now(ET)
+        delta = clock.next_close - now
+        return max(0, delta.total_seconds())
+
+    except Exception as e:
+        logger.error(f"Error calculating seconds until market close: {e}")
         return 0
 
-    now = datetime.now(ET)
-    delta = close_time - now
 
-    return max(0, delta.total_seconds())
+def get_market_status() -> dict:
+    """Get comprehensive market status information.
+
+    This function returns detailed market status including data source
+    information for debugging and monitoring.
+
+    Returns:
+        Dictionary with market status details including:
+        - is_open: Current market open/closed status
+        - timestamp: Current market time
+        - next_open: Next market open datetime (ISO format)
+        - next_close: Next market close datetime (ISO format)
+        - seconds_until_open: Seconds until market opens
+        - seconds_until_close: Seconds until market closes
+        - data_source: "alpaca" or "fallback"
+        - service_status: Clock service diagnostics
+    """
+    try:
+        clock = get_market_clock()
+        service = get_clock_service()
+
+        return {
+            "is_open": clock.is_open,
+            "timestamp": clock.timestamp.isoformat(),
+            "next_open": clock.next_open.isoformat(),
+            "next_close": clock.next_close.isoformat(),
+            "seconds_until_open": seconds_until_market_open(),
+            "seconds_until_close": seconds_until_market_close(),
+            "data_source": clock.source,
+            "fetched_at": clock.fetched_at.isoformat(),
+            "service_status": service.get_status(),
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting market status: {e}")
+        return {
+            "is_open": False,
+            "error": str(e),
+            "data_source": "error",
+        }
 
 
 class MarketHoursScheduler:
     """Manages scheduling of tasks during market hours.
 
     Automatically starts tasks when market opens and stops when it closes.
+    Uses Alpaca's /v2/clock endpoint for accurate market status detection.
     """
 
     def __init__(self):
@@ -236,7 +236,15 @@ class MarketHoursScheduler:
         wait_seconds = seconds_until_market_open()
         if wait_seconds > 0:
             logger.info(f"Market closed. Waiting {wait_seconds/3600:.1f} hours until open")
-            await asyncio.sleep(wait_seconds)
+
+            # Sleep in chunks to allow for cancellation and status updates
+            while wait_seconds > 0 and self._running:
+                sleep_time = min(wait_seconds, 60)  # Check every minute
+                await asyncio.sleep(sleep_time)
+                wait_seconds = seconds_until_market_open()
+
+        if not self._running:
+            return
 
         # Market is now open - run open callbacks
         logger.info("Market is open - starting monitoring")
@@ -278,7 +286,12 @@ class MarketHoursScheduler:
                 wait_seconds = seconds_until_market_open()
                 if wait_seconds > 0:
                     logger.info(f"Waiting {wait_seconds/3600:.1f} hours until next market open")
-                    await asyncio.sleep(min(wait_seconds, 3600))  # Check every hour max
+
+                    # Sleep in chunks to allow for cancellation
+                    while wait_seconds > 0 and self._running:
+                        sleep_time = min(wait_seconds, 3600)  # Check every hour max
+                        await asyncio.sleep(sleep_time)
+                        wait_seconds = seconds_until_market_open()
 
     async def start(self) -> None:
         """Start the scheduler."""
@@ -318,13 +331,16 @@ class MarketHoursScheduler:
         Returns:
             Dictionary with scheduler status information
         """
+        market_status = get_market_status()
+
         return {
             "running": self._running,
-            "market_open": is_market_open(),
-            "next_open": get_next_market_open().isoformat() if not is_market_open() else None,
-            "close_time": get_market_close_time().isoformat() if is_market_open() else None,
-            "seconds_until_open": seconds_until_market_open(),
-            "seconds_until_close": seconds_until_market_close(),
+            "market_open": market_status.get("is_open", False),
+            "next_open": market_status.get("next_open") if not market_status.get("is_open") else None,
+            "close_time": market_status.get("next_close") if market_status.get("is_open") else None,
+            "seconds_until_open": market_status.get("seconds_until_open", 0),
+            "seconds_until_close": market_status.get("seconds_until_close", 0),
+            "data_source": market_status.get("data_source", "unknown"),
             "registered_callbacks": {
                 "on_open": len(self._on_market_open_callbacks),
                 "on_close": len(self._on_market_close_callbacks),

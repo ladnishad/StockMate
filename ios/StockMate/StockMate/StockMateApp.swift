@@ -31,13 +31,26 @@ struct StockMateApp: App {
                 await authManager.checkSession()
             }
             .onChange(of: scenePhase) { oldPhase, newPhase in
-                // Re-check session when app returns from background
-                if newPhase == .active && oldPhase == .background {
-                    Task {
-                        await authManager.checkSession()
-                    }
+                handleScenePhaseChange(oldPhase: oldPhase, newPhase: newPhase)
+            }
+        }
+    }
+
+    /// Handle scene phase changes for token management
+    private func handleScenePhaseChange(oldPhase: ScenePhase, newPhase: ScenePhase) {
+        switch newPhase {
+        case .active:
+            // Re-check session when app becomes active (from background OR inactive)
+            // This covers both returning from background and cold launches
+            if oldPhase != .active {
+                Task {
+                    await authManager.checkSession()
                 }
             }
+        case .background, .inactive:
+            break
+        @unknown default:
+            break
         }
     }
 

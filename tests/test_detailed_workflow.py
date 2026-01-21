@@ -1,16 +1,110 @@
 #!/usr/bin/env python3
-"""Detailed test to show ALL data gathered and sent for ALCY analysis."""
+"""Detailed test to show ALL data gathered and sent for stock analysis.
 
+Usage:
+    python tests/test_detailed_workflow.py          # Default: AAPL
+    python tests/test_detailed_workflow.py TSLA     # Test with TSLA
+    python tests/test_detailed_workflow.py NVDA     # Test with NVDA
+"""
+
+import argparse
 import asyncio
 import os
 import sys
 import json
 from datetime import datetime
 
+import asciichartpy
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-async def test_detailed_workflow():
-    """Test with detailed output of all data gathered."""
+# ============================================================================
+# CLI Display Helpers
+# ============================================================================
+
+# Agent names in consistent order for display
+AGENT_ORDER = ["day-trade-analyzer", "swing-trade-analyzer", "position-trade-analyzer"]
+
+# Detect if running in interactive terminal (for in-place updates)
+IS_TTY = sys.stdout.isatty()
+
+# Track last printed state for non-TTY mode (to avoid duplicate lines)
+_last_agent_states: dict = {}
+
+
+def print_subagent_progress(subagents: dict, first_update: bool = False):
+    """Print/update subagent progress. Uses in-place updates if TTY, else filtered print."""
+    if IS_TTY:
+        _print_inline(subagents, first_update)
+    else:
+        _print_filtered(subagents)
+
+
+def _print_inline(subagents: dict, first_update: bool):
+    """In-place update using ANSI escape codes (TTY mode)."""
+    num_agents = len(AGENT_ORDER)
+
+    if not first_update:
+        # Move cursor up to overwrite previous lines
+        print(f"\033[{num_agents}A", end="")
+
+    for agent_name in AGENT_ORDER:
+        progress = subagents.get(agent_name, {})
+        status = progress.get("status", "pending")
+        step = progress.get("current_step") or ""
+
+        # Clean up status string
+        status_clean = str(status).replace("SubAgentStatus.", "").upper()
+        line = f"  >> {agent_name:<25} [{status_clean:<15}] {step[:40]}"
+        print(f"\033[K{line}")  # \033[K clears to end of line
+
+    sys.stdout.flush()
+
+
+def _print_filtered(subagents: dict):
+    """Fallback for non-TTY: only print when status changes."""
+    global _last_agent_states
+
+    for agent_name in AGENT_ORDER:
+        progress = subagents.get(agent_name, {})
+        status = str(progress.get("status", "pending"))
+        step = progress.get("current_step") or ""
+
+        current_state = f"{status}:{step}"
+        if _last_agent_states.get(agent_name) != current_state:
+            _last_agent_states[agent_name] = current_state
+            status_clean = status.replace("SubAgentStatus.", "").upper()
+            print(f"  >> {agent_name}: {status_clean} - {step}")
+
+
+def render_ascii_chart(bars: list, height: int = 10) -> str:
+    """Render price bars as ASCII line chart showing closing prices.
+
+    Args:
+        bars: List of bar dicts with 'close' key
+        height: Chart height in lines
+
+    Returns:
+        Formatted ASCII chart string
+    """
+    if not bars:
+        return "      (No data available)"
+
+    closes = [bar['close'] for bar in bars]
+
+    # Render chart
+    chart = asciichartpy.plot(closes, {'height': height})
+
+    # Indent each line for formatting
+    return '\n'.join(f"      {line}" for line in chart.split('\n'))
+
+
+async def test_detailed_workflow(symbol: str):
+    """Test with detailed output of all data gathered.
+
+    Args:
+        symbol: Stock ticker to test
+    """
     from app.agent.sdk import tools as sdk_tools
     from app.agent.sdk.orchestrator import TradePlanOrchestrator
     from app.agent.providers.factory import get_provider_config, get_user_provider
@@ -19,8 +113,8 @@ async def test_detailed_workflow():
     from app.agent.prompts.day_trade_prompt import build_day_trade_prompt
     from app.agent.prompts.swing_trade_prompt import build_swing_trade_prompt
     from app.agent.prompts.position_trade_prompt import build_position_trade_prompt
+    from app.tools.market_data import fetch_price_bars
 
-    symbol = "ALCY"
     user_id = "test_user"
 
     print("=" * 80)
@@ -52,7 +146,7 @@ async def test_detailed_workflow():
     timeframes = [
         ("5m", 3, "Day Trade"),
         ("1d", 100, "Swing Trade"),
-        ("1w", 52, "Position Trade"),
+        ("1w", 365, "Position Trade"),  # 365 days to get ~52 weekly bars
     ]
 
     for tf, days, style in timeframes:
@@ -78,15 +172,15 @@ async def test_detailed_workflow():
     print("=" * 80)
 
     ema_configs = [
-        ([5, 9, 20], "Day Trade"),
-        ([9, 21, 50], "Swing Trade"),
-        ([21, 50, 200], "Position Trade"),
+        ([5, 9, 20], "5m", "Day Trade"),
+        ([9, 21, 50], "1d", "Swing Trade"),
+        ([21, 50, 200], "1w", "Position Trade"),
     ]
 
-    for ema_periods, style in ema_configs:
-        print(f"\n  --- {style} (EMAs: {ema_periods}) ---")
+    for ema_periods, timeframe, style in ema_configs:
+        print(f"\n  --- {style} (EMAs: {ema_periods}, Timeframe: {timeframe}) ---")
         try:
-            indicators = await sdk_tools.get_technical_indicators(symbol, ema_periods, 14)
+            indicators = await sdk_tools.get_technical_indicators(symbol, ema_periods, 14, timeframe=timeframe)
             print(f"    EMA Trend: {indicators.get('ema_trend', 'N/A')}")
             for period in ema_periods:
                 ema_key = f"ema_{period}"
@@ -97,8 +191,15 @@ async def test_detailed_workflow():
                 print(f"    RSI(14): {rsi.get('value', 'N/A')} - {rsi.get('signal', 'N/A')}")
             if 'macd' in indicators:
                 macd = indicators['macd']
-                print(f"    MACD: {macd.get('macd_line', 'N/A'):.4f}, Signal: {macd.get('signal_line', 'N/A'):.4f}")
-                print(f"    MACD Histogram: {macd.get('histogram', 'N/A'):.4f} ({macd.get('histogram_trend', 'N/A')})")
+                macd_value = macd.get('value')  # MACD line value
+                histogram = macd.get('histogram')
+                signal = macd.get('signal', 'N/A')  # Trading signal (bullish/bearish/neutral)
+                if macd_value is not None:
+                    print(f"    MACD Line: {macd_value:.4f}, Signal: {signal}")
+                    if histogram is not None:
+                        print(f"    MACD Histogram: {histogram:.4f}")
+                else:
+                    print(f"    MACD: N/A")
         except Exception as e:
             print(f"    Error: {e}")
 
@@ -119,6 +220,62 @@ async def test_detailed_workflow():
         except Exception as e:
             print(f"    Error: {e}")
 
+    # Step 4.5: Fibonacci Levels
+    print("\n" + "=" * 80)
+    print("STEP 4.5: FIBONACCI LEVELS")
+    print("=" * 80)
+
+    fib_configs = [
+        ("5m", 3, "day", "Day Trade"),
+        ("1d", 100, "swing", "Swing Trade"),
+        ("1w", 365, "position", "Position Trade"),
+    ]
+
+    for tf, days, trade_type, style in fib_configs:
+        print(f"\n  --- {style} Fibonacci ({trade_type}) ---")
+        try:
+            # First get the price bars for this timeframe
+            bars_data = await sdk_tools.get_price_bars(symbol, tf, days)
+            bars = bars_data.get("bars", [])
+
+            # Then get Fibonacci levels
+            fib_levels = await sdk_tools.get_fibonacci_levels(symbol, bars, trade_type)
+
+            print(f"    Swing High: ${fib_levels.get('swing_high', 'N/A')}")
+            print(f"    Swing Low: ${fib_levels.get('swing_low', 'N/A')}")
+            print(f"    Trend: {fib_levels.get('trend', 'N/A')}")
+            print(f"    Signal: {fib_levels.get('signal', 'N/A')}")
+            print(f"    At Entry Level: {fib_levels.get('at_entry_level', False)}")
+            print(f"    Nearest Level: {fib_levels.get('nearest_level', 'N/A')} (${fib_levels.get('nearest_price', 'N/A')})")
+            print(f"    Distance: {fib_levels.get('distance_pct', 'N/A'):.2f}%" if isinstance(fib_levels.get('distance_pct'), (int, float)) else f"    Distance: N/A")
+
+            # Key retracement levels
+            retracements = fib_levels.get('retracement_levels', {})
+            if retracements:
+                print(f"    Retracements:")
+                for level in ['0.382', '0.500', '0.618', '0.786']:
+                    if level in retracements:
+                        print(f"      {level}: ${retracements[level]:.2f}")
+
+            # Extension targets
+            extensions = fib_levels.get('extension_levels', {})
+            if extensions:
+                print(f"    Extensions:")
+                for level in ['1.272', '1.618', '2.000', '2.618']:
+                    if level in extensions:
+                        print(f"      {level}: ${extensions[level]:.2f}")
+
+            # Suggested zones
+            entry_zone = fib_levels.get('suggested_entry_zone', {})
+            stop_zone = fib_levels.get('suggested_stop_zone', {})
+            if entry_zone.get('low') and entry_zone.get('high'):
+                print(f"    Suggested Entry: ${entry_zone['low']:.2f} - ${entry_zone['high']:.2f}")
+            if stop_zone.get('low') and stop_zone.get('high'):
+                print(f"    Suggested Stop: ${stop_zone['low']:.2f} - ${stop_zone['high']:.2f}")
+
+        except Exception as e:
+            print(f"    Error: {e}")
+
     # Step 5: Chart Generation
     print("\n" + "=" * 80)
     print("STEP 5: CHART GENERATION")
@@ -127,18 +284,26 @@ async def test_detailed_workflow():
     chart_configs = [
         ("5m", 3, "Day Trade"),
         ("1d", 100, "Swing Trade"),
-        ("1w", 52, "Position Trade"),
+        ("1w", 365, "Position Trade"),  # 365 days to get ~52 weekly bars
     ]
 
     for tf, days, style in chart_configs:
         print(f"\n  --- {style} Chart ({tf}) ---")
         try:
+            # Fetch raw bars for ASCII preview
+            raw_bars = fetch_price_bars(symbol, timeframe=tf, days_back=days)
+            if raw_bars:
+                bars_for_chart = [{'close': b.close} for b in raw_bars]
+                print(f"\n    ASCII Preview ({len(bars_for_chart)} bars):")
+                print(render_ascii_chart(bars_for_chart, height=8))
+                print()
+
             chart_result = await sdk_tools.generate_chart(symbol, tf, days)
             if 'chart_image_base64' in chart_result:
                 img_len = len(chart_result['chart_image_base64'])
                 print(f"    Chart Generated: {img_len:,} bytes (base64)")
                 print(f"    Timeframe: {chart_result.get('timeframe', 'N/A')}")
-                print(f"    Bars Used: {chart_result.get('bars_count', 'N/A')}")
+                print(f"    Bars Used: {chart_result.get('bars_plotted', 'N/A')}")
             else:
                 print(f"    Error: {chart_result.get('error', 'Unknown')}")
         except Exception as e:
@@ -155,6 +320,15 @@ async def test_detailed_workflow():
     for tf, days, style in [("1d", 100, "Swing Trade")]:  # Just test one
         print(f"\n  --- {style} Vision Analysis ---")
         try:
+            # Fetch raw price bars for ASCII chart preview
+            raw_bars = fetch_price_bars(symbol, timeframe=tf, days_back=days)
+            if raw_bars:
+                # Convert to list of dicts for render_ascii_chart
+                bars_for_chart = [{'close': b.close} for b in raw_bars]
+                print(f"\n    Chart Preview ({tf}, {len(bars_for_chart)} bars):")
+                print(render_ascii_chart(bars_for_chart, height=10))
+                print()
+
             chart_result = await sdk_tools.generate_chart(symbol, tf, days)
             if 'chart_image_base64' in chart_result:
                 vision_result = await sdk_tools.analyze_chart_vision(
@@ -202,6 +376,7 @@ async def test_detailed_workflow():
 
     final_result = None
     all_events = []
+    first_subagent_update = True  # Track first update for ANSI cursor positioning
 
     try:
         async for event in orchestrator.generate_plan_stream(
@@ -214,16 +389,24 @@ async def test_detailed_workflow():
             all_events.append(event_data)
 
             if event_type == "orchestrator_step":
-                step = event_data.get("step", "unknown")
-                status = event_data.get("status", "")
-                findings = event_data.get("findings", [])
+                step = event_data.get("step_type", "unknown")
+                status = event_data.get("step_status", "")
+                findings = event_data.get("step_findings", [])
+                # Reset first_subagent_update when switching orchestrator steps
+                if step == "spawning_subagents":
+                    first_subagent_update = True
                 print(f"\n  >> {step.upper().replace('_', ' ')} [{status}]")
                 for f in findings[:5]:
                     print(f"     - {f}")
 
+            elif event_type == "subagent_progress":
+                subagents = event_data.get("subagents", {})
+                print_subagent_progress(subagents, first_update=first_subagent_update)
+                first_subagent_update = False
+
             elif event_type == "subagent_complete":
                 agent_name = event_data.get("agent_name", "")
-                findings = event_data.get("findings", [])
+                findings = event_data.get("agent_findings", [])
                 print(f"\n  >> AGENT COMPLETE: {agent_name}")
                 for f in findings[:5]:
                     print(f"     - {f}")
@@ -291,4 +474,22 @@ async def test_detailed_workflow():
     print("=" * 80)
 
 if __name__ == "__main__":
-    asyncio.run(test_detailed_workflow())
+    parser = argparse.ArgumentParser(
+        description="Detailed orchestrator workflow test for a stock",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python tests/test_detailed_workflow.py AAPL
+    python tests/test_detailed_workflow.py TSLA
+    python tests/test_detailed_workflow.py NVDA
+        """
+    )
+    parser.add_argument(
+        "symbol",
+        nargs="?",
+        default="AAPL",
+        help="Stock ticker symbol (default: AAPL)"
+    )
+    args = parser.parse_args()
+
+    asyncio.run(test_detailed_workflow(args.symbol.upper()))

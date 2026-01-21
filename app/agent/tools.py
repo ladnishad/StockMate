@@ -13,6 +13,7 @@ from app.tools.analysis import (
     calculate_volume_profile,
     detect_chart_patterns,
     detect_divergences,
+    calculate_fibonacci_levels,
 )
 from app.tools.indicators import (
     calculate_rsi,
@@ -21,6 +22,13 @@ from app.tools.indicators import (
     calculate_vwap,
     calculate_bollinger_bands,
     analyze_volume,
+    calculate_atr,
+    # New institutional-grade indicators
+    calculate_ichimoku,
+    calculate_williams_r,
+    calculate_parabolic_sar,
+    calculate_cmf,
+    calculate_adl,
 )
 from app.tools.market_data import (
     fetch_latest_quote,
@@ -61,17 +69,23 @@ async def get_current_price(symbol: str) -> Dict[str, Any]:
 
 
 async def get_key_levels(symbol: str) -> Dict[str, Any]:
-    """Get support and resistance levels for a stock.
+    """Get support and resistance levels for a stock with touch count analysis.
+
+    Each level includes reliability metrics based on historical touches:
+    - touches: How many times price has tested this level
+    - strength: Score 0-100 based on touches, recency, and hold rate
+    - reliability: "weak" (1 touch), "moderate" (2-3), "strong" (4-5), "institutional" (6+)
+    - last_touch_bars_ago: How recently the level was tested
 
     Args:
         symbol: Stock ticker symbol
 
     Returns:
-        Dictionary with support and resistance levels
+        Dictionary with support and resistance levels including touch count metrics
     """
     try:
-        # Fetch price bars first
-        bars = fetch_price_bars(symbol.upper(), timeframe="1d", days_back=50)
+        # Fetch more bars for better touch count analysis
+        bars = fetch_price_bars(symbol.upper(), timeframe="1d", days_back=100)
 
         if not bars or len(bars) < 10:
             return {"symbol": symbol.upper(), "error": "Insufficient data", "support": [], "resistance": []}
@@ -81,11 +95,33 @@ async def get_key_levels(symbol: str) -> Dict[str, Any]:
         return {
             "symbol": symbol.upper(),
             "support": [
-                {"price": l["price"], "distance_pct": l.get("distance_pct", 0), "type": l.get("type", "unknown")}
+                {
+                    "price": l["price"],
+                    "distance_pct": l.get("distance_pct", 0),
+                    "type": l.get("type", "unknown"),
+                    "touches": l.get("touches", 0),
+                    "high_volume_touches": l.get("high_volume_touches", 0),
+                    "bounce_quality": l.get("bounce_quality", 0),
+                    "reclaimed": l.get("reclaimed", False),
+                    "strength": l.get("strength", 0),
+                    "reliability": l.get("reliability", "weak"),
+                    "last_touch_bars_ago": l.get("last_touch_bars_ago"),
+                }
                 for l in levels.get("support", [])[:5]
             ],
             "resistance": [
-                {"price": l["price"], "distance_pct": l.get("distance_pct", 0), "type": l.get("type", "unknown")}
+                {
+                    "price": l["price"],
+                    "distance_pct": l.get("distance_pct", 0),
+                    "type": l.get("type", "unknown"),
+                    "touches": l.get("touches", 0),
+                    "high_volume_touches": l.get("high_volume_touches", 0),
+                    "bounce_quality": l.get("bounce_quality", 0),
+                    "reclaimed": l.get("reclaimed", False),
+                    "strength": l.get("strength", 0),
+                    "reliability": l.get("reliability", "weak"),
+                    "last_touch_bars_ago": l.get("last_touch_bars_ago"),
+                }
                 for l in levels.get("resistance", [])[:5]
             ],
         }
@@ -95,56 +131,114 @@ async def get_key_levels(symbol: str) -> Dict[str, Any]:
 
 
 async def get_technical_indicators(symbol: str) -> Dict[str, Any]:
-    """Get key technical indicators for a stock.
+    """Get comprehensive technical indicators for a stock.
+
+    Includes institutional-grade indicators for professional analysis:
+    - Core: RSI, MACD, EMAs, Bollinger Bands, Volume
+    - Advanced: Ichimoku Cloud, Williams %R, Parabolic SAR, CMF, ADL
+    - Volatility: ATR with percentage calculation
 
     Args:
         symbol: Stock ticker symbol
 
     Returns:
-        Dictionary with RSI, MACD, EMAs, volume analysis
+        Dictionary with full technical indicator suite
     """
     try:
-        # Fetch more bars to ensure we have enough for MACD (needs 35+)
+        # Fetch more bars to ensure we have enough for Ichimoku (needs 52+)
         bars = fetch_price_bars(symbol.upper(), timeframe="1d", days_back=100)
 
-        if not bars or len(bars) < 35:
-            return {"symbol": symbol.upper(), "error": "Insufficient data (need at least 35 bars)"}
+        if not bars or len(bars) < 52:
+            return {"symbol": symbol.upper(), "error": "Insufficient data (need at least 52 bars)"}
 
         # Extract price series for calculations
         closes = [b.close for b in bars]
         volumes = [b.volume for b in bars]
+        current_price = closes[-1]
 
-        # Calculate indicators - pass bars to functions that expect PriceBar objects
+        # ============================================================
+        # CORE INDICATORS
+        # ============================================================
         rsi_result = calculate_rsi(bars)
         macd_result = calculate_macd(bars)
         ema_9_result = calculate_ema(bars, 9)
         ema_21_result = calculate_ema(bars, 21)
-        ema_50_result = calculate_ema(bars, 50) if len(bars) >= 50 else None
+        ema_50_result = calculate_ema(bars, 50)
         volume_result = analyze_volume(bars)
         bollinger_result = calculate_bollinger_bands(bars)
+        atr_result = calculate_atr(bars)
 
-        current_price = closes[-1]
+        # ============================================================
+        # INSTITUTIONAL-GRADE INDICATORS (Shortcomings Fix)
+        # Each wrapped in try/except for resilience
+        # ============================================================
+        try:
+            ichimoku_result = calculate_ichimoku(bars)
+        except Exception as e:
+            logger.warning(f"Could not calculate Ichimoku: {e}")
+            ichimoku_result = None
+
+        try:
+            williams_result = calculate_williams_r(bars)
+        except Exception as e:
+            logger.warning(f"Could not calculate Williams %R: {e}")
+            williams_result = None
+
+        try:
+            psar_result = calculate_parabolic_sar(bars)
+        except Exception as e:
+            logger.warning(f"Could not calculate Parabolic SAR: {e}")
+            psar_result = None
+
+        try:
+            cmf_result = calculate_cmf(bars)
+        except Exception as e:
+            logger.warning(f"Could not calculate CMF: {e}")
+            cmf_result = None
+
+        try:
+            adl_result = calculate_adl(bars)
+        except Exception as e:
+            logger.warning(f"Could not calculate ADL: {e}")
+            adl_result = None
 
         # Extract values from Indicator objects
         rsi_value = rsi_result.value if hasattr(rsi_result, 'value') else rsi_result
         ema_9 = ema_9_result.value if hasattr(ema_9_result, 'value') else ema_9_result
         ema_21 = ema_21_result.value if hasattr(ema_21_result, 'value') else ema_21_result
-        ema_50 = ema_50_result.value if ema_50_result and hasattr(ema_50_result, 'value') else ema_50_result
+        ema_50 = ema_50_result.value if hasattr(ema_50_result, 'value') else ema_50_result
+
+        # Determine EMA trend alignment
+        ema_bullish_count = sum([
+            current_price > ema_9 if ema_9 else False,
+            current_price > ema_21 if ema_21 else False,
+            current_price > ema_50 if ema_50 else False,
+        ])
+        ema_trend = "bullish" if ema_bullish_count >= 2 else "bearish" if ema_bullish_count == 0 else "mixed"
+
+        # ATR percentage for volatility classification
+        atr_value = atr_result.value if hasattr(atr_result, 'value') else 0
+        atr_pct = (atr_value / current_price * 100) if current_price > 0 else 0
+        volatility_regime = "high" if atr_pct > 3.0 else "moderate" if atr_pct > 1.5 else "low"
 
         return {
             "symbol": symbol.upper(),
             "price": current_price,
+
+            # Core Momentum
             "rsi": {
                 "value": rsi_value,
-                "signal": "oversold" if rsi_value < 30 else "overbought" if rsi_value > 70 else "neutral",
+                "signal": rsi_result.signal if hasattr(rsi_result, 'signal') else "neutral",
+                "interpretation": rsi_result.metadata.get("interpretation") if hasattr(rsi_result, 'metadata') else None,
             },
             "macd": {
-                "macd": macd_result.value if hasattr(macd_result, 'value') else macd_result.get("macd") if isinstance(macd_result, dict) else None,
-                "signal": macd_result.signal if hasattr(macd_result, 'signal') else "neutral",  # String: bullish/bearish/neutral
-                "signal_line": macd_result.metadata.get("signal_line") if hasattr(macd_result, 'metadata') else None,  # Float value
+                "value": macd_result.value if hasattr(macd_result, 'value') else None,
+                "signal": macd_result.signal if hasattr(macd_result, 'signal') else "neutral",
                 "histogram": macd_result.metadata.get("histogram") if hasattr(macd_result, 'metadata') else None,
-                "crossover": macd_result.metadata.get("bullish_crossover") or macd_result.metadata.get("bearish_crossover") if hasattr(macd_result, 'metadata') else None,
+                "histogram_trend": macd_result.metadata.get("histogram_trend") if hasattr(macd_result, 'metadata') else None,
             },
+
+            # Trend
             "emas": {
                 "ema_9": ema_9,
                 "ema_21": ema_21,
@@ -152,18 +246,86 @@ async def get_technical_indicators(symbol: str) -> Dict[str, Any]:
                 "above_9": current_price > ema_9 if ema_9 else None,
                 "above_21": current_price > ema_21 if ema_21 else None,
                 "above_50": current_price > ema_50 if ema_50 else None,
+                "trend": ema_trend,
+                "bullish_count": ema_bullish_count,
             },
+
+            # Volume
             "volume": {
                 "current": volumes[-1],
                 "average": volume_result.metadata.get("average_volume") if hasattr(volume_result, 'metadata') else None,
                 "relative": volume_result.metadata.get("relative_volume") if hasattr(volume_result, 'metadata') else None,
-                "trend": volume_result.interpretation if hasattr(volume_result, 'interpretation') else None,
+                "signal": volume_result.signal if hasattr(volume_result, 'signal') else "neutral",
             },
+
+            # Volatility
             "bollinger": {
                 "upper": bollinger_result.metadata.get("upper") if hasattr(bollinger_result, 'metadata') else None,
                 "middle": bollinger_result.metadata.get("middle") if hasattr(bollinger_result, 'metadata') else None,
                 "lower": bollinger_result.metadata.get("lower") if hasattr(bollinger_result, 'metadata') else None,
-                "position": bollinger_result.interpretation if hasattr(bollinger_result, 'interpretation') else None,
+                "width": bollinger_result.metadata.get("bandwidth") if hasattr(bollinger_result, 'metadata') else None,
+                "percent_b": bollinger_result.metadata.get("percent_b") if hasattr(bollinger_result, 'metadata') else None,
+            },
+            "atr": {
+                "value": atr_value,
+                "percentage": round(atr_pct, 2),
+                "volatility_regime": volatility_regime,
+                "stop_1x": atr_result.metadata.get("stop_distance_1x") if hasattr(atr_result, 'metadata') else None,
+                "stop_2x": atr_result.metadata.get("stop_distance_2x") if hasattr(atr_result, 'metadata') else None,
+            },
+
+            # ============================================================
+            # INSTITUTIONAL-GRADE INDICATORS
+            # ============================================================
+
+            # Ichimoku Cloud - comprehensive trend/momentum/S&R
+            "ichimoku": {
+                "signal": ichimoku_result.signal if ichimoku_result and hasattr(ichimoku_result, 'signal') else "N/A",
+                "tenkan_sen": ichimoku_result.metadata.get("tenkan_sen") if ichimoku_result and hasattr(ichimoku_result, 'metadata') else None,
+                "kijun_sen": ichimoku_result.metadata.get("kijun_sen") if ichimoku_result and hasattr(ichimoku_result, 'metadata') else None,
+                "price_vs_cloud": ichimoku_result.metadata.get("price_vs_cloud") if ichimoku_result and hasattr(ichimoku_result, 'metadata') else None,
+                "tk_cross": ichimoku_result.metadata.get("tk_cross") if ichimoku_result and hasattr(ichimoku_result, 'metadata') else None,
+                "cloud_color": ichimoku_result.metadata.get("cloud_color") if ichimoku_result and hasattr(ichimoku_result, 'metadata') else None,
+                "available": ichimoku_result is not None,
+            },
+
+            # Williams %R - overbought/oversold momentum
+            "williams_r": {
+                "value": williams_result.value if williams_result and hasattr(williams_result, 'value') else None,
+                "signal": williams_result.signal if williams_result and hasattr(williams_result, 'signal') else "N/A",
+                "overbought": williams_result.metadata.get("overbought") if williams_result and hasattr(williams_result, 'metadata') else None,
+                "oversold": williams_result.metadata.get("oversold") if williams_result and hasattr(williams_result, 'metadata') else None,
+                "oversold_cross": williams_result.metadata.get("oversold_cross") if williams_result and hasattr(williams_result, 'metadata') else None,
+                "overbought_cross": williams_result.metadata.get("overbought_cross") if williams_result and hasattr(williams_result, 'metadata') else None,
+                "available": williams_result is not None,
+            },
+
+            # Parabolic SAR - trend following with stop levels
+            "parabolic_sar": {
+                "value": psar_result.value if psar_result and hasattr(psar_result, 'value') else None,
+                "signal": psar_result.signal if psar_result and hasattr(psar_result, 'signal') else "N/A",
+                "sar_position": psar_result.metadata.get("sar_position") if psar_result and hasattr(psar_result, 'metadata') else None,
+                "trend_direction": psar_result.metadata.get("trend_direction") if psar_result and hasattr(psar_result, 'metadata') else None,
+                "distance_to_sar_pct": psar_result.metadata.get("distance_to_sar_pct") if psar_result and hasattr(psar_result, 'metadata') else None,
+                "available": psar_result is not None,
+            },
+
+            # Chaikin Money Flow - volume-weighted buying/selling pressure
+            "cmf": {
+                "value": cmf_result.value if cmf_result and hasattr(cmf_result, 'value') else None,
+                "signal": cmf_result.signal if cmf_result and hasattr(cmf_result, 'signal') else "N/A",
+                "interpretation": cmf_result.metadata.get("interpretation") if cmf_result and hasattr(cmf_result, 'metadata') else None,
+                "trend": cmf_result.metadata.get("cmf_trend") if cmf_result and hasattr(cmf_result, 'metadata') else None,
+                "available": cmf_result is not None,
+            },
+
+            # Accumulation/Distribution Line - cumulative volume flow
+            "adl": {
+                "signal": adl_result.signal if adl_result and hasattr(adl_result, 'signal') else "N/A",
+                "trend": adl_result.metadata.get("adl_trend") if adl_result and hasattr(adl_result, 'metadata') else None,
+                "price_confirmation": adl_result.metadata.get("adl_vs_price") if adl_result and hasattr(adl_result, 'metadata') else None,
+                "divergence": adl_result.metadata.get("adl_vs_price") == "diverging" if adl_result and hasattr(adl_result, 'metadata') else False,
+                "available": adl_result is not None,
             },
         }
     except Exception as e:
@@ -239,13 +401,20 @@ async def get_volume_profile(symbol: str) -> Dict[str, Any]:
 
 
 async def get_chart_patterns(symbol: str) -> Dict[str, Any]:
-    """Detect chart patterns (flags, triangles, head & shoulders, etc.).
+    """Detect chart patterns with historical success rates.
+
+    Detects classic and advanced patterns including:
+    - Reversal: Head & Shoulders, Double Top/Bottom, Rising/Falling Wedge
+    - Continuation: Flags, Triangles, Cup & Handle, Channels
+    - Consolidation: Rectangle
+
+    Each pattern includes historical success rate based on research data.
 
     Args:
         symbol: Stock ticker symbol
 
     Returns:
-        List of detected patterns with targets
+        List of detected patterns with targets and success rates
     """
     try:
         bars = fetch_price_bars(symbol.upper(), timeframe="1d", days_back=100)
@@ -258,24 +427,157 @@ async def get_chart_patterns(symbol: str) -> Dict[str, Any]:
         # Extract patterns from the result dictionary
         patterns_found = patterns_result.get("patterns_found", []) if isinstance(patterns_result, dict) else []
 
+        # Get ATR-based tolerance that was used
+        atr_tolerance = patterns_result.get("atr_tolerance") if isinstance(patterns_result, dict) else None
+
         return {
             "symbol": symbol.upper(),
+            "atr_tolerance_used": atr_tolerance,
             "patterns": [
                 {
                     "name": p.get("name"),
-                    "type": p.get("type"),  # bullish/bearish
+                    "type": p.get("type"),  # bullish/bearish/neutral
                     "confidence": p.get("confidence"),
-                    "target": p.get("target_price"),
-                    "entry": p.get("entry_price"),
-                    "stop": p.get("stop_price"),
+                    "target_price": p.get("target_price"),
+                    "entry_price": p.get("entry_price"),
+                    "stop_price": p.get("stop_price"),
+                    # Historical success rate from research (converted to percentage)
+                    "success_rate": round(p.get("success_rate", 0) * 100) if p.get("success_rate") else None,
+                    "failure_rate": round(100 - p.get("success_rate", 0.5) * 100) if p.get("success_rate") else None,
                 }
-                for p in patterns_found[:3]  # Top 3 patterns
+                for p in patterns_found[:5]  # Top 5 patterns
             ],
             "strongest_pattern": patterns_result.get("strongest_pattern") if isinstance(patterns_result, dict) else None,
+            "pattern_count": len(patterns_found),
         }
     except Exception as e:
         logger.error(f"Error getting patterns for {symbol}: {e}")
         return {"symbol": symbol.upper(), "error": str(e)}
+
+
+async def get_fibonacci_levels(symbol: str, trade_type: str = "swing") -> Dict[str, Any]:
+    """Get Fibonacci retracement and extension levels for a stock.
+
+    These levels are critical for:
+    - Entry points: Look for entries at 38.2%, 50%, 61.8% retracement
+    - Stop losses: Place stops beyond the next Fib level
+    - Targets: Use extension levels (1.272, 1.618, 2.618) for profit targets
+
+    Args:
+        symbol: Stock ticker symbol
+        trade_type: "day", "swing", or "position" - affects lookback period
+
+    Returns:
+        Dictionary with Fibonacci analysis including levels and signals
+    """
+    try:
+        # Determine lookback and days based on trade_type
+        if trade_type == "day":
+            swing_lookback = 10
+            days_back = 30
+            timeframe = "5m"  # Intraday for day trades
+        elif trade_type == "position":
+            swing_lookback = 50
+            days_back = 200
+            timeframe = "1d"
+        else:  # swing (default)
+            swing_lookback = 20
+            days_back = 100
+            timeframe = "1d"
+
+        # Fetch price bars
+        bars = fetch_price_bars(symbol.upper(), timeframe=timeframe, days_back=days_back)
+
+        if not bars or len(bars) < swing_lookback:
+            return {
+                "symbol": symbol.upper(),
+                "error": f"Insufficient data (need at least {swing_lookback} bars)",
+                "retracement_levels": {},
+                "extension_levels": {},
+            }
+
+        # Calculate Fibonacci levels
+        fib_indicator = calculate_fibonacci_levels(bars, swing_lookback=swing_lookback)
+
+        # Extract metadata
+        metadata = fib_indicator.metadata
+        current_price = metadata.get("current_price", 0)
+        swing_high = metadata.get("swing_high", 0)
+        swing_low = metadata.get("swing_low", 0)
+        nearest_level = metadata.get("nearest_level", "")
+        nearest_price = metadata.get("nearest_price", 0)
+
+        # Calculate distance to nearest level
+        distance_to_nearest = abs(current_price - nearest_price) if current_price and nearest_price else 0
+        distance_pct = (distance_to_nearest / current_price * 100) if current_price else 0
+
+        # Determine suggested zones based on signal and levels
+        retracement_levels = metadata.get("retracement", {})
+
+        # Entry zone: around 50%-61.8% retracement
+        entry_zone = None
+        if fib_indicator.signal in ["bullish", "neutral"]:
+            fib_50 = retracement_levels.get("0.500", 0)
+            fib_618 = retracement_levels.get("0.618", 0)
+            if fib_50 and fib_618:
+                entry_zone = {
+                    "low": min(fib_50, fib_618),
+                    "high": max(fib_50, fib_618),
+                }
+
+        # Stop zone: beyond 78.6% or swing low/high
+        stop_zone = None
+        if fib_indicator.signal == "bullish":
+            fib_786 = retracement_levels.get("0.786", 0)
+            stop_zone = {
+                "low": swing_low * 0.98,  # 2% buffer below swing low
+                "high": fib_786,
+            }
+        elif fib_indicator.signal == "bearish":
+            fib_786 = retracement_levels.get("0.786", 0)
+            stop_zone = {
+                "low": fib_786,
+                "high": swing_high * 1.02,  # 2% buffer above swing high
+            }
+
+        return {
+            "symbol": symbol.upper(),
+            "swing_high": swing_high,
+            "swing_low": swing_low,
+            "retracement_levels": retracement_levels,
+            "extension_levels": metadata.get("extension", {}),
+            "current_price": current_price,
+            "nearest_level": nearest_level,
+            "nearest_price": nearest_price,
+            "distance_to_nearest": round(distance_to_nearest, 2),
+            "distance_pct": round(distance_pct, 2),
+            "signal": fib_indicator.signal,
+            "at_entry_level": metadata.get("at_entry_level", False),
+            "suggested_entry_zone": entry_zone,
+            "suggested_stop_zone": stop_zone,
+            "trend": metadata.get("trend", "unknown"),
+        }
+    except Exception as e:
+        logger.error(f"Error getting Fibonacci levels for {symbol}: {e}")
+        # Return complete structure with default values for consistency
+        return {
+            "symbol": symbol.upper(),
+            "error": str(e),
+            "swing_high": None,
+            "swing_low": None,
+            "retracement_levels": {},
+            "extension_levels": {},
+            "current_price": None,
+            "nearest_level": None,
+            "nearest_price": None,
+            "distance_to_nearest": None,
+            "distance_pct": None,
+            "signal": "neutral",
+            "at_entry_level": False,
+            "suggested_entry_zone": None,
+            "suggested_stop_zone": None,
+            "trend": "unknown",
+        }
 
 
 async def get_position_status(symbol: str, user_id: str = "default") -> Dict[str, Any]:
@@ -482,6 +784,24 @@ def get_agent_tools() -> List[Dict[str, Any]]:
                 "required": ["symbol"],
             },
             "function": get_chart_patterns,
+        },
+        {
+            "name": "get_fibonacci_levels",
+            "description": "Get Fibonacci retracement and extension levels for entry points, stops, and targets",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Stock ticker symbol"},
+                    "trade_type": {
+                        "type": "string",
+                        "description": "Trade type: 'day', 'swing', or 'position'",
+                        "enum": ["day", "swing", "position"],
+                        "default": "swing"
+                    },
+                },
+                "required": ["symbol"],
+            },
+            "function": get_fibonacci_levels,
         },
         {
             "name": "get_position_status",

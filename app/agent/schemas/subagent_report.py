@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 TradeStyleLiteral = Literal["day", "swing", "position"]
 BiasLiteral = Literal["bullish", "bearish", "neutral"]
 TrendQualityLiteral = Literal["clean", "moderate", "choppy"]
+ConvictionLiteral = Literal["high", "medium", "low"]
 
 
 class VisionAnalysisResult(BaseModel):
@@ -86,7 +87,17 @@ class SubAgentReport(BaseModel):
     confidence: int = Field(
         ge=0,
         le=100,
-        description="Confidence score 0-100 in this setup. Higher = more conviction."
+        description="LEGACY: Numerical confidence score 0-100. Use conviction for agentic mode."
+    )
+
+    # Conviction (for agentic mode - AI-reasoned instead of formula-calculated)
+    conviction: Optional[ConvictionLiteral] = Field(
+        default=None,
+        description="AI's conviction level: 'high', 'medium', or 'low'. Used in agentic mode."
+    )
+    conviction_reasoning: str = Field(
+        default="",
+        description="Specific data points justifying the conviction level. Should reference actual findings."
     )
 
     # Trade Direction
@@ -215,14 +226,23 @@ class SubAgentReport(BaseModel):
 
     def has_valid_setup(self) -> bool:
         """Check if this report has a valid tradeable setup."""
-        return (
+        has_levels = (
             self.suitable
             and self.entry_zone_low is not None
             and self.entry_zone_high is not None
             and self.stop_loss is not None
             and len(self.targets) > 0
-            and self.confidence >= 50
         )
+
+        # Check conviction (agentic mode) or confidence (legacy mode)
+        if self.conviction is not None:
+            # Agentic mode: high or medium conviction is valid
+            has_conviction = self.conviction in ["high", "medium"]
+        else:
+            # Legacy mode: 50+ confidence is valid
+            has_conviction = self.confidence >= 50
+
+        return has_levels and has_conviction
 
     def get_risk_per_share(self) -> Optional[float]:
         """Calculate risk per share from entry to stop."""

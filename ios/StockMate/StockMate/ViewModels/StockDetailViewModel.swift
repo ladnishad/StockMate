@@ -40,15 +40,13 @@ class StockDetailViewModel: ObservableObject {
             return cached
         }
 
-        // Fallback to pre-loaded data from detail (only 1M and 1W are pre-loaded)
+        // Fallback to pre-loaded data from detail (only 1W is pre-loaded)
         guard let detail = detail else { return [] }
         switch selectedTimeframe {
-        case .oneMonth:
-            return detail.bars1d
         case .oneWeek:
             return detail.bars1h
         default:
-            // All other timeframes (including 1D) need to be fetched on-demand
+            // All other timeframes (including 1D and 1M) need to be fetched on-demand
             return []
         }
     }
@@ -67,6 +65,61 @@ class StockDetailViewModel: ObservableObject {
         // Add some padding
         let padding = (maxHigh - minLow) * 0.1
         return (minLow - padding)...(maxHigh + padding)
+    }
+
+    // MARK: - Timeframe-Specific Change Calculations
+
+    /// The starting price for the current timeframe
+    /// Uses first bar's open price as approximation of previous close
+    var timeframeStartPrice: Double? {
+        guard !chartBars.isEmpty else { return nil }
+        return chartBars.first?.open
+    }
+
+    /// Dollar change for the selected timeframe
+    var timeframeChange: Double {
+        // For 1D, use the API's accurate daily change
+        if selectedTimeframe == .oneDay {
+            return detail?.change ?? 0
+        }
+
+        guard let detail = detail,
+              let startPrice = timeframeStartPrice else {
+            return detail?.change ?? 0
+        }
+        return detail.currentPrice - startPrice
+    }
+
+    /// Percentage change for the selected timeframe
+    var timeframeChangePct: Double {
+        // For 1D, use the API's accurate daily change percentage
+        if selectedTimeframe == .oneDay {
+            return detail?.changePct ?? 0
+        }
+
+        guard let detail = detail,
+              let startPrice = timeframeStartPrice,
+              startPrice > 0 else {
+            return detail?.changePct ?? 0
+        }
+        return ((detail.currentPrice - startPrice) / startPrice) * 100
+    }
+
+    /// Whether the price is up for the selected timeframe
+    var isTimeframeUp: Bool {
+        timeframeChange >= 0
+    }
+
+    /// Formatted dollar change for the selected timeframe
+    var formattedTimeframeChange: String {
+        let sign = timeframeChange >= 0 ? "+" : ""
+        return "\(sign)\(String(format: "%.2f", timeframeChange))"
+    }
+
+    /// Formatted percentage change for the selected timeframe
+    var formattedTimeframeChangePct: String {
+        let sign = timeframeChangePct >= 0 ? "+" : ""
+        return "\(sign)\(String(format: "%.2f", timeframeChangePct))%"
     }
 
     // MARK: - Initialization
@@ -200,10 +253,10 @@ class StockDetailViewModel: ObservableObject {
             return
         }
 
-        // Check if it's a pre-loaded timeframe from detail (only 1M and 1W)
+        // Check if it's a pre-loaded timeframe from detail (only 1W)
         switch timeframe {
-        case .oneMonth, .oneWeek:
-            // These are pre-loaded in detail, no need to fetch
+        case .oneWeek:
+            // This is pre-loaded in detail, no need to fetch
             return
         default:
             break

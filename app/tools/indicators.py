@@ -860,6 +860,11 @@ def detect_divergences(
     - Hidden Bullish: Price makes higher lows, but indicator makes lower lows (continuation up)
     - Hidden Bearish: Price makes lower highs, but indicator makes higher highs (continuation down)
 
+    Uses volatility-scaled tolerance for swing point matching:
+    - Low volatility (ATR < 1%): 2-bar tolerance for precise matching
+    - Moderate volatility (1-3% ATR): 3-bar tolerance (default)
+    - High volatility (ATR > 3%): 4-bar tolerance for wider swing matching
+
     Args:
         price_bars: List of PriceBar objects (OHLCV data)
         indicator_type: "rsi" or "macd" (default: "rsi")
@@ -895,6 +900,46 @@ def detect_divergences(
 
     if indicator_type not in ["rsi", "macd"]:
         raise ValueError("indicator_type must be 'rsi' or 'macd'")
+
+    # Calculate ATR for volatility-scaled tolerance
+    # This helps adapt swing point matching to market conditions
+    highs = np.array([bar.high for bar in price_bars])
+    lows = np.array([bar.low for bar in price_bars])
+    closes_arr = np.array([bar.close for bar in price_bars])
+    current_price = closes_arr[-1]
+
+    # Calculate True Range and ATR
+    tr_list = [highs[0] - lows[0]]  # First bar TR
+    for i in range(1, len(price_bars)):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes_arr[i-1]),
+            abs(lows[i] - closes_arr[i-1])
+        )
+        tr_list.append(tr)
+
+    atr_period = min(14, len(tr_list))
+    atr = np.mean(tr_list[-atr_period:])
+    atr_pct = (atr / current_price) * 100 if current_price > 0 else 2.0
+
+    # Scale tolerance based on volatility:
+    # - Low volatility (ATR < 1%): tighter tolerance for precise matching
+    # - Moderate volatility (1-3% ATR): default tolerance
+    # - High volatility (ATR > 3%): wider tolerance to catch quicker swings
+    if atr_pct < 1.0:
+        swing_match_tolerance = 2  # Low volatility - precise matching
+        volatility_regime = "low"
+    elif atr_pct <= 3.0:
+        swing_match_tolerance = 3  # Moderate volatility - default
+        volatility_regime = "moderate"
+    else:
+        swing_match_tolerance = 4  # High volatility - wider matching
+        volatility_regime = "high"
+
+    logger.info(
+        f"Volatility: {atr_pct:.2f}% ATR ({volatility_regime}), "
+        f"swing match tolerance: {swing_match_tolerance} bars"
+    )
 
     # Calculate indicator values
     if indicator_type == "rsi":
@@ -997,14 +1042,14 @@ def detect_divergences(
         p_low_1_idx, p_low_1_val = price_lows[-2]
         p_low_2_idx, p_low_2_val = price_lows[-1]
 
-        # Find corresponding indicator lows (within +/- 3 bars)
+        # Find corresponding indicator lows (volatility-scaled tolerance)
         i_low_1 = None
         i_low_2 = None
 
         for idx, val in indicator_lows:
-            if abs(idx - p_low_1_idx) <= 3 and i_low_1 is None:
+            if abs(idx - p_low_1_idx) <= swing_match_tolerance and i_low_1 is None:
                 i_low_1 = (idx, val)
-            if abs(idx - p_low_2_idx) <= 3:
+            if abs(idx - p_low_2_idx) <= swing_match_tolerance:
                 i_low_2 = (idx, val)
 
         if i_low_1 and i_low_2:
@@ -1030,14 +1075,14 @@ def detect_divergences(
         p_high_1_idx, p_high_1_val = price_highs[-2]
         p_high_2_idx, p_high_2_val = price_highs[-1]
 
-        # Find corresponding indicator highs (within +/- 3 bars)
+        # Find corresponding indicator highs (volatility-scaled tolerance)
         i_high_1 = None
         i_high_2 = None
 
         for idx, val in indicator_highs:
-            if abs(idx - p_high_1_idx) <= 3 and i_high_1 is None:
+            if abs(idx - p_high_1_idx) <= swing_match_tolerance and i_high_1 is None:
                 i_high_1 = (idx, val)
-            if abs(idx - p_high_2_idx) <= 3:
+            if abs(idx - p_high_2_idx) <= swing_match_tolerance:
                 i_high_2 = (idx, val)
 
         if i_high_1 and i_high_2:
@@ -1109,6 +1154,9 @@ def detect_divergences(
             "swing_detection_window": swing_detection_window,
             "price_swing_highs_count": len(price_highs),
             "price_swing_lows_count": len(price_lows),
+            "volatility_regime": volatility_regime,
+            "atr_percentage": round(atr_pct, 2),
+            "swing_match_tolerance": swing_match_tolerance,
         }
     )
 
@@ -1181,9 +1229,9 @@ def calculate_adx(
     def wilders_smooth(data: np.ndarray, period: int) -> np.ndarray:
         """Apply Wilder's smoothing method."""
         smoothed = np.zeros(len(data))
-        smoothed[period] = np.sum(data[1 : period + 1])
+        smoothed[period] = np.sum(data[1 : period + 1]) / period
         for i in range(period + 1, len(data)):
-            smoothed[i] = smoothed[i - 1] - (smoothed[i - 1] / period) + data[i]
+            smoothed[i] = smoothed[i - 1] - (smoothed[i - 1] / period) + data[i] / period
         return smoothed
 
     smoothed_tr = wilders_smooth(tr, period)
@@ -1385,5 +1433,762 @@ def calculate_stochastic(
             "interpretation": interpretation,
             "is_oversold": current_k < 20,
             "is_overbought": current_k > 80,
+        },
+    )
+
+
+def calculate_ichimoku(
+    price_bars: List[PriceBar],
+    tenkan_period: int = 9,
+    kijun_period: int = 26,
+    senkou_b_period: int = 52,
+) -> Indicator:
+    """Calculate Ichimoku Kinko Hyo (Ichimoku Cloud).
+
+    The Ichimoku Cloud is a comprehensive indicator popular with institutional traders.
+    It provides support/resistance, trend direction, and momentum in a single view.
+
+    Components:
+    - Tenkan-sen (Conversion Line): (9-period high + low) / 2 - Short-term trend
+    - Kijun-sen (Base Line): (26-period high + low) / 2 - Medium-term trend
+    - Senkou Span A (Leading Span A): (Tenkan + Kijun) / 2, plotted 26 periods ahead
+    - Senkou Span B (Leading Span B): (52-period high + low) / 2, plotted 26 periods ahead
+    - Chikou Span (Lagging Span): Close, plotted 26 periods behind
+
+    Signal Logic:
+    - Bullish: Price above cloud AND Tenkan > Kijun AND Chikou above price
+    - Bearish: Price below cloud AND Tenkan < Kijun AND Chikou below price
+    - Neutral: Price inside cloud OR mixed signals
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        tenkan_period: Period for Tenkan-sen (default: 9)
+        kijun_period: Period for Kijun-sen (default: 26)
+        senkou_b_period: Period for Senkou Span B (default: 52)
+
+    Returns:
+        Indicator object with Ichimoku values and trading signal
+
+    Raises:
+        ValueError: If price_bars is empty or insufficient
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 100)
+        >>> ichimoku = calculate_ichimoku(bars)
+        >>> if ichimoku.signal == "bullish":
+        >>>     print(f"Bullish - price above cloud at {ichimoku.metadata['price_vs_cloud']}")
+    """
+    logger.info(
+        f"Calculating Ichimoku({tenkan_period}/{kijun_period}/{senkou_b_period}) "
+        f"for {len(price_bars)} bars"
+    )
+
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    # Only need senkou_b_period bars for current calculation
+    # The +26 forward projection doesn't require more historical data
+    min_bars = senkou_b_period
+    if len(price_bars) < min_bars:
+        raise ValueError(f"Need at least {min_bars} bars for Ichimoku calculation")
+
+    highs = np.array([bar.high for bar in price_bars])
+    lows = np.array([bar.low for bar in price_bars])
+    closes = np.array([bar.close for bar in price_bars])
+
+    def period_midpoint(data_high, data_low, period, idx):
+        """Calculate (highest high + lowest low) / 2 for a period."""
+        start = max(0, idx - period + 1)
+        period_high = np.max(data_high[start:idx + 1])
+        period_low = np.min(data_low[start:idx + 1])
+        return (period_high + period_low) / 2
+
+    # Calculate Tenkan-sen (Conversion Line) - 9-period midpoint
+    tenkan_sen = period_midpoint(highs, lows, tenkan_period, len(highs) - 1)
+
+    # Calculate Kijun-sen (Base Line) - 26-period midpoint
+    kijun_sen = period_midpoint(highs, lows, kijun_period, len(highs) - 1)
+
+    # Calculate Senkou Span A (Leading Span A) - (Tenkan + Kijun) / 2
+    # Note: This would be plotted 26 periods ahead, but we calculate current value
+    senkou_span_a = (tenkan_sen + kijun_sen) / 2
+
+    # Calculate Senkou Span B (Leading Span B) - 52-period midpoint
+    senkou_span_b = period_midpoint(highs, lows, senkou_b_period, len(highs) - 1)
+
+    # Chikou Span is current close (plotted 26 periods behind)
+    # For comparison, we compare current close to price 26 bars ago
+    chikou_span = closes[-1]
+    price_26_bars_ago = closes[-kijun_period] if len(closes) >= kijun_period else closes[0]
+
+    current_price = closes[-1]
+
+    # Determine cloud boundaries
+    cloud_top = max(senkou_span_a, senkou_span_b)
+    cloud_bottom = min(senkou_span_a, senkou_span_b)
+    cloud_thickness = abs(senkou_span_a - senkou_span_b)
+
+    # Determine price position relative to cloud
+    if current_price > cloud_top:
+        price_vs_cloud = "above"
+    elif current_price < cloud_bottom:
+        price_vs_cloud = "below"
+    else:
+        price_vs_cloud = "inside"
+
+    # Detect TK Cross (Tenkan/Kijun crossover)
+    # Calculate previous values for crossover detection
+    prev_tenkan = period_midpoint(highs, lows, tenkan_period, len(highs) - 2)
+    prev_kijun = period_midpoint(highs, lows, kijun_period, len(highs) - 2)
+
+    if prev_tenkan <= prev_kijun and tenkan_sen > kijun_sen:
+        tk_cross = "bullish"
+    elif prev_tenkan >= prev_kijun and tenkan_sen < kijun_sen:
+        tk_cross = "bearish"
+    else:
+        tk_cross = "none"
+
+    # Determine overall signal
+    bullish_signals = 0
+    bearish_signals = 0
+
+    # Price vs cloud
+    if price_vs_cloud == "above":
+        bullish_signals += 1
+    elif price_vs_cloud == "below":
+        bearish_signals += 1
+
+    # Tenkan vs Kijun
+    if tenkan_sen > kijun_sen:
+        bullish_signals += 1
+    elif tenkan_sen < kijun_sen:
+        bearish_signals += 1
+
+    # Chikou vs price 26 bars ago
+    if chikou_span > price_26_bars_ago:
+        bullish_signals += 1
+    elif chikou_span < price_26_bars_ago:
+        bearish_signals += 1
+
+    # Cloud color (future cloud)
+    if senkou_span_a > senkou_span_b:
+        bullish_signals += 1
+    elif senkou_span_a < senkou_span_b:
+        bearish_signals += 1
+
+    # Determine signal
+    if bullish_signals >= 3 and price_vs_cloud == "above":
+        signal = "bullish"
+    elif bearish_signals >= 3 and price_vs_cloud == "below":
+        signal = "bearish"
+    else:
+        signal = "neutral"
+
+    logger.info(
+        f"Ichimoku: Tenkan={tenkan_sen:.2f}, Kijun={kijun_sen:.2f}, "
+        f"Cloud={cloud_bottom:.2f}-{cloud_top:.2f}, Price {price_vs_cloud} cloud, "
+        f"Signal: {signal}"
+    )
+
+    return Indicator(
+        name="Ichimoku",
+        value=round(tenkan_sen, 2),  # Tenkan-sen as primary value
+        signal=signal,
+        metadata={
+            "tenkan_sen": round(tenkan_sen, 2),
+            "kijun_sen": round(kijun_sen, 2),
+            "senkou_span_a": round(senkou_span_a, 2),
+            "senkou_span_b": round(senkou_span_b, 2),
+            "chikou_span": round(chikou_span, 2),
+            "cloud_thickness": round(cloud_thickness, 2),
+            "cloud_top": round(cloud_top, 2),
+            "cloud_bottom": round(cloud_bottom, 2),
+            "price_vs_cloud": price_vs_cloud,
+            "tk_cross": tk_cross,
+            "bullish_signals": bullish_signals,
+            "bearish_signals": bearish_signals,
+            "tenkan_period": tenkan_period,
+            "kijun_period": kijun_period,
+            "senkou_b_period": senkou_b_period,
+        },
+    )
+
+
+def calculate_williams_r(
+    price_bars: List[PriceBar],
+    period: int = 14,
+) -> Indicator:
+    """Calculate Williams %R oscillator.
+
+    Williams %R is a momentum oscillator similar to Stochastic but with inverted scale.
+    It measures overbought/oversold levels on a scale of 0 to -100.
+
+    Formula:
+        Williams %R = ((Highest High - Close) / (Highest High - Lowest Low)) * -100
+
+    Signal Thresholds:
+    - > -20: Overbought
+    - -20 to -80: Neutral
+    - < -80: Oversold
+
+    Signal Logic:
+    - Bullish: Williams %R crosses above -80 from oversold
+    - Bearish: Williams %R crosses below -20 from overbought
+    - Neutral: Between -20 and -80
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        period: Lookback period (default: 14)
+
+    Returns:
+        Indicator object with Williams %R value and trading signal
+
+    Raises:
+        ValueError: If price_bars is empty or insufficient
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 30)
+        >>> williams = calculate_williams_r(bars)
+        >>> if williams.metadata['oversold_cross']:
+        >>>     print("Bullish reversal signal from oversold")
+    """
+    logger.info(f"Calculating Williams %R({period}) for {len(price_bars)} bars")
+
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    if len(price_bars) < period:
+        raise ValueError(f"Need at least {period} bars for Williams %R")
+
+    highs = np.array([bar.high for bar in price_bars])
+    lows = np.array([bar.low for bar in price_bars])
+    closes = np.array([bar.close for bar in price_bars])
+
+    # Calculate Williams %R for current bar
+    highest_high = np.max(highs[-period:])
+    lowest_low = np.min(lows[-period:])
+
+    if highest_high == lowest_low:
+        williams_r = -50.0  # Neutral if no range
+    else:
+        williams_r = ((highest_high - closes[-1]) / (highest_high - lowest_low)) * -100
+
+    # Calculate previous Williams %R for crossover detection
+    if len(price_bars) >= period + 1:
+        prev_highest = np.max(highs[-period-1:-1])
+        prev_lowest = np.min(lows[-period-1:-1])
+        if prev_highest == prev_lowest:
+            prev_williams_r = -50.0
+        else:
+            prev_williams_r = ((prev_highest - closes[-2]) / (prev_highest - prev_lowest)) * -100
+    else:
+        prev_williams_r = williams_r
+
+    # Detect crossovers (convert to native Python bool for JSON serialization)
+    oversold_cross = bool(prev_williams_r <= -80 and williams_r > -80)
+    overbought_cross = bool(prev_williams_r >= -20 and williams_r < -20)
+
+    # Determine signal
+    if williams_r > -20:
+        signal = "bearish"  # Overbought
+        interpretation = "overbought"
+    elif williams_r < -80:
+        signal = "bullish"  # Oversold
+        interpretation = "oversold"
+    elif oversold_cross:
+        signal = "bullish"
+        interpretation = "oversold_reversal"
+    elif overbought_cross:
+        signal = "bearish"
+        interpretation = "overbought_reversal"
+    else:
+        signal = "neutral"
+        interpretation = "neutral"
+
+    logger.info(
+        f"Williams %R({period}): {williams_r:.1f}, "
+        f"Signal: {signal}, Interpretation: {interpretation}"
+    )
+
+    return Indicator(
+        name="Williams_R",
+        value=round(williams_r, 2),
+        signal=signal,
+        metadata={
+            "period": period,
+            "williams_r": round(williams_r, 2),
+            "highest_high": round(highest_high, 2),
+            "lowest_low": round(lowest_low, 2),
+            "overbought": williams_r > -20,
+            "oversold": williams_r < -80,
+            "oversold_cross": oversold_cross,
+            "overbought_cross": overbought_cross,
+            "interpretation": interpretation,
+        },
+    )
+
+
+def calculate_parabolic_sar(
+    price_bars: List[PriceBar],
+    af_start: float = 0.02,
+    af_increment: float = 0.02,
+    af_max: float = 0.20,
+) -> Indicator:
+    """Calculate Parabolic SAR (Stop and Reverse).
+
+    Parabolic SAR is a trend-following indicator that provides potential entry/exit
+    points and trailing stop levels. It appears as dots above or below price.
+
+    Algorithm:
+    1. Start with initial AF (Acceleration Factor) = 0.02
+    2. Track EP (Extreme Point) - highest high in uptrend, lowest low in downtrend
+    3. SAR(tomorrow) = SAR(today) + AF * (EP - SAR(today))
+    4. When price crosses SAR, reverse and reset AF
+
+    Signal Logic:
+    - Bullish: SAR below price (uptrend)
+    - Bearish: SAR above price (downtrend)
+    - Signal on flip: When SAR flips from above to below = buy signal
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        af_start: Starting acceleration factor (default: 0.02)
+        af_increment: AF increment on new extreme (default: 0.02)
+        af_max: Maximum AF (default: 0.20)
+
+    Returns:
+        Indicator object with SAR value and trading signal
+
+    Raises:
+        ValueError: If price_bars is empty or insufficient
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 50)
+        >>> sar = calculate_parabolic_sar(bars)
+        >>> if sar.metadata['sar_position'] == "below_price":
+        >>>     print(f"Uptrend - trailing stop at ${sar.value}")
+    """
+    logger.info(
+        f"Calculating Parabolic SAR (AF: {af_start}/{af_increment}/{af_max}) "
+        f"for {len(price_bars)} bars"
+    )
+
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    if len(price_bars) < 5:
+        raise ValueError("Need at least 5 bars for Parabolic SAR")
+
+    highs = np.array([bar.high for bar in price_bars])
+    lows = np.array([bar.low for bar in price_bars])
+    closes = np.array([bar.close for bar in price_bars])
+
+    n = len(price_bars)
+    sar = np.zeros(n)
+    af = np.zeros(n)
+    ep = np.zeros(n)
+    trend = np.ones(n, dtype=int)  # 1 = uptrend, -1 = downtrend
+
+    # Initialize - determine initial trend from first few bars
+    if closes[1] > closes[0]:
+        trend[0] = 1  # Uptrend
+        sar[0] = lows[0]
+        ep[0] = highs[0]
+    else:
+        trend[0] = -1  # Downtrend
+        sar[0] = highs[0]
+        ep[0] = lows[0]
+
+    af[0] = af_start
+
+    # Calculate SAR for each bar
+    for i in range(1, n):
+        # Calculate new SAR
+        sar[i] = sar[i-1] + af[i-1] * (ep[i-1] - sar[i-1])
+
+        # Carry forward trend and AF
+        trend[i] = trend[i-1]
+        af[i] = af[i-1]
+        ep[i] = ep[i-1]
+
+        if trend[i] == 1:  # Uptrend
+            # SAR cannot be above prior two lows
+            sar[i] = min(sar[i], lows[i-1])
+            if i >= 2:
+                sar[i] = min(sar[i], lows[i-2])
+
+            # Check for trend reversal
+            if lows[i] < sar[i]:
+                # Reversal to downtrend
+                trend[i] = -1
+                sar[i] = ep[i-1]  # New SAR is previous EP
+                ep[i] = lows[i]
+                af[i] = af_start
+            else:
+                # Continue uptrend
+                if highs[i] > ep[i]:
+                    ep[i] = highs[i]
+                    af[i] = min(af[i] + af_increment, af_max)
+
+        else:  # Downtrend
+            # SAR cannot be below prior two highs
+            sar[i] = max(sar[i], highs[i-1])
+            if i >= 2:
+                sar[i] = max(sar[i], highs[i-2])
+
+            # Check for trend reversal
+            if highs[i] > sar[i]:
+                # Reversal to uptrend
+                trend[i] = 1
+                sar[i] = ep[i-1]  # New SAR is previous EP
+                ep[i] = highs[i]
+                af[i] = af_start
+            else:
+                # Continue downtrend
+                if lows[i] < ep[i]:
+                    ep[i] = lows[i]
+                    af[i] = min(af[i] + af_increment, af_max)
+
+    current_sar = sar[-1]
+    current_price = closes[-1]
+    current_trend = trend[-1]
+
+    # SAR position relative to price
+    if current_trend == 1:
+        sar_position = "below_price"
+        trend_direction = "up"
+    else:
+        sar_position = "above_price"
+        trend_direction = "down"
+
+    # Calculate distance to SAR
+    distance_to_sar = abs(current_price - current_sar)
+    distance_pct = (distance_to_sar / current_price) * 100
+
+    # Count consecutive bars in current trend
+    bars_in_trend = 1
+    for i in range(n - 2, -1, -1):
+        if trend[i] == current_trend:
+            bars_in_trend += 1
+        else:
+            break
+
+    # Detect reversal
+    reversal = False
+    if n >= 2 and trend[-1] != trend[-2]:
+        reversal = True
+
+    # Determine signal
+    if sar_position == "below_price":
+        signal = "bullish"
+    else:
+        signal = "bearish"
+
+    logger.info(
+        f"Parabolic SAR: {current_sar:.2f} ({sar_position}), "
+        f"Trend: {trend_direction}, Bars in trend: {bars_in_trend}, "
+        f"Signal: {signal}"
+    )
+
+    return Indicator(
+        name="Parabolic_SAR",
+        value=round(current_sar, 2),
+        signal=signal,
+        metadata={
+            "sar_value": round(current_sar, 2),
+            "sar_position": sar_position,
+            "trend_direction": trend_direction,
+            "af_current": round(af[-1], 4),
+            "ep_current": round(ep[-1], 2),
+            "distance_to_sar": round(distance_to_sar, 2),
+            "distance_pct": round(distance_pct, 2),
+            "bars_in_trend": bars_in_trend,
+            "reversal": reversal,
+            "af_start": af_start,
+            "af_increment": af_increment,
+            "af_max": af_max,
+        },
+    )
+
+
+def calculate_cmf(
+    price_bars: List[PriceBar],
+    period: int = 20,
+) -> Indicator:
+    """Calculate Chaikin Money Flow (CMF).
+
+    CMF is a volume-weighted indicator measuring buying and selling pressure
+    over a period. It combines price and volume to assess money flow direction.
+
+    Formula:
+        Money Flow Multiplier (MFM) = ((Close - Low) - (High - Close)) / (High - Low)
+        Money Flow Volume = MFM * Volume
+        CMF = Sum(MFV, period) / Sum(Volume, period)
+
+    Signal Thresholds:
+    - > 0.25: Strong buying pressure
+    - 0 to 0.25: Moderate buying
+    - -0.25 to 0: Moderate selling
+    - < -0.25: Strong selling pressure
+
+    Signal Logic:
+    - Bullish: CMF > 0 AND rising
+    - Bearish: CMF < 0 AND falling
+    - Divergence: CMF vs price for reversal signals
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+        period: CMF period (default: 20)
+
+    Returns:
+        Indicator object with CMF value and trading signal
+
+    Raises:
+        ValueError: If price_bars is empty or insufficient
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 50)
+        >>> cmf = calculate_cmf(bars)
+        >>> if cmf.value > 0.25:
+        >>>     print("Strong institutional buying pressure")
+    """
+    logger.info(f"Calculating CMF({period}) for {len(price_bars)} bars")
+
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    if len(price_bars) < period:
+        raise ValueError(f"Need at least {period} bars for CMF")
+
+    highs = np.array([bar.high for bar in price_bars])
+    lows = np.array([bar.low for bar in price_bars])
+    closes = np.array([bar.close for bar in price_bars])
+    volumes = np.array([bar.volume for bar in price_bars])
+
+    # Calculate Money Flow Multiplier (MFM) for each bar
+    # MFM = ((Close - Low) - (High - Close)) / (High - Low)
+    # Simplifies to: (2 * Close - High - Low) / (High - Low)
+    hl_range = highs - lows
+    # Use np.divide with where to avoid division warnings when high == low (doji candles)
+    mfm = np.zeros_like(hl_range)
+    np.divide(
+        (closes - lows) - (highs - closes),
+        hl_range,
+        out=mfm,
+        where=hl_range != 0
+    )
+
+    # Calculate Money Flow Volume
+    mfv = mfm * volumes
+
+    # Calculate CMF for current period
+    cmf_value = np.sum(mfv[-period:]) / np.sum(volumes[-period:]) if np.sum(volumes[-period:]) > 0 else 0
+
+    # Calculate previous CMF for trend detection
+    if len(price_bars) >= period + 1:
+        prev_cmf = np.sum(mfv[-period-1:-1]) / np.sum(volumes[-period-1:-1]) if np.sum(volumes[-period-1:-1]) > 0 else 0
+    else:
+        prev_cmf = cmf_value
+
+    # Determine if CMF is rising or falling
+    if cmf_value > prev_cmf:
+        cmf_trend = "rising"
+    elif cmf_value < prev_cmf:
+        cmf_trend = "falling"
+    else:
+        cmf_trend = "flat"
+
+    # Determine signal
+    if cmf_value > 0.25:
+        signal = "bullish"
+        interpretation = "strong_buying"
+    elif cmf_value > 0:
+        if cmf_trend == "rising":
+            signal = "bullish"
+            interpretation = "moderate_buying"
+        else:
+            signal = "neutral"
+            interpretation = "weakening_buying"
+    elif cmf_value > -0.25:
+        if cmf_trend == "falling":
+            signal = "bearish"
+            interpretation = "moderate_selling"
+        else:
+            signal = "neutral"
+            interpretation = "weakening_selling"
+    else:
+        signal = "bearish"
+        interpretation = "strong_selling"
+
+    # Check for divergence with price
+    price_change = (closes[-1] - closes[-period]) / closes[-period]
+    divergence = None
+    if price_change > 0.02 and cmf_value < -0.1:
+        divergence = "bearish"  # Price up, but money flowing out
+    elif price_change < -0.02 and cmf_value > 0.1:
+        divergence = "bullish"  # Price down, but money flowing in
+
+    logger.info(
+        f"CMF({period}): {cmf_value:.3f} ({cmf_trend}), "
+        f"Signal: {signal}, Divergence: {divergence or 'none'}"
+    )
+
+    return Indicator(
+        name="CMF",
+        value=round(cmf_value, 4),
+        signal=signal,
+        metadata={
+            "period": period,
+            "cmf": round(cmf_value, 4),
+            "cmf_trend": cmf_trend,
+            "prev_cmf": round(prev_cmf, 4),
+            "interpretation": interpretation,
+            "divergence": divergence,
+            "strong_buying": cmf_value > 0.25,
+            "strong_selling": cmf_value < -0.25,
+        },
+    )
+
+
+def calculate_adl(
+    price_bars: List[PriceBar],
+) -> Indicator:
+    """Calculate Accumulation/Distribution Line (ADL).
+
+    ADL is a cumulative indicator showing whether volume is flowing into or out
+    of a security. It combines price and volume to identify accumulation or
+    distribution phases.
+
+    Formula:
+        CLV (Close Location Value) = ((Close - Low) - (High - Close)) / (High - Low)
+        ADL = Previous ADL + (CLV * Volume)
+
+    Signal Logic:
+    - Bullish: ADL making new highs, confirming price uptrend
+    - Bearish: ADL making new lows, confirming price downtrend
+    - Divergence: ADL trending opposite to price = potential reversal
+
+    Args:
+        price_bars: List of PriceBar objects (OHLCV data)
+
+    Returns:
+        Indicator object with ADL value and trading signal
+
+    Raises:
+        ValueError: If price_bars is empty
+
+    Example:
+        >>> bars = fetch_price_bars("AAPL", "1d", 50)
+        >>> adl = calculate_adl(bars)
+        >>> if adl.metadata['adl_vs_price'] == "diverging":
+        >>>     print("Warning: ADL diverging from price - potential reversal")
+    """
+    logger.info(f"Calculating ADL for {len(price_bars)} bars")
+
+    if not price_bars:
+        raise ValueError("price_bars cannot be empty")
+
+    if len(price_bars) < 10:
+        raise ValueError("Need at least 10 bars for ADL")
+
+    highs = np.array([bar.high for bar in price_bars])
+    lows = np.array([bar.low for bar in price_bars])
+    closes = np.array([bar.close for bar in price_bars])
+    volumes = np.array([bar.volume for bar in price_bars])
+
+    # Calculate Close Location Value (CLV) for each bar
+    # CLV = ((Close - Low) - (High - Close)) / (High - Low)
+    hl_range = highs - lows
+    # Use np.divide with where to avoid division warnings when high == low (doji candles)
+    clv = np.zeros_like(hl_range)
+    np.divide(
+        (closes - lows) - (highs - closes),
+        hl_range,
+        out=clv,
+        where=hl_range != 0
+    )
+
+    # Calculate ADL cumulatively
+    money_flow_volume = clv * volumes
+    adl = np.cumsum(money_flow_volume)
+
+    current_adl = adl[-1]
+
+    # Determine ADL trend (last 10 bars)
+    lookback = min(10, len(adl) - 1)
+    adl_recent = adl[-lookback:]
+
+    if len(adl_recent) >= 2:
+        adl_slope = (adl_recent[-1] - adl_recent[0]) / lookback
+        if adl_slope > 0:
+            adl_trend = "rising"
+        elif adl_slope < 0:
+            adl_trend = "falling"
+        else:
+            adl_trend = "flat"
+    else:
+        adl_trend = "flat"
+
+    # Check price trend
+    price_recent = closes[-lookback:]
+    price_slope = (price_recent[-1] - price_recent[0]) / price_recent[0]
+
+    if price_slope > 0.01:
+        price_trend = "rising"
+    elif price_slope < -0.01:
+        price_trend = "falling"
+    else:
+        price_trend = "flat"
+
+    # Determine if ADL confirms or diverges from price
+    if adl_trend == price_trend:
+        adl_vs_price = "confirming"
+    elif adl_trend != "flat" and price_trend != "flat" and adl_trend != price_trend:
+        adl_vs_price = "diverging"
+    else:
+        adl_vs_price = "neutral"
+
+    # Calculate recent change percentage
+    if len(adl) >= 10:
+        adl_10_ago = adl[-10]
+        if abs(adl_10_ago) > 0:
+            recent_change_pct = ((current_adl - adl_10_ago) / abs(adl_10_ago)) * 100
+        else:
+            recent_change_pct = 0
+    else:
+        recent_change_pct = 0
+
+    # Determine signal
+    if adl_vs_price == "diverging":
+        if adl_trend == "rising" and price_trend == "falling":
+            signal = "bullish"  # Bullish divergence
+        elif adl_trend == "falling" and price_trend == "rising":
+            signal = "bearish"  # Bearish divergence
+        else:
+            signal = "neutral"
+    elif adl_trend == "rising":
+        signal = "bullish"
+    elif adl_trend == "falling":
+        signal = "bearish"
+    else:
+        signal = "neutral"
+
+    logger.info(
+        f"ADL: {current_adl:.0f} ({adl_trend}), "
+        f"Price: {price_trend}, Confirmation: {adl_vs_price}, "
+        f"Signal: {signal}"
+    )
+
+    return Indicator(
+        name="ADL",
+        value=round(current_adl, 0),
+        signal=signal,
+        metadata={
+            "adl_value": round(current_adl, 0),
+            "adl_trend": adl_trend,
+            "price_trend": price_trend,
+            "adl_vs_price": adl_vs_price,
+            "recent_change_pct": round(recent_change_pct, 2),
+            "is_diverging": adl_vs_price == "diverging",
         },
     )

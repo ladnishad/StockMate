@@ -31,7 +31,10 @@ struct StockDetailView: View {
                             detail: detail,
                             selectedTimeframe: $viewModel.selectedTimeframe,
                             chartBars: viewModel.chartBars,
-                            isLoadingBars: viewModel.isLoadingBars
+                            isLoadingBars: viewModel.isLoadingBars,
+                            formattedChange: viewModel.formattedTimeframeChange,
+                            formattedChangePct: viewModel.formattedTimeframeChangePct,
+                            isUp: viewModel.isTimeframeUp
                         )
 
                         // Key Statistics (compact, right after chart)
@@ -237,6 +240,10 @@ private struct PriceHeroSection: View {
     @Binding var selectedTimeframe: ChartTimeframe
     let chartBars: [PriceBar]
     var isLoadingBars: Bool = false
+    // Timeframe-specific change values
+    let formattedChange: String
+    let formattedChangePct: String
+    let isUp: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -251,23 +258,24 @@ private struct PriceHeroSection: View {
                     .foregroundStyle(.primary)
                     .contentTransition(.numericText())
 
-                // Change badge
+                // Change badge - now uses timeframe-specific values
                 HStack(spacing: 4) {
-                    Image(systemName: detail.isUp ? "arrow.up" : "arrow.down")
+                    Image(systemName: isUp ? "arrow.up" : "arrow.down")
                         .font(.system(size: 12, weight: .bold))
 
-                    Text("\(detail.formattedChange) (\(detail.formattedChangePct))")
+                    Text("\(formattedChange) (\(formattedChangePct))")
                         .font(.system(size: 15, weight: .medium, design: .monospaced))
                 }
-                .foregroundStyle(detail.isUp ? Color(.systemGreen) : Color(.systemRed))
+                .foregroundStyle(isUp ? Color(.systemGreen) : Color(.systemRed))
+                .animation(.easeInOut(duration: 0.2), value: isUp)
             }
             .padding(.top, 8)
             .padding(.bottom, 16)
 
-            // Chart
+            // Chart - uses timeframe-specific isUp for color
             MinimalChart(
                 bars: chartBars,
-                isUp: detail.isUp,
+                isUp: isUp,
                 supportLevels: detail.supportLevels,
                 resistanceLevels: detail.resistanceLevels,
                 timeframe: selectedTimeframe

@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     grok_model_planning: str = "grok-4"  # Flagship model for plan generation
     grok_model_fast: str = "grok-4-1-fast"  # Fast model for chat/evaluation
 
+    # Finnhub Configuration (Fundamental Data + News)
+    # Get your API key from https://finnhub.io/dashboard
+    # Free tier includes: fundamentals, earnings calendar, company news
+    finnhub_api_key: str = ""  # FINNHUB_API_KEY environment variable
+
     # Supabase Configuration (Authentication + Database)
     supabase_url: str = ""  # https://xxxxx.supabase.co
     supabase_anon_key: str = ""  # Public anon key (for client-side)
@@ -87,7 +92,7 @@ class Settings(BaseSettings):
     model_config = {
         "env_file": ".env",
         "case_sensitive": False,
-        "extra": "ignore",  # Ignore extra env vars like finnhub_api_key
+        "extra": "ignore",  # Ignore extra env vars not defined above
     }
 
 

@@ -34,6 +34,339 @@ from app.agent.providers.grok_provider import get_x_search_parameters
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# Retry Helper for Resilient Tool Calls
+# =============================================================================
+
+
+async def retry_async(
+    func,
+    *args,
+    max_attempts: int = 3,
+    delay: float = 1.0,
+    backoff: float = 2.0,
+    **kwargs
+):
+    """Retry an async function with exponential backoff.
+
+    Args:
+        func: Async function to call
+        *args: Arguments to pass to func
+        max_attempts: Maximum retry attempts (default 3)
+        delay: Initial delay between retries in seconds (default 1.0)
+        backoff: Multiplier for delay after each retry (default 2.0)
+        **kwargs: Keyword arguments to pass to func
+
+    Returns:
+        Result from func
+
+    Raises:
+        Last exception if all retries fail
+    """
+    last_exception = None
+    current_delay = delay
+
+    for attempt in range(max_attempts):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            last_exception = e
+            error_msg = str(e) or f"{type(e).__name__}"
+            if attempt < max_attempts - 1:
+                logger.warning(
+                    f"Retry {attempt + 1}/{max_attempts} for {func.__name__} "
+                    f"after error: {error_msg}. Waiting {current_delay:.1f}s..."
+                )
+                await asyncio.sleep(current_delay)
+                current_delay *= backoff
+            else:
+                logger.error(f"All {max_attempts} attempts failed for {func.__name__}: {error_msg}")
+
+    raise last_exception
+
+
+# =============================================================================
+# Helper Functions for Formatting Comprehensive Data
+# =============================================================================
+
+
+def format_institutional_indicators(indicators: Dict[str, Any]) -> str:
+    """Format institutional indicators for the AI prompt."""
+    parts = []
+
+    # Ichimoku
+    ichimoku = indicators.get("ichimoku", {})
+    if ichimoku.get("available"):
+        parts.append(f"- Ichimoku: {ichimoku.get('signal', 'N/A')}, "
+                    f"Cloud: {ichimoku.get('price_vs_cloud', 'N/A')}, "
+                    f"TK Cross: {ichimoku.get('tk_cross', 'N/A')}")
+
+    # Williams %R
+    williams = indicators.get("williams_r", {})
+    if williams.get("available"):
+        parts.append(f"- Williams %R: {williams.get('value', 'N/A')} ({williams.get('signal', 'N/A')})")
+
+    # Parabolic SAR
+    psar = indicators.get("parabolic_sar", {})
+    if psar.get("available"):
+        parts.append(f"- Parabolic SAR: {psar.get('trend_direction', 'N/A')} ({psar.get('signal', 'N/A')})")
+
+    # CMF
+    cmf = indicators.get("cmf", {})
+    if cmf.get("available"):
+        parts.append(f"- CMF: {cmf.get('value', 'N/A')} ({cmf.get('signal', 'N/A')}) - {cmf.get('interpretation', '')}")
+
+    # ADL
+    adl = indicators.get("adl", {})
+    if adl.get("available"):
+        divergence_str = " [DIVERGENCE]" if adl.get("divergence") else ""
+        parts.append(f"- ADL: {adl.get('signal', 'N/A')}, Trend: {adl.get('trend', 'N/A')}{divergence_str}")
+
+    return "\n".join(parts) if parts else "- Institutional indicators: Not available"
+
+
+def format_levels_with_metrics(sr_levels: Dict[str, Any]) -> str:
+    """Format S/R levels with institutional-grade metrics."""
+    lines = []
+
+    for level_type in ["support", "resistance"]:
+        levels = sr_levels.get(level_type, [])
+        if levels and isinstance(levels, list):
+            lines.append(f"{level_type.capitalize()}:")
+            for level in levels[:3]:
+                # Defensive checks - ensure level is a dict with numeric price
+                if not isinstance(level, dict):
+                    continue
+                price = level.get("price", 0)
+                if not isinstance(price, (int, float)) or price is None:
+                    price = 0
+                reliability = str(level.get("reliability", "unknown")).upper()
+                reclaimed = "[RECLAIMED]" if level.get("reclaimed") else ""
+                touches = level.get("touches", 0) or 0
+                hv_touches = level.get("high_volume_touches", 0) or 0
+                bounce = level.get("bounce_quality", 0) or 0
+                distance = level.get("distance_pct", 0) or 0
+                if not isinstance(distance, (int, float)):
+                    distance = 0
+
+                lines.append(
+                    f"  - ${price:.2f} [{reliability}] {reclaimed} - "
+                    f"{touches} touches, {hv_touches} high-vol, "
+                    f"bounce: {bounce}, distance: {distance:+.1f}%"
+                )
+
+    return "\n".join(lines) if lines else "- No levels identified"
+
+
+def format_volume_profile(volume_profile: Dict[str, Any]) -> str:
+    """Format volume profile data."""
+    if not volume_profile or volume_profile.get("error"):
+        return "- Volume profile: Not available"
+
+    lines = []
+    vpoc = volume_profile.get("vpoc")
+    vah = volume_profile.get("value_area_high")
+    val = volume_profile.get("value_area_low")
+    hvn = volume_profile.get("high_volume_nodes", []) or []
+    lvn = volume_profile.get("low_volume_nodes", []) or []
+
+    # Defensive checks for numeric values
+    if vpoc and isinstance(vpoc, (int, float)):
+        lines.append(f"- VPOC (Point of Control): ${vpoc:.2f}")
+    if vah and val and isinstance(vah, (int, float)) and isinstance(val, (int, float)):
+        lines.append(f"- Value Area: ${val:.2f} - ${vah:.2f}")
+    if hvn and isinstance(hvn, list):
+        hvn_nums = [n for n in hvn[:3] if isinstance(n, (int, float))]
+        if hvn_nums:
+            hvn_str = ", ".join([f"${n:.2f}" for n in hvn_nums])
+            lines.append(f"- High Volume Nodes: {hvn_str}")
+    if lvn and isinstance(lvn, list):
+        lvn_nums = [n for n in lvn[:3] if isinstance(n, (int, float))]
+        if lvn_nums:
+            lvn_str = ", ".join([f"${n:.2f}" for n in lvn_nums])
+            lines.append(f"- Low Volume Nodes (fast moves): {lvn_str}")
+
+    return "\n".join(lines) if lines else "- Volume profile: No data"
+
+
+def format_chart_patterns(patterns_data: Dict[str, Any]) -> str:
+    """Format chart patterns with success rates."""
+    if not patterns_data or patterns_data.get("error"):
+        return "- Chart patterns: Not available"
+
+    patterns = patterns_data.get("patterns", []) or []
+    if not patterns or not isinstance(patterns, list):
+        return "- No chart patterns detected"
+
+    lines = []
+    for p in patterns[:3]:
+        if not isinstance(p, dict):
+            continue
+        name = p.get("name", "Unknown")
+        ptype = p.get("type", "unknown")
+        success = p.get("success_rate")
+        target = p.get("target_price")
+        confidence = p.get("confidence", 0) or 0
+
+        success_str = f"{success}% success" if success else "N/A success"
+        target_str = f", target: ${target:.2f}" if target and isinstance(target, (int, float)) else ""
+        lines.append(f"- {name} ({ptype}) - {success_str}, confidence: {confidence}{target_str}")
+
+    strongest = patterns_data.get("strongest_pattern")
+    if strongest:
+        lines.append(f"- Strongest pattern: {strongest}")
+
+    return "\n".join(lines)
+
+
+def format_divergences(divergence_data: Dict[str, Any]) -> str:
+    """Format divergence detection results for AI analysis."""
+    if not divergence_data or divergence_data.get("error"):
+        return "- Divergences: Not available"
+
+    lines = []
+
+    rsi_div = divergence_data.get("rsi_divergence", {})
+    if rsi_div.get("detected"):
+        lines.append(f"- RSI Divergence: {rsi_div.get('type', 'unknown').upper()} - {rsi_div.get('interpretation', '')}")
+    else:
+        lines.append("- RSI Divergence: None detected")
+
+    macd_div = divergence_data.get("macd_divergence", {})
+    if macd_div.get("detected"):
+        lines.append(f"- MACD Divergence: {macd_div.get('type', 'unknown').upper()} - {macd_div.get('interpretation', '')}")
+    else:
+        lines.append("- MACD Divergence: None detected")
+
+    # Overall signal
+    overall = divergence_data.get("overall_signal", "neutral")
+    if divergence_data.get("has_divergence"):
+        lines.append(f"- ⚠️ DIVERGENCE DETECTED: Overall {overall.upper()} signal")
+
+    return "\n".join(lines)
+
+
+def format_enhanced_technicals(indicators: Dict[str, Any], bars: Dict[str, Any]) -> str:
+    """Format enhanced technical data with actual values."""
+    lines = []
+
+    # ATR with dollar value
+    atr_data = indicators.get("atr", {})
+    atr_value = atr_data.get("value")
+    if atr_value is not None:
+        lines.append(f"- ATR: ${atr_value:.2f} ({atr_data.get('pct', 0):.1f}% of price) - {atr_data.get('volatility_regime', 'unknown')} volatility")
+
+    # RSI
+    rsi_data = indicators.get("rsi", {})
+    rsi_value = rsi_data.get("value")
+    if rsi_value is not None:
+        lines.append(f"- RSI(14): {rsi_value:.1f} ({rsi_data.get('signal', 'neutral')})")
+
+    # Actual EMA values
+    emas = indicators.get("emas", {})
+    if emas:
+        ema_str_parts = []
+        for key, value in sorted(emas.items()):
+            if value is not None and isinstance(value, (int, float)):
+                period = key.replace("ema_", "")
+                ema_str_parts.append(f"{period}-day: ${value:.2f}")
+        if ema_str_parts:
+            lines.append(f"- EMA Values: {', '.join(ema_str_parts)}")
+
+    # EMA trend
+    ema_trend = indicators.get("ema_trend", "unknown")
+    lines.append(f"- EMA Trend: {ema_trend}")
+
+    # VWAP
+    vwap_data = indicators.get("vwap", {})
+    vwap_value = vwap_data.get("value")
+    if vwap_value is not None:
+        position = vwap_data.get("price_vs_vwap", "unknown")
+        distance = vwap_data.get("distance_pct", 0)
+        lines.append(f"- VWAP: ${vwap_value:.2f} (price {position} VWAP by {abs(distance or 0):.1f}%)")
+
+    # ADX
+    adx_data = indicators.get("adx", {})
+    adx_value = adx_data.get("value")
+    if adx_value is not None:
+        lines.append(f"- ADX: {adx_value:.1f} ({adx_data.get('strength', 'unknown')} trend) - {adx_data.get('interpretation', '')}")
+
+    # MACD Histogram
+    macd_data = indicators.get("macd", {})
+    histogram = macd_data.get("histogram")
+    if histogram is not None and isinstance(histogram, (int, float)):
+        lines.append(f"- MACD Histogram: {histogram:.4f}")
+
+    # Bollinger Position
+    bollinger_data = indicators.get("bollinger", {})
+    position = bollinger_data.get("position")
+    if position:
+        lines.append(f"- Bollinger Position: {position}")
+
+    return "\n".join(lines)
+
+
+def format_fibonacci_levels(fib_data: Dict[str, Any]) -> str:
+    """Format Fibonacci levels for AI consumption."""
+    if not fib_data or fib_data.get("error"):
+        return "- Fibonacci: Not available"
+
+    lines = []
+
+    # Swing points and trend
+    swing_high = fib_data.get("swing_high")
+    swing_low = fib_data.get("swing_low")
+    trend = fib_data.get("trend", "unknown")
+    if swing_high and swing_low:
+        lines.append(f"- Swing High: ${swing_high:.2f}, Swing Low: ${swing_low:.2f} ({trend})")
+
+    # Signal
+    signal = fib_data.get("signal", "neutral")
+    at_entry = fib_data.get("at_entry_level", False)
+    near_fib = fib_data.get("near_fib_level", False)
+    lines.append(f"- Fibonacci Signal: {signal.upper()}" + (" - AT KEY ENTRY LEVEL" if at_entry else " - near level" if near_fib else ""))
+
+    # Nearest level
+    nearest_level = fib_data.get("nearest_level")
+    nearest_price = fib_data.get("nearest_price")
+    distance_pct = fib_data.get("distance_pct", 0)
+    if nearest_level and nearest_price:
+        lines.append(f"- Nearest Fib Level: {nearest_level} (${nearest_price:.2f}) - {abs(distance_pct):.1f}% away")
+
+    # Retracement levels (key entries)
+    retracements = fib_data.get("retracement_levels", {})
+    if retracements:
+        key_levels = ["0.382", "0.500", "0.618", "0.786"]
+        ret_parts = []
+        for level in key_levels:
+            price = retracements.get(level)
+            if price:
+                ret_parts.append(f"{level}: ${price:.2f}")
+        if ret_parts:
+            lines.append(f"- Key Retracements: {', '.join(ret_parts)}")
+
+    # Extension levels (targets)
+    extensions = fib_data.get("extension_levels", {})
+    if extensions:
+        ext_parts = []
+        for level in ["1.272", "1.618", "2.000", "2.618"]:
+            price = extensions.get(level)
+            if price:
+                ext_parts.append(f"{level}: ${price:.2f}")
+        if ext_parts:
+            lines.append(f"- Extension Targets: {', '.join(ext_parts)}")
+
+    # Suggested zones
+    entry_zone = fib_data.get("suggested_entry_zone", {})
+    stop_zone = fib_data.get("suggested_stop_zone", {})
+    if entry_zone.get("low") and entry_zone.get("high"):
+        lines.append(f"- Fib Entry Zone: ${entry_zone['low']:.2f} - ${entry_zone['high']:.2f}")
+    if stop_zone.get("low") and stop_zone.get("high"):
+        lines.append(f"- Fib Stop Zone: ${stop_zone['low']:.2f} - ${stop_zone['high']:.2f}")
+
+    return "\n".join(lines) if lines else "- Fibonacci: No data"
+
+
 class TradePlanOrchestrator:
     """Orchestrates parallel sub-agents for trading plan generation.
 
@@ -182,6 +515,7 @@ class TradePlanOrchestrator:
         symbol: str,
         user_id: str,
         force_new: bool = True,
+        agentic_mode: bool = True,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Generate trading plan with streaming progress.
 
@@ -191,6 +525,9 @@ class TradePlanOrchestrator:
             symbol: Stock ticker symbol
             user_id: User ID
             force_new: Force new plan generation
+            agentic_mode: When True, uses iterative AI tool-calling where the AI
+                decides what to investigate. When False, uses parallel sub-agents
+                (legacy V2 mode). Currently both modes use the same implementation.
 
         Yields:
             StreamEvent objects for each progress update
@@ -379,6 +716,13 @@ class TradePlanOrchestrator:
 
         yield StreamEvent.subagent_progress(self.subagent_progress.copy())
 
+        # Create queue for real-time progress updates
+        progress_queue: asyncio.Queue = asyncio.Queue()
+
+        async def emit_progress():
+            """Helper to put current progress on queue for real-time streaming."""
+            await progress_queue.put(self.subagent_progress.copy())
+
         async def run_single_agent(agent_name: str, agent_def) -> SubAgentReport:
             """Run a single sub-agent with real API calls and tools."""
             from app.agent.schemas.subagent_report import (
@@ -393,28 +737,46 @@ class TradePlanOrchestrator:
             # Update progress
             self.subagent_progress[agent_name].status = SubAgentStatus.GATHERING_DATA
             self.subagent_progress[agent_name].current_step = "Gathering price data"
+            await emit_progress()
 
             try:
                 # Step 1: Gather timeframe-specific data
                 if trade_style == "day":
                     bars = await sdk_tools.get_price_bars(symbol, "5m", 3)
-                    indicators = await sdk_tools.get_technical_indicators(symbol, [5, 9, 20], 14)
+                    indicators = await sdk_tools.get_technical_indicators(symbol, [5, 9, 20], 14, timeframe="5m")
                     sr_levels = await sdk_tools.get_support_resistance(symbol, "intraday")
+                    volume_profile = await sdk_tools.get_volume_profile(symbol, 5)  # 5 days
+                    chart_patterns = await sdk_tools.get_chart_patterns(symbol, 20)  # 20 days
                 elif trade_style == "swing":
                     bars = await sdk_tools.get_price_bars(symbol, "1d", 100)
-                    indicators = await sdk_tools.get_technical_indicators(symbol, [9, 21, 50], 14)
+                    indicators = await sdk_tools.get_technical_indicators(symbol, [9, 21, 50], 14, timeframe="1d")
                     sr_levels = await sdk_tools.get_support_resistance(symbol, "daily")
+                    volume_profile = await sdk_tools.get_volume_profile(symbol, 50)  # 50 days
+                    chart_patterns = await sdk_tools.get_chart_patterns(symbol, 100)  # 100 days
                 else:  # position
-                    bars = await sdk_tools.get_price_bars(symbol, "1w", 52)
-                    indicators = await sdk_tools.get_technical_indicators(symbol, [21, 50, 200], 14)
+                    bars = await sdk_tools.get_price_bars(symbol, "1w", 365)
+                    indicators = await sdk_tools.get_technical_indicators(symbol, [21, 50, 200], 14, timeframe="1w")
                     sr_levels = await sdk_tools.get_support_resistance(symbol, "weekly")
+                    volume_profile = await sdk_tools.get_volume_profile(symbol, 200)  # 200 days
+                    chart_patterns = await sdk_tools.get_chart_patterns(symbol, 200)  # 200 days
+
+                # Get divergences (same lookback for all trade styles - daily chart divergences)
+                divergences = await sdk_tools.get_divergences(symbol, lookback=50)
+
+                # Get Fibonacci levels for the trade style
+                fib_levels = await sdk_tools.get_fibonacci_levels(
+                    symbol,
+                    bars.get("bars", []),
+                    trade_style
+                )
 
                 self.subagent_progress[agent_name].current_step = "Generating chart"
                 self.subagent_progress[agent_name].status = SubAgentStatus.GENERATING_CHART
+                await emit_progress()
 
                 # Step 2: Generate chart
                 timeframe_map = {"day": "5m", "swing": "1d", "position": "1w"}
-                days_map = {"day": 3, "swing": 100, "position": 52}
+                days_map = {"day": 3, "swing": 100, "position": 365}
                 chart_result = await sdk_tools.generate_chart(
                     symbol,
                     timeframe_map[trade_style],
@@ -423,23 +785,33 @@ class TradePlanOrchestrator:
 
                 self.subagent_progress[agent_name].current_step = "Analyzing chart with Vision"
                 self.subagent_progress[agent_name].status = SubAgentStatus.ANALYZING_CHART
+                await emit_progress()
 
-                # Step 3: Vision analysis (uses user's selected provider - Claude or Grok)
+                # Step 3: Vision analysis with retry (uses user's selected provider - Claude or Grok)
                 vision_result = {}
                 if chart_result.get("chart_image_base64"):
-                    vision_result = await sdk_tools.analyze_chart_vision(
-                        symbol,
-                        chart_result["chart_image_base64"],
-                        trade_style,
-                        provider,  # Pass user's selected provider for vision analysis
-                    )
+                    try:
+                        vision_result = await retry_async(
+                            sdk_tools.analyze_chart_vision,
+                            symbol,
+                            chart_result["chart_image_base64"],
+                            trade_style,
+                            provider,  # Pass user's selected provider for vision analysis
+                            max_attempts=2,  # Quick retry for vision
+                            delay=0.5,
+                        )
+                    except Exception as ve:
+                        logger.warning(f"[{agent_name}] Vision analysis failed after retries: {ve}")
+                        vision_result = {}  # Continue without vision
 
                 self.subagent_progress[agent_name].current_step = "Generating trade plan"
                 self.subagent_progress[agent_name].status = SubAgentStatus.GENERATING_PLAN
+                await emit_progress()
 
                 # Step 4: Build report from gathered data
-                current_price = bars.get("current_price", context.current_price)
-                atr_pct = bars.get("atr_pct", 2.0)
+                # Handle None values explicitly - .get() returns None if key exists with None value
+                current_price = bars.get("current_price") or context.current_price or 0
+                atr_pct = bars.get("atr_pct") or 2.0
 
                 # Determine suitability based on ATR (aligned with prompt thresholds)
                 suitable = False
@@ -449,24 +821,33 @@ class TradePlanOrchestrator:
                     suitable = True
                 elif trade_style == "position" and atr_pct < 1.5:  # Position trades need low volatility (<1.5%)
                     # Position trades also require EMA alignment for trending conditions
-                    ema_trend = indicators.get("ema_trend", "unknown")
+                    ema_trend = indicators.get("ema_trend") or "unknown"
                     suitable = ema_trend in ["bullish_aligned", "bearish_aligned"]
 
                 # Build confidence from indicators
                 base_confidence = 50
-                ema_trend = indicators.get("ema_trend", "unknown")
+                ema_trend = indicators.get("ema_trend") or "unknown"
                 if ema_trend == "bullish_aligned":
                     base_confidence += 15
                 elif ema_trend == "bearish_aligned":
                     base_confidence += 10
 
-                rsi = indicators.get("rsi", {}).get("value", 50)
+                # Get RSI value, handling None explicitly
+                rsi_data = indicators.get("rsi") or {}
+                rsi = rsi_data.get("value") if isinstance(rsi_data, dict) else None
+                rsi = rsi if rsi is not None else 50  # Default to 50 if None
                 if 40 <= rsi <= 60:
                     base_confidence += 5
 
                 # Add vision modifier (range matches vision prompt: -20 to +20)
-                raw_vision_modifier = vision_result.get("confidence_modifier", 0)
-                vision_modifier = max(-20, min(20, raw_vision_modifier))
+                # Validate that the modifier is numeric to prevent crashes
+                try:
+                    raw_vision_modifier = vision_result.get("confidence_modifier", 0)
+                    vision_modifier = float(raw_vision_modifier) if raw_vision_modifier is not None else 0
+                    vision_modifier = max(-20, min(20, vision_modifier))  # Clamp to valid range
+                except (ValueError, TypeError):
+                    logger.warning(f"[{agent_name}] Invalid vision confidence_modifier: {raw_vision_modifier}, using 0")
+                    vision_modifier = 0
                 confidence = min(100, max(0, base_confidence + vision_modifier))
 
                 # Determine bias
@@ -477,9 +858,17 @@ class TradePlanOrchestrator:
                 else:
                     bias = "neutral"
 
-                # Build support/resistance
-                supports = [s["price"] for s in sr_levels.get("support", [])[:3]]
-                resistances = [r["price"] for r in sr_levels.get("resistance", [])[:3]]
+                # Build support/resistance - defensive extraction of prices
+                raw_supports = sr_levels.get("support", []) or []
+                raw_resistances = sr_levels.get("resistance", []) or []
+                supports = [
+                    s.get("price") for s in raw_supports[:3]
+                    if isinstance(s, dict) and isinstance(s.get("price"), (int, float))
+                ]
+                resistances = [
+                    r.get("price") for r in raw_resistances[:3]
+                    if isinstance(r, dict) and isinstance(r.get("price"), (int, float))
+                ]
 
                 # Calculate entry/stop/targets based on bias
                 if bias == "bullish" and supports:
@@ -599,32 +988,48 @@ class TradePlanOrchestrator:
                 # ============================================================
                 self.subagent_progress[agent_name].current_step = "AI generating analysis"
 
-                # Build context for Claude
+                # Build context for Claude with comprehensive data
                 analysis_context = f"""
 ## Stock: {symbol}
 ## Trade Style: {trade_style.upper()}
 ## Current Price: ${current_price:.2f}
 
-## Technical Data:
-- ATR%: {atr_pct:.1f}%
-- RSI(14): {rsi:.1f}
-- EMA Trend: {ema_trend}
-- MACD: {indicators.get('macd', {}).get('histogram', 'N/A')}
+## Technical Data (Enhanced):
+{format_enhanced_technicals(indicators, bars)}
 
-## Key Levels:
-- Support: {', '.join([f'${s:.2f}' for s in supports]) if supports else 'None identified'}
-- Resistance: {', '.join([f'${r:.2f}' for r in resistances]) if resistances else 'None identified'}
+## Institutional-Grade Indicators:
+{format_institutional_indicators(indicators)}
+
+## Divergence Analysis:
+{format_divergences(divergences)}
+
+## Key Levels (with Institutional Metrics):
+{format_levels_with_metrics(sr_levels)}
+
+## Fibonacci Analysis:
+{format_fibonacci_levels(fib_levels)}
+
+## Volume Profile:
+{format_volume_profile(volume_profile)}
+
+## Chart Patterns:
+{format_chart_patterns(chart_patterns)}
 
 ## Vision Analysis:
 {vision_result.get('summary', 'No chart analysis available')}
-- Patterns: {', '.join(vision_result.get('visual_patterns', [])) or 'None'}
+- Visual Patterns: {', '.join(vision_result.get('visual_patterns', [])) or 'None'}
 - Trend Quality: {vision_result.get('trend_quality', 'unknown')}
 - Warning Signs: {', '.join(vision_result.get('warning_signs', [])) or 'None'}
 
 ## Position Context:
 {position_context_str if position_context_str else 'No existing position.'}
 
-Based on this data, provide your {trade_style} trade analysis.
+Based on this comprehensive data, provide your {trade_style} trade analysis.
+Use the institutional metrics to assess level reliability for stop placement.
+Reference chart pattern success rates when setting confidence.
+Consider divergence signals - bullish divergence suggests potential reversal up, bearish suggests reversal down.
+For day trades, pay attention to VWAP positioning. For position trades, use ADX to assess trend strength.
+Use Fibonacci retracement levels (38.2%, 50%, 61.8%, 78.6%) for entry zones and extensions (1.272, 1.618) for targets.
 """
 
                 # Get the trade-style specific prompt
@@ -670,18 +1075,21 @@ Respond with a JSON object containing:
 
 Return ONLY the JSON object, no other text."""
 
-                # Call the provider for real analysis
+                # Call the provider for real analysis with retry
                 # Use search if provider supports X search (Grok), otherwise no search for sub-agents
                 search_params = None
                 if provider.supports_x_search:
                     search_params = get_x_search_parameters()
 
-                plan_response = await provider.create_message(
+                plan_response = await retry_async(
+                    provider.create_message,
                     messages=[AIMessage(role="user", content=user_message)],
                     system=system_prompt,
                     model_type="planning",
                     max_tokens=2000,
                     search_parameters=search_params,
+                    max_attempts=2,  # Retry once on failure
+                    delay=1.0,
                 )
 
                 # Capture X/social citations from Grok response
@@ -698,20 +1106,36 @@ Return ONLY the JSON object, no other text."""
                 else:
                     logger.warning(f"[{agent_name}] No citations returned from Grok X search")
 
-                # Parse the AI response
+                # Parse the AI response with robust JSON extraction
                 ai_text = plan_response.content.strip()
-                # Remove markdown code blocks if present
-                if ai_text.startswith("```"):
-                    ai_text = ai_text.split("```")[1]
-                    if ai_text.startswith("json"):
-                        ai_text = ai_text[4:]
-                    ai_text = ai_text.strip()
+                ai_plan = {}
 
-                try:
-                    ai_plan = json.loads(ai_text)
-                except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse AI response for {agent_name}, using fallback")
-                    ai_plan = {}
+                # Strategy 1: Try to find JSON in markdown code blocks
+                import re
+                json_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', ai_text)
+                if json_match:
+                    try:
+                        ai_plan = json.loads(json_match.group(1))
+                    except json.JSONDecodeError:
+                        pass
+
+                # Strategy 2: If no code block, try to find JSON by brackets
+                if not ai_plan:
+                    # Find the outermost JSON object
+                    first_brace = ai_text.find('{')
+                    last_brace = ai_text.rfind('}')
+                    if first_brace != -1 and last_brace > first_brace:
+                        try:
+                            ai_plan = json.loads(ai_text[first_brace:last_brace + 1])
+                        except json.JSONDecodeError:
+                            pass
+
+                # Strategy 3: Try the whole response as JSON
+                if not ai_plan:
+                    try:
+                        ai_plan = json.loads(ai_text)
+                    except json.JSONDecodeError:
+                        logger.warning(f"[{agent_name}] Failed to parse AI response, using fallback. Response preview: {ai_text[:200]}")
 
                 # Use AI's analysis or fall back to calculated values
                 # Note: Use `or` to handle both missing keys AND null values
@@ -724,7 +1148,7 @@ Return ONLY the JSON object, no other text."""
                 final_stop = ai_plan.get("stop_loss") or stop_loss
                 final_holding = ai_plan.get("holding_period") or holding_periods[trade_style]
 
-                # Parse targets from AI response
+                # Parse and validate targets from AI response
                 ai_targets = ai_plan.get("targets") or []
                 if ai_targets and isinstance(ai_targets, list):
                     parsed_targets = []
@@ -732,12 +1156,20 @@ Return ONLY the JSON object, no other text."""
                         if isinstance(t, dict):
                             target_price = t.get("price")
                             if target_price is not None:
-                                parsed_targets.append(
-                                    PriceTargetWithReasoning(
-                                        price=round(float(target_price), 2),
-                                        reasoning=t.get("reasoning") or "Target level"
-                                    )
-                                )
+                                try:
+                                    price_float = float(target_price)
+                                    # Validate: positive and within reasonable range (0.5x to 3x current price)
+                                    if price_float > 0 and current_price * 0.5 <= price_float <= current_price * 3:
+                                        parsed_targets.append(
+                                            PriceTargetWithReasoning(
+                                                price=round(price_float, 2),
+                                                reasoning=t.get("reasoning") or "Target level"
+                                            )
+                                        )
+                                    else:
+                                        logger.warning(f"[{agent_name}] Invalid target price {price_float} (current: {current_price}), skipping")
+                                except (ValueError, TypeError):
+                                    logger.warning(f"[{agent_name}] Non-numeric target price: {target_price}, skipping")
                     if parsed_targets:
                         targets = parsed_targets
 
@@ -770,7 +1202,7 @@ Return ONLY the JSON object, no other text."""
                     ),
                     entry_zone_low=round(float(final_entry_low), 2) if final_entry_low else round(current_price * 0.98, 2),
                     entry_zone_high=round(float(final_entry_high), 2) if final_entry_high else round(current_price * 0.995, 2),
-                    entry_reasoning=ai_plan.get("entry_reasoning") or f"Near support at ${final_entry_low:.2f}" if final_entry_low else "Near current price",
+                    entry_reasoning=ai_plan.get("entry_reasoning") or (f"Near support at ${final_entry_low:.2f}" if final_entry_low else "Near current price"),
                     stop_loss=round(float(final_stop), 2) if final_stop else round(current_price * 0.95, 2),
                     stop_reasoning=ai_plan.get("stop_reasoning") or "Below recent support",
                     targets=targets,
@@ -779,7 +1211,7 @@ Return ONLY the JSON object, no other text."""
                     holding_period=final_holding,
                     key_supports=supports or [],
                     key_resistances=resistances or [],
-                    invalidation_criteria=ai_plan.get("invalidation_criteria") or f"Close below ${final_stop:.2f}" if final_stop else "Price closes below stop level",
+                    invalidation_criteria=ai_plan.get("invalidation_criteria") or (f"Close below ${final_stop:.2f}" if final_stop else "Price closes below stop level"),
                     position_aligned=position_aligned,
                     position_recommendation=position_recommendation,
                     setup_explanation=ai_plan.get("setup_explanation") or f"This {trade_style} setup is based on {ema_trend} EMA alignment.",
@@ -791,26 +1223,53 @@ Return ONLY the JSON object, no other text."""
                 )
 
             except Exception as e:
-                logger.error(f"[{agent_name}] Error: {e}")
+                error_msg = str(e) or f"{type(e).__name__}: {repr(e)}"
+                logger.error(f"[{agent_name}] Error: {error_msg}")
                 self.subagent_progress[agent_name].status = SubAgentStatus.FAILED
-                self.subagent_progress[agent_name].error_message = str(e)
+                self.subagent_progress[agent_name].error_message = error_msg
+                self.subagent_progress[agent_name].findings = [
+                    f"Error: {error_msg[:40]}",
+                    "Using fallback data",
+                ]
+                await emit_progress()  # Emit error progress
                 # Return mock report on error
                 return self._create_mock_report(symbol, trade_style, context)
 
-        # Run all agents in parallel
+        # Run all agents in parallel while yielding progress events
         try:
+            # Create tasks (don't await yet)
             tasks = [
-                run_single_agent(name, agent_def)
+                asyncio.create_task(run_single_agent(name, agent_def))
                 for name, agent_def in agents_def.items()
             ]
+
+            # While tasks are running, consume progress events from queue and yield them
+            while not all(task.done() for task in tasks):
+                try:
+                    # Wait for progress update with short timeout
+                    progress = await asyncio.wait_for(progress_queue.get(), timeout=0.2)
+                    yield StreamEvent.subagent_progress(progress)
+                except asyncio.TimeoutError:
+                    pass  # No progress update, check if tasks are done
+
+            # Drain any remaining progress events in queue
+            while not progress_queue.empty():
+                try:
+                    progress = progress_queue.get_nowait()
+                    yield StreamEvent.subagent_progress(progress)
+                except asyncio.QueueEmpty:
+                    break
+
+            # Get results from completed tasks
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Process results
             for (agent_name, _), result in zip(agents_def.items(), results):
                 if isinstance(result, Exception):
+                    error_msg = str(result) or f"{type(result).__name__}: {repr(result)}"
                     self.subagent_progress[agent_name].status = SubAgentStatus.FAILED
-                    self.subagent_progress[agent_name].error_message = str(result)
-                    self.subagent_progress[agent_name].findings = ["Error occurred"]
+                    self.subagent_progress[agent_name].error_message = error_msg
+                    self.subagent_progress[agent_name].findings = [f"Error: {error_msg[:50]}"]
                 else:
                     self.subagent_reports[agent_name] = result
                     self.subagent_progress[agent_name].status = SubAgentStatus.COMPLETED
@@ -911,7 +1370,7 @@ Return ONLY the JSON object, no other text."""
             suitable=suitable_map.get(trade_style, False),
             confidence=confidence_map.get(trade_style, 50),
             bias="bullish",
-            thesis=f"Simulated {trade_style} trade thesis for {symbol}",
+            thesis=f"[FALLBACK DATA] Analysis unavailable due to API timeout. This is simulated {trade_style} trade data for {symbol}.",
             vision_analysis=VisionAnalysisResult(
                 trend_quality="moderate",
                 visual_patterns=["bull flag"] if trade_style == "swing" else [],
@@ -1178,23 +1637,47 @@ Return ONLY valid JSON."""
                 # Claude: use web search for synthesis
                 search_params = SearchParameters(mode="on", sources=[{"type": "web"}], return_citations=True)
 
-            synthesis_response = await provider.create_message(
+            synthesis_response = await retry_async(
+                provider.create_message,
                 messages=[AIMessage(role="user", content=synthesis_prompt)],
                 system=None,
                 model_type="planning",
                 max_tokens=1500,
                 search_parameters=search_params,
+                max_attempts=2,  # Retry once on failure
+                delay=1.0,
             )
 
             synthesis_text = synthesis_response.content.strip()
-            # Remove markdown code blocks if present
-            if synthesis_text.startswith("```"):
-                synthesis_text = synthesis_text.split("```")[1]
-                if synthesis_text.startswith("json"):
-                    synthesis_text = synthesis_text[4:]
-                synthesis_text = synthesis_text.strip()
+            synthesis = {}
 
-            synthesis = json.loads(synthesis_text)
+            # Robust JSON parsing with multiple strategies
+            import re
+
+            # Strategy 1: Try to find JSON in markdown code blocks
+            json_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', synthesis_text)
+            if json_match:
+                try:
+                    synthesis = json.loads(json_match.group(1))
+                except json.JSONDecodeError:
+                    pass
+
+            # Strategy 2: If no code block, try to find JSON by brackets
+            if not synthesis:
+                first_brace = synthesis_text.find('{')
+                last_brace = synthesis_text.rfind('}')
+                if first_brace != -1 and last_brace > first_brace:
+                    try:
+                        synthesis = json.loads(synthesis_text[first_brace:last_brace + 1])
+                    except json.JSONDecodeError:
+                        pass
+
+            # Strategy 3: Try the whole response as JSON
+            if not synthesis:
+                try:
+                    synthesis = json.loads(synthesis_text)
+                except json.JSONDecodeError:
+                    logger.warning(f"[Orchestrator] Failed to parse synthesis response, using best agent output. Preview: {synthesis_text[:200]}")
 
             # Update best_report with synthesized content
             if synthesis.get("thesis"):
@@ -1210,20 +1693,26 @@ Return ONLY valid JSON."""
             if synthesis.get("selection_reasoning"):
                 reasoning_parts = [synthesis["selection_reasoning"]]
 
-            # Parse synthesized targets
+            # Parse and validate synthesized targets
             from app.agent.schemas.subagent_report import PriceTargetWithReasoning
             synth_targets = synthesis.get("targets", [])
+            current_price = context.current_price if context else 0
             if synth_targets and isinstance(synth_targets, list):
                 parsed_targets = []
                 for t in synth_targets[:3]:
                     if isinstance(t, dict) and t.get("price") is not None:
                         try:
-                            parsed_targets.append(
-                                PriceTargetWithReasoning(
-                                    price=round(float(t["price"]), 2),
-                                    reasoning=t.get("reasoning") or "Target level"
+                            price_float = float(t["price"])
+                            # Validate: positive and within reasonable range (0.5x to 3x current price)
+                            if price_float > 0 and (current_price == 0 or current_price * 0.5 <= price_float <= current_price * 3):
+                                parsed_targets.append(
+                                    PriceTargetWithReasoning(
+                                        price=round(price_float, 2),
+                                        reasoning=t.get("reasoning") or "Target level"
+                                    )
                                 )
-                            )
+                            else:
+                                logger.warning(f"[Orchestrator] Invalid synthesis target {price_float} (current: {current_price}), skipping")
                         except (ValueError, TypeError) as te:
                             logger.warning(f"[Orchestrator] Failed to parse target {t}: {te}")
                 if parsed_targets:

@@ -47,11 +47,27 @@ Call: analyze_chart_vision(symbol, chart_image, "day")
 - Analyzes your 5-min chart
 - Look for: Intraday trends, candle patterns, volume spikes
 
+### 7. Fibonacci Levels
+Call: get_fibonacci_levels(symbol, bars, "day")
+- Gets: Retracement levels (38.2%, 50%, 61.8%, 78.6%)
+- Gets: Extension levels (127.2%, 161.8%, 200%, 261.8%)
+- Use for: Intraday pullback entries, profit targets
+- Key levels: 61.8% and 78.6% for reversals
+
 ## CRITICAL: Position Awareness
 {position_context}
 
 ## NEWS & MARKET CONTEXT
 {news_context}
+
+## FUNDAMENTALS CONTEXT (Low Weight for Day Trades)
+{fundamentals_context}
+
+**Note**: Fundamentals have LOW WEIGHT for day trades - intraday momentum dominates.
+However, ALWAYS check for earnings risk:
+- If earnings are TODAY or TOMORROW: This is HIGH RISK for day trades
+- Avoid holding into earnings announcements (10-30% gap risk)
+- Even intraday, pre-earnings volatility can cause unexpected moves
 
 ## REAL-TIME SENTIMENT (You have X/Twitter search - USE IT!)
 You have access to real-time X (Twitter) search. **Actively search X for this stock** to find:
@@ -122,6 +138,78 @@ If user has a SHORT position:
 - Risk/reward: Minimum 1.5:1
 - Exit by: End of regular session (don't hold overnight unless planned)
 
+## INSTITUTIONAL-GRADE LEVEL ANALYSIS (CRITICAL)
+
+Each support/resistance level includes institutional metrics - USE THESE for placement decisions:
+
+### Key Metrics Explained:
+- **touches**: Total times price tested the level (more = stronger)
+- **high_volume_touches**: Tests with 1.5x+ average volume (institutional activity)
+- **bounce_quality**: 0-100 score of bounce strength (>60 = strong rejection)
+- **reclaimed**: TRUE if level was broken then reclaimed (very strong signal)
+- **reliability**: WEAK/MODERATE/STRONG/INSTITUTIONAL classification
+
+### For Day Trading - Level Rules:
+- ONLY use STRONG or INSTITUTIONAL levels for intraday stops
+- Intraday levels with high_volume_touches are KEY - institutions defend these
+- VWAP combined with high bounce_quality = high-probability entry
+- Prior day high/low with [RECLAIMED] = likely to see reaction again
+
+### Stop Loss Placement:
+- REQUIRE bounce_quality > 40 for intraday stops (tighter than swing)
+- PREFER levels with recent touches (last_touch_bars_ago < 20)
+- NEVER place stops at WEAK levels - too easy to stop hunt intraday
+
+### Confidence Adjustment:
+- STRONG/INSTITUTIONAL levels at entry: Add 5-10 points
+- Using WEAK or MODERATE levels: Reduce confidence by 10-15 points
+- [RECLAIMED] level for entry: Add 5 points (proven defense)
+
+## VOLUME PROFILE FOR DAY TRADING
+
+- **VPOC**: Most traded price TODAY = magnet, price tends to return
+- **Value Area High (VAH)**: Upper bound of fair value - resistance
+- **Value Area Low (VAL)**: Lower bound of fair value - support
+- **Opening Print vs VPOC**: Direction indicates likely intraday trend
+
+For day trades, VPOC is especially critical - use it for mean reversion entries.
+
+## DIVERGENCE SIGNALS FOR DAY TRADING
+
+Divergences are powerful reversal indicators - USE THEM for intraday entries:
+
+### Bullish Divergence:
+- Price makes lower lows but RSI/MACD makes higher lows
+- Entry: On confirmation candle (green close above prior bar)
+- Best when: At intraday support, VPOC, or Value Area Low
+- Confidence boost: +10 points when divergence aligns with support
+
+### Bearish Divergence:
+- Price makes higher highs but RSI/MACD makes lower highs
+- Entry: On confirmation candle (red close below prior bar)
+- Best when: At intraday resistance, VAH, or prior day high
+- Confidence boost: +10 points when divergence aligns with resistance
+
+### Day Trading Divergence Rules:
+- Multiple indicator divergence (both RSI AND MACD) = strongest signal
+- Divergence at VWAP = high-probability reversal zone
+- Ignore divergence if price is grinding sideways (needs swing highs/lows)
+
+## VWAP USAGE FOR DAY TRADING
+
+VWAP is your most important intraday indicator:
+- **Price above VWAP**: Favor LONG entries on pullbacks to VWAP
+- **Price below VWAP**: Favor SHORT entries on bounces to VWAP
+- **Distance from VWAP**: If >1% away, expect mean reversion
+- **VWAP + Divergence**: Most powerful intraday setup
+
+## CHART PATTERN SUCCESS RATES
+
+Each pattern includes historical success rate - use this to calibrate confidence:
+- Pattern with 65%+ success rate: Add 5-10 points to confidence
+- Pattern with 50-65% success rate: Use baseline confidence
+- Pattern with <50% success rate: Reduce confidence by 5-10 points
+
 ## Vision Analysis Focus (5-min chart)
 When analyzing the chart, look for:
 - **Trend**: Is there a clear intraday trend?
@@ -148,6 +236,7 @@ def build_day_trade_prompt(
     symbol: str,
     position_context: str = "No existing position.",
     news_context: str = "No recent news available.",
+    fundamentals_context: str = "No fundamental data available.",
 ) -> str:
     """Build the day trade agent prompt with context.
 
@@ -155,6 +244,7 @@ def build_day_trade_prompt(
         symbol: Stock ticker symbol
         position_context: Formatted position context string
         news_context: News and sentiment context string
+        fundamentals_context: Fundamental data context string
 
     Returns:
         Complete day trade agent prompt
@@ -162,4 +252,5 @@ def build_day_trade_prompt(
     return DAY_TRADE_SYSTEM_PROMPT.format(
         position_context=position_context,
         news_context=news_context,
+        fundamentals_context=fundamentals_context,
     )

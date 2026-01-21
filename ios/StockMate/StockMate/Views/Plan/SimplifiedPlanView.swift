@@ -45,10 +45,14 @@ struct SimplifiedPlanView: View {
         viewModel.plan != nil && viewModel.draftPlan == nil && !generationManager.hasCompletedPlan(for: symbol)
     }
 
-    /// Whether analysis just completed and we should show the completion UI
+    /// Whether analysis just completed and we should show the completion UI (V2 mode only)
     private var showAnalysisComplete: Bool {
         // Show completion UI when manager has completed plan but user hasn't clicked "View Plan" yet
-        generationManager.hasCompletedPlan(for: symbol) && !showPlanDetail && !isGenerating
+        // Only for V2 mode - agentic mode shows FinalRecommendationCard inline
+        !generationManager.isAgenticMode &&
+        generationManager.hasCompletedPlan(for: symbol) &&
+        !showPlanDetail &&
+        !isGenerating
     }
 
     /// Whether to show back button in plan detail view (only for newly generated plans, not saved ones)
@@ -60,15 +64,53 @@ struct SimplifiedPlanView: View {
         ZStack {
             Color(.systemBackground).ignoresSafeArea()
 
-            if isGenerating && displayPlan == nil {
-                // Show generation progress from either ViewModel or manager
+            // PRIORITY 1: Show saved plan if it exists (user returning to view)
+            if let savedPlan = viewModel.plan {
+                // User has an accepted/saved plan - show the detailed plan view
+                planContent(savedPlan)
+
+            // PRIORITY 2: V2 mode generation in progress
+            } else if isGenerating && displayPlan == nil && !generationManager.isAgenticMode {
+                // V2 mode: Show generation progress from either ViewModel or manager
                 if generationManager.hasActiveGeneration(for: symbol) {
                     ManagerGeneratingView(symbol: symbol, manager: generationManager)
                 } else {
                     AgentGeneratingView(symbol: symbol, steps: viewModel.analysisSteps, viewModel: viewModel)
                 }
+
+            // PRIORITY 3: Agentic mode generation in progress or just completed (not yet accepted)
+            } else if generationManager.isAgenticMode && (isGenerating || generationManager.hasCompletedAgenticPlan(for: symbol)) {
+                // Agentic mode: Show streaming view (handles both in-progress and completion)
+                AgenticStreamingView(
+                    symbol: generationManager.activeSymbol ?? symbol,
+                    streamItems: Binding(
+                        get: { generationManager.agenticStreamItems },
+                        set: { _ in }
+                    ),
+                    isComplete: Binding(
+                        get: { !generationManager.isGenerating && generationManager.agenticFinalPlan != nil },
+                        set: { _ in }
+                    ),
+                    finalPlan: Binding(
+                        get: { generationManager.agenticFinalPlan },
+                        set: { _ in }
+                    ),
+                    expandedToolResults: $generationManager.expandedToolResults,
+                    onAcceptPlan: {
+                        // Approve the agentic analysis and save it
+                        if let approvedPlan = await generationManager.approveAnalysis() {
+                            // Set the approved plan in viewModel so it shows immediately
+                            await MainActor.run {
+                                viewModel.setApprovedPlan(approvedPlan)
+                            }
+                            return true
+                        }
+                        return false
+                    }
+                )
+
+            // PRIORITY 4: V2 analysis just completed - show completion UI
             } else if showAnalysisComplete, let plan = displayPlan {
-                // Analysis just completed - show completion UI with "View Selected Plan" button
                 AnalysisCompleteView(
                     symbol: symbol,
                     plan: plan,
@@ -84,12 +126,14 @@ struct SimplifiedPlanView: View {
                         generationManager.startGeneration(for: symbol)
                     }
                 )
-            } else if let plan = displayPlan, (showPlanDetail || viewModel.plan != nil) {
-                // User clicked "View Plan" or has an existing saved plan
+
+            // PRIORITY 5: V2 draft plan ready to view
+            } else if let plan = displayPlan, showPlanDetail {
                 planContent(plan)
-            } else if displayPlan == nil {
+
+            // PRIORITY 6: No plan - show empty state
+            } else {
                 EmptyPlanView {
-                    // Use the manager for background-safe generation
                     showPlanDetail = false
                     generationManager.startGeneration(for: symbol)
                 }
@@ -4341,12 +4385,104 @@ private struct AlternativeCardView_Preview: View {
     .background(Color(.systemBackground))
 }
 
-#Preview("V2 Generating View") {
-    let manager = PlanGenerationManager.shared
+// MARK: - Agentic Mode Previews
 
-    return ManagerGeneratingView(symbol: "AAPL", manager: manager)
-        .onAppear {
-            // Simulate some progress
-            manager.startGeneration(for: "AAPL")
-        }
+#Preview("Agentic - In Progress") {
+    AgenticStreamingView(
+        symbol: "RXRX",
+        streamItems: .constant([
+            .thinking(AgentThinking(
+                text: "Let me start by checking the current price and market context to understand where RXRX is trading today.",
+                iteration: 1,
+                timestamp: Date()
+            )),
+            .toolCall(ToolCall(
+                name: "get_price",
+                arguments: ["symbol": "RXRX"],
+                iteration: 1,
+                timestamp: Date()
+            )),
+            .toolResult(ToolResult(
+                toolName: "get_price",
+                result: ["price": 4.23, "change_pct": -0.5, "bid": 4.22, "ask": 4.24],
+                iteration: 1,
+                timestamp: Date()
+            )),
+            .thinking(AgentThinking(
+                text: "RXRX is at $4.23, down slightly. Let me check the market context and then analyze charts for all 3 timeframes.",
+                iteration: 2,
+                timestamp: Date()
+            )),
+            .toolCall(ToolCall(
+                name: "get_and_analyze_chart",
+                arguments: ["symbol": "RXRX", "timeframe": "1d", "trade_style": "swing"],
+                iteration: 2,
+                timestamp: Date()
+            ))
+        ]),
+        isComplete: .constant(false),
+        finalPlan: .constant(nil),
+        expandedToolResults: .constant([])
+    )
+    .preferredColorScheme(.dark)
+}
+
+#Preview("Agentic - Complete") {
+    AgenticStreamingView(
+        symbol: "RXRX",
+        streamItems: .constant([
+            .thinking(AgentThinking(
+                text: "Let me analyze RXRX across all timeframes.",
+                iteration: 1,
+                timestamp: Date()
+            )),
+            .toolCall(ToolCall(name: "get_price", arguments: ["symbol": "RXRX"], iteration: 1, timestamp: Date())),
+            .toolResult(ToolResult(toolName: "get_price", result: ["price": 4.23], iteration: 1, timestamp: Date())),
+            .toolCall(ToolCall(name: "get_and_analyze_chart", arguments: ["timeframe": "1d"], iteration: 2, timestamp: Date())),
+            .toolResult(ToolResult(toolName: "get_and_analyze_chart", result: ["trend_quality": "choppy"], iteration: 2, timestamp: Date())),
+            .toolCall(ToolCall(name: "get_fundamentals", arguments: ["symbol": "RXRX"], iteration: 3, timestamp: Date())),
+            .toolResult(ToolResult(toolName: "get_fundamentals", result: ["pe_ratio": -15.2], iteration: 3, timestamp: Date())),
+            .toolCall(ToolCall(name: "get_news", arguments: ["symbol": "RXRX"], iteration: 3, timestamp: Date())),
+            .toolResult(ToolResult(toolName: "get_news", result: ["sentiment": "neutral"], iteration: 3, timestamp: Date()))
+        ]),
+        isComplete: .constant(true),
+        finalPlan: .constant([
+            "symbol": "RXRX",
+            "recommended_style": "none",
+            "recommendation_reasoning": "RXRX is a speculative biotech in confirmed downtrend with death cross on weekly. Trading near 52-week lows. Wait for reversal confirmation.",
+            "day_trade_plan": [
+                "conviction": "low",
+                "conviction_reasoning": "5-minute ATR only 0.25% - insufficient volatility",
+                "suitable": false,
+                "bias": "neutral",
+                "thesis": "Not suitable for day trading due to low intraday volatility."
+            ],
+            "swing_trade_plan": [
+                "conviction": "low",
+                "conviction_reasoning": "Bearish technicals - price below all EMAs, death cross forming",
+                "suitable": false,
+                "bias": "neutral",
+                "thesis": "Wait for reversal confirmation before entering swing trade."
+            ],
+            "position_trade_plan": [
+                "conviction": "low",
+                "conviction_reasoning": "Weekly death cross, -33% revenue decline, near 52-week lows",
+                "suitable": false,
+                "bias": "neutral",
+                "thesis": "Fundamentals deteriorating. Wait for trend change."
+            ],
+            "risk_warnings": [
+                "Death cross confirmed on weekly chart",
+                "-33% YoY revenue decline",
+                "Trading at 4.8% of 52-week range"
+            ],
+            "what_to_watch": [
+                "Double bottom confirmation above $4.50",
+                "Break above 9 EMA with volume",
+                "Hold of $4.00 support"
+            ]
+        ]),
+        expandedToolResults: .constant([])
+    )
+    .preferredColorScheme(.dark)
 }

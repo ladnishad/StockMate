@@ -28,6 +28,12 @@ from app.tools.indicators import (
     calculate_atr,
     calculate_bollinger_bands,
     detect_divergences,
+    # New indicators from shortcomings fix
+    calculate_ichimoku,
+    calculate_williams_r,
+    calculate_parabolic_sar,
+    calculate_cmf,
+    calculate_adl,
 )
 
 logger = logging.getLogger(__name__)
@@ -139,6 +145,199 @@ def find_structural_pivots(
     return sorted(unique_pivots, key=lambda x: x.strength, reverse=True)
 
 
+def _count_level_touches(
+    price_bars: List[PriceBar],
+    level: float,
+    level_type: str,
+    tolerance_pct: float = 0.5,
+) -> dict:
+    """Count how many times price has touched a given level with institutional-grade analysis.
+
+    This function performs comprehensive level analysis including:
+    - Touch counting with volume weighting
+    - Bounce quality assessment (wick rejection strength)
+    - Break and reclaim detection (reclaimed levels are stronger)
+    - Hold rate calculation
+
+    Args:
+        price_bars: List of PriceBar objects
+        level: The price level to analyze
+        level_type: "support" or "resistance"
+        tolerance_pct: Percentage tolerance for considering a touch (default 0.5%)
+
+    Returns:
+        Dictionary with touch count metrics:
+        - touches: Total number of times price touched the level
+        - recent_touches: Touches in the last 20 bars (weighted more heavily)
+        - last_touch_bars_ago: How many bars ago the last touch occurred
+        - held: Number of times the level held (didn't break through)
+        - broke: Number of times price broke through the level
+        - high_volume_touches: Touches with above-average volume (institutional)
+        - bounce_quality: Average bounce strength (0-100, higher = stronger rejections)
+        - reclaimed: True if level was broken then reclaimed (very strong)
+        - strength: Score 0-100 based on all factors
+        - reliability: "weak", "moderate", "strong", or "institutional"
+    """
+    if not price_bars or level <= 0:
+        return {
+            "touches": 0,
+            "recent_touches": 0,
+            "last_touch_bars_ago": None,
+            "held": 0,
+            "broke": 0,
+            "high_volume_touches": 0,
+            "bounce_quality": 0,
+            "reclaimed": False,
+            "strength": 0,
+            "reliability": "weak",
+        }
+
+    tolerance = level * (tolerance_pct / 100)
+    total_bars = len(price_bars)
+    recent_window = min(20, total_bars)
+
+    # Calculate average volume for comparison
+    volumes = [bar.volume for bar in price_bars if bar.volume > 0]
+    avg_volume = sum(volumes) / len(volumes) if volumes else 1
+
+    touches = 0
+    recent_touches = 0
+    held_count = 0
+    broke_count = 0
+    high_volume_touches = 0
+    bounce_strengths = []
+    last_touch_idx = None
+
+    # Track break and reclaim
+    was_broken = False
+    was_reclaimed = False
+    previous_side = None  # Track which side of level price was on
+
+    for i, bar in enumerate(price_bars):
+        bars_from_end = total_bars - 1 - i
+        is_recent = bars_from_end < recent_window
+
+        # Track break and reclaim
+        if level_type == "support":
+            current_side = "above" if bar.close > level else "below"
+            if previous_side == "above" and current_side == "below":
+                was_broken = True
+            elif was_broken and previous_side == "below" and current_side == "above":
+                was_reclaimed = True
+            previous_side = current_side
+        else:  # resistance
+            current_side = "below" if bar.close < level else "above"
+            if previous_side == "below" and current_side == "above":
+                was_broken = True
+            elif was_broken and previous_side == "above" and current_side == "below":
+                was_reclaimed = True
+            previous_side = current_side
+
+        # Check for touch based on level type
+        if level_type == "support":
+            # Support: low comes within tolerance of level
+            if abs(bar.low - level) <= tolerance:
+                touches += 1
+                if is_recent:
+                    recent_touches += 1
+                last_touch_idx = i
+
+                # High volume touch?
+                if bar.volume > avg_volume * 1.5:
+                    high_volume_touches += 1
+
+                # Bounce quality: how far did price close from the level?
+                # Stronger bounce = closed further above support
+                if bar.high > bar.low:  # Avoid division by zero
+                    wick_ratio = (bar.close - bar.low) / (bar.high - bar.low)
+                    bounce_strengths.append(wick_ratio * 100)
+
+                # Did it hold? (close above level)
+                if bar.close > level:
+                    held_count += 1
+                else:
+                    broke_count += 1
+        else:  # resistance
+            # Resistance: high comes within tolerance of level
+            if abs(bar.high - level) <= tolerance:
+                touches += 1
+                if is_recent:
+                    recent_touches += 1
+                last_touch_idx = i
+
+                # High volume touch?
+                if bar.volume > avg_volume * 1.5:
+                    high_volume_touches += 1
+
+                # Bounce quality: how far did price close from the level?
+                # Stronger bounce = closed further below resistance
+                if bar.high > bar.low:  # Avoid division by zero
+                    wick_ratio = (bar.high - bar.close) / (bar.high - bar.low)
+                    bounce_strengths.append(wick_ratio * 100)
+
+                # Did it hold? (close below level)
+                if bar.close < level:
+                    held_count += 1
+                else:
+                    broke_count += 1
+
+    # Calculate last touch distance
+    last_touch_bars_ago = None
+    if last_touch_idx is not None:
+        last_touch_bars_ago = total_bars - 1 - last_touch_idx
+
+    # Calculate average bounce quality
+    bounce_quality = round(sum(bounce_strengths) / len(bounce_strengths), 1) if bounce_strengths else 0
+
+    # Calculate strength score (0-100) with enhanced factors
+    # Base: touch count (max 25 points)
+    touch_score = min(25, touches * 6)
+
+    # Recency bonus (max 20 points)
+    recency_score = min(20, recent_touches * 10)
+
+    # Hold rate bonus (max 20 points)
+    hold_rate = held_count / max(1, touches)
+    hold_score = min(20, hold_rate * 20)
+
+    # Volume bonus: high volume touches indicate institutional activity (max 15 points)
+    volume_ratio = high_volume_touches / max(1, touches)
+    volume_score = min(15, volume_ratio * 15)
+
+    # Bounce quality bonus (max 10 points)
+    bounce_score = min(10, bounce_quality / 10)
+
+    # Reclaim bonus: broken and reclaimed levels are very strong (10 points)
+    reclaim_score = 10 if was_reclaimed else 0
+
+    strength = round(touch_score + recency_score + hold_score + volume_score + bounce_score + reclaim_score, 1)
+
+    # Determine reliability classification
+    # Consider both touch count AND quality factors
+    effective_touches = touches + (2 if was_reclaimed else 0) + high_volume_touches
+    if effective_touches >= 8 or (touches >= 4 and was_reclaimed):
+        reliability = "institutional"
+    elif effective_touches >= 5 or (touches >= 3 and high_volume_touches >= 1):
+        reliability = "strong"
+    elif touches >= 2:
+        reliability = "moderate"
+    else:
+        reliability = "weak"
+
+    return {
+        "touches": touches,
+        "recent_touches": recent_touches,
+        "last_touch_bars_ago": last_touch_bars_ago,
+        "held": held_count,
+        "broke": broke_count,
+        "high_volume_touches": high_volume_touches,
+        "bounce_quality": bounce_quality,
+        "reclaimed": was_reclaimed,
+        "strength": strength,
+        "reliability": reliability,
+    }
+
+
 def find_comprehensive_levels(
     price_bars: List[PriceBar],
     current_price: Optional[float] = None,
@@ -154,6 +353,11 @@ def find_comprehensive_levels(
     - Moving averages as dynamic S/R (EMA 9, EMA 21, VWAP)
     - Round/psychological numbers ($1.00, $1.50, etc.)
 
+    Each level includes touch count analysis for reliability assessment:
+    - touches: How many times price has tested this level
+    - strength: Score 0-100 based on touches, recency, and hold rate
+    - reliability: "weak", "moderate", "strong", or "institutional"
+
     Args:
         price_bars: List of PriceBar objects (OHLCV data)
         current_price: Current price (optional, uses last bar if not provided)
@@ -163,7 +367,7 @@ def find_comprehensive_levels(
 
     Returns:
         Dictionary with 'support' and 'resistance' arrays, each containing
-        levels with price, type, and distance from current price.
+        levels with price, type, distance, touches, strength, and reliability.
     """
     if not price_bars:
         raise ValueError("price_bars cannot be empty")
@@ -177,32 +381,54 @@ def find_comprehensive_levels(
     highs = [b.high for b in price_bars]
     lows = [b.low for b in price_bars]
 
-    # 1. Find swing highs (resistance) - local maxima
+    # 1. Find swing highs (resistance) - local maxima with touch count
     for i in range(5, len(price_bars) - 5):
         if highs[i] == max(highs[i-5:i+6]):
             level = round(highs[i], 2)
             if level > current_price * 1.01:  # Above current price
+                touch_data = _count_level_touches(price_bars, level, "resistance")
                 resistance_levels.append({
                     "price": level,
                     "type": "swing_high",
                     "date": str(price_bars[i].timestamp.date()) if hasattr(price_bars[i].timestamp, 'date') else str(price_bars[i].timestamp)[:10],
+                    "touches": touch_data["touches"],
+                    "recent_touches": touch_data["recent_touches"],
+                    "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+                    "strength": touch_data["strength"],
+                    "reliability": touch_data["reliability"],
                 })
 
-    # 2. Find swing lows (support) - local minima
+    # 2. Find swing lows (support) - local minima with touch count
     for i in range(5, len(price_bars) - 5):
         if lows[i] == min(lows[i-5:i+6]):
             level = round(lows[i], 2)
             if level < current_price * 0.99:  # Below current price
+                touch_data = _count_level_touches(price_bars, level, "support")
                 support_levels.append({
                     "price": level,
                     "type": "swing_low",
                     "date": str(price_bars[i].timestamp.date()) if hasattr(price_bars[i].timestamp, 'date') else str(price_bars[i].timestamp)[:10],
+                    "touches": touch_data["touches"],
+                    "recent_touches": touch_data["recent_touches"],
+                    "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+                    "strength": touch_data["strength"],
+                    "reliability": touch_data["reliability"],
                 })
 
-    # 3. Add moving averages as dynamic S/R
+    # 3. Add moving averages as dynamic S/R (with touch analysis)
     if ema_9 and len(ema_9) > 0:
         ema9_val = round(ema_9[-1], 2)
-        level_data = {"price": ema9_val, "type": "ema_9"}
+        level_type = "resistance" if ema9_val > current_price else "support"
+        touch_data = _count_level_touches(price_bars, ema9_val, level_type)
+        level_data = {
+            "price": ema9_val,
+            "type": "ema_9",
+            "touches": touch_data["touches"],
+            "recent_touches": touch_data["recent_touches"],
+            "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+            "strength": touch_data["strength"],
+            "reliability": touch_data["reliability"],
+        }
         if ema9_val > current_price:
             resistance_levels.append(level_data)
         else:
@@ -210,7 +436,17 @@ def find_comprehensive_levels(
 
     if ema_21 and len(ema_21) > 0:
         ema21_val = round(ema_21[-1], 2)
-        level_data = {"price": ema21_val, "type": "ema_21"}
+        level_type = "resistance" if ema21_val > current_price else "support"
+        touch_data = _count_level_touches(price_bars, ema21_val, level_type)
+        level_data = {
+            "price": ema21_val,
+            "type": "ema_21",
+            "touches": touch_data["touches"],
+            "recent_touches": touch_data["recent_touches"],
+            "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+            "strength": touch_data["strength"],
+            "reliability": touch_data["reliability"],
+        }
         if ema21_val > current_price:
             resistance_levels.append(level_data)
         else:
@@ -218,13 +454,23 @@ def find_comprehensive_levels(
 
     if vwap:
         vwap_val = round(vwap, 2)
-        level_data = {"price": vwap_val, "type": "vwap"}
+        level_type = "resistance" if vwap_val > current_price else "support"
+        touch_data = _count_level_touches(price_bars, vwap_val, level_type)
+        level_data = {
+            "price": vwap_val,
+            "type": "vwap",
+            "touches": touch_data["touches"],
+            "recent_touches": touch_data["recent_touches"],
+            "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+            "strength": touch_data["strength"],
+            "reliability": touch_data["reliability"],
+        }
         if vwap_val > current_price:
             resistance_levels.append(level_data)
         else:
             support_levels.append(level_data)
 
-    # 4. Add round number levels (psychological)
+    # 4. Add round number levels (psychological) with touch analysis
     # Determine appropriate increments based on price
     if current_price < 5:
         increments = [0.25, 0.50, 1.00]
@@ -240,9 +486,15 @@ def find_comprehensive_levels(
         level = ((current_price // inc) + 1) * inc
         for _ in range(3):  # Next 3 round levels
             if level > current_price * 1.005:
+                touch_data = _count_level_touches(price_bars, level, "resistance")
                 resistance_levels.append({
                     "price": round(level, 2),
                     "type": "round_number",
+                    "touches": touch_data["touches"],
+                    "recent_touches": touch_data["recent_touches"],
+                    "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+                    "strength": touch_data["strength"],
+                    "reliability": touch_data["reliability"],
                 })
             level += inc
 
@@ -250,29 +502,30 @@ def find_comprehensive_levels(
         level = (current_price // inc) * inc
         for _ in range(3):  # Previous 3 round levels
             if level < current_price * 0.995 and level > 0:
+                touch_data = _count_level_touches(price_bars, level, "support")
                 support_levels.append({
                     "price": round(level, 2),
                     "type": "round_number",
+                    "touches": touch_data["touches"],
+                    "recent_touches": touch_data["recent_touches"],
+                    "last_touch_bars_ago": touch_data["last_touch_bars_ago"],
+                    "strength": touch_data["strength"],
+                    "reliability": touch_data["reliability"],
                 })
             level -= inc
 
-    # Remove duplicates and sort
+    # Remove duplicates, prioritizing higher strength levels
     def dedupe_levels(levels):
-        seen = set()
-        unique = []
+        # Group by price, keeping highest strength version
+        price_map = {}
         for l in levels:
             price_key = round(l["price"], 2)
-            if price_key not in seen:
-                seen.add(price_key)
-                unique.append(l)
-        return unique
+            if price_key not in price_map or l.get("strength", 0) > price_map[price_key].get("strength", 0):
+                price_map[price_key] = l
+        return list(price_map.values())
 
     resistance_levels = dedupe_levels(resistance_levels)
     support_levels = dedupe_levels(support_levels)
-
-    # Sort resistance ascending (nearest first), support descending (nearest first)
-    resistance_levels.sort(key=lambda x: x["price"])
-    support_levels.sort(key=lambda x: x["price"], reverse=True)
 
     # Add distance percentage
     for level in resistance_levels:
@@ -281,10 +534,21 @@ def find_comprehensive_levels(
     for level in support_levels:
         level["distance_pct"] = round(((level["price"] - current_price) / current_price) * 100, 1)
 
+    # Sort by composite score: prioritize strength but keep proximity relevant
+    # Formula: strength * 0.7 + (10 - min(abs(distance), 10)) * 3 for proximity bonus
+    def sort_key(level):
+        strength = level.get("strength", 0)
+        distance = abs(level.get("distance_pct", 0))
+        proximity_bonus = (10 - min(distance, 10)) * 3  # 0-30 points for proximity
+        return -(strength * 0.7 + proximity_bonus)  # Negative for descending
+
+    resistance_levels.sort(key=sort_key)
+    support_levels.sort(key=sort_key)
+
     return {
         "current_price": round(current_price, 2),
-        "resistance": resistance_levels[:10],  # Top 10 nearest
-        "support": support_levels[:10],  # Top 10 nearest
+        "resistance": resistance_levels[:10],  # Top 10 by composite score
+        "support": support_levels[:10],  # Top 10 by composite score
     }
 
 
@@ -815,19 +1079,24 @@ def detect_chart_patterns(
     """Detect major chart patterns for reversal and continuation signals.
 
     Implements geometric pattern recognition for patterns that professional traders use:
-    - Reversal Patterns: H&S, Inverse H&S, Double Tops/Bottoms, Wedges
-    - Continuation Patterns: Flags, Triangles
+    - Reversal Patterns: H&S, Inverse H&S, Double Tops/Bottoms, Wedges, Cup & Handle
+    - Continuation Patterns: Flags, Triangles, Channels, Rectangles
 
     Each pattern is validated using strict geometric rules and provides:
     - Pattern type and reliability
     - Entry/exit levels
     - Expected price target
     - Pattern strength score
+    - Historical success rate (typical win rate for pattern)
+
+    Uses ATR-based tolerance for pattern detection to adapt to volatility:
+    - Low volatility: tighter tolerance for precise pattern matching
+    - High volatility: wider tolerance to catch patterns in choppy markets
 
     Args:
         price_bars: List of PriceBar objects (OHLCV data)
         min_pattern_bars: Minimum bars required for pattern (default: 20)
-        tolerance: Price level tolerance as percentage (default: 3%)
+        tolerance: Base price level tolerance as percentage (default: 3%)
 
     Returns:
         Dictionary containing:
@@ -863,6 +1132,49 @@ def detect_chart_patterns(
 
     current_price = closes[-1]
     patterns_found = []
+
+    # Calculate ATR-based tolerance for pattern detection
+    # Higher volatility = wider tolerance to catch patterns
+    tr_list = [highs[0] - lows[0]]
+    for i in range(1, len(price_bars)):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i-1]),
+            abs(lows[i] - closes[i-1])
+        )
+        tr_list.append(tr)
+
+    atr_period = min(14, len(tr_list))
+    atr = np.mean(tr_list[-atr_period:])
+    atr_pct = (atr / current_price) * 100 if current_price > 0 else 2.0
+
+    # Scale tolerance based on ATR
+    if atr_pct < 1.5:
+        tolerance = 0.02  # Low volatility: 2% tolerance
+    elif atr_pct <= 3.0:
+        tolerance = 0.03  # Moderate volatility: 3% tolerance (default)
+    else:
+        tolerance = 0.04  # High volatility: 4% tolerance
+
+    logger.info(f"Pattern detection tolerance: {tolerance*100:.1f}% (ATR: {atr_pct:.2f}%)")
+
+    # Historical success rates for patterns (based on research)
+    PATTERN_SUCCESS_RATES = {
+        "Head and Shoulders": 0.83,
+        "Inverse Head and Shoulders": 0.83,
+        "Double Top": 0.72,
+        "Double Bottom": 0.78,
+        "Ascending Triangle": 0.75,
+        "Descending Triangle": 0.72,
+        "Bull Flag": 0.67,
+        "Bear Flag": 0.67,
+        "Cup and Handle": 0.65,
+        "Rising Wedge": 0.68,
+        "Falling Wedge": 0.68,
+        "Ascending Channel": 0.65,
+        "Descending Channel": 0.65,
+        "Rectangle": 0.60,
+    }
 
     # Helper: Find swing points (peaks and troughs)
     def find_swing_points(data, window=5):
@@ -925,6 +1237,7 @@ def detect_chart_patterns(
                             "distance_to_entry_pct": round(((neckline - current_price) / current_price * 100), 2),
                             "expected_move_pct": round((pattern_height / neckline * 100), 2),
                             "pattern_complete": current_price < neckline,
+                            "success_rate": PATTERN_SUCCESS_RATES["Head and Shoulders"],
                         })
 
     # Pattern 2: Inverse Head and Shoulders (Bullish Reversal)
@@ -959,6 +1272,7 @@ def detect_chart_patterns(
                             "distance_to_entry_pct": round(((current_price - neckline) / neckline * 100), 2),
                             "expected_move_pct": round((pattern_height / neckline * 100), 2),
                             "pattern_complete": current_price > neckline,
+                            "success_rate": PATTERN_SUCCESS_RATES["Inverse Head and Shoulders"],
                         })
 
     # Pattern 3: Double Top (Bearish Reversal)
@@ -992,6 +1306,7 @@ def detect_chart_patterns(
                         "distance_to_entry_pct": round(((support_level - current_price) / current_price * 100), 2),
                         "expected_move_pct": round((pattern_height / support_level * 100), 2),
                         "pattern_complete": current_price < support_level,
+                        "success_rate": PATTERN_SUCCESS_RATES["Double Top"],
                     })
 
     # Pattern 4: Double Bottom (Bullish Reversal)
@@ -1022,6 +1337,7 @@ def detect_chart_patterns(
                         "distance_to_entry_pct": round(((current_price - resistance_level) / resistance_level * 100), 2),
                         "expected_move_pct": round((pattern_height / resistance_level * 100), 2),
                         "pattern_complete": current_price > resistance_level,
+                        "success_rate": PATTERN_SUCCESS_RATES["Double Bottom"],
                     })
 
     # Pattern 5: Ascending Triangle (Bullish Continuation)
@@ -1058,6 +1374,7 @@ def detect_chart_patterns(
                             "distance_to_breakout_pct": round(((resistance - current_price) / current_price * 100), 2),
                             "expected_move_pct": round((pattern_height / resistance * 100), 2),
                             "pattern_complete": current_price > resistance,
+                            "success_rate": PATTERN_SUCCESS_RATES["Ascending Triangle"],
                         })
 
     # Pattern 6: Descending Triangle (Bearish Continuation)
@@ -1093,6 +1410,7 @@ def detect_chart_patterns(
                             "distance_to_breakdown_pct": round(((support - current_price) / current_price * 100), 2),
                             "expected_move_pct": round((pattern_height / support * 100), 2),
                             "pattern_complete": current_price < support,
+                            "success_rate": PATTERN_SUCCESS_RATES["Descending Triangle"],
                         })
 
     # Pattern 7: Bull Flag (Bullish Continuation)
@@ -1135,6 +1453,7 @@ def detect_chart_patterns(
                     "flagpole_move_pct": round((flagpole_height / flagpole_start * 100), 2),
                     "expected_move_pct": round((flagpole_height / current_price * 100), 2),
                     "pattern_complete": False,  # Continuation patterns are anticipatory
+                    "success_rate": PATTERN_SUCCESS_RATES["Bull Flag"],
                 })
 
     # Pattern 8: Bear Flag (Bearish Continuation)
@@ -1180,7 +1499,259 @@ def detect_chart_patterns(
                     "expected_move_pct": round((-bear_flagpole_height / current_price * 100), 2),
                     "pattern_complete": False,  # Continuation patterns are anticipatory
                     "action_for_longs": "CONSIDER EXIT - Bear flag signals potential further decline",
+                    "success_rate": PATTERN_SUCCESS_RATES["Bear Flag"],
                 })
+
+    # Pattern 9: Cup and Handle (Bullish Continuation)
+    # Look for U-shaped cup followed by small consolidation (handle)
+    if len(price_bars) >= 40:
+        # Need at least 40 bars for cup and handle pattern
+        cup_window = min(30, len(closes) - 10)
+
+        # Find potential cup bottom
+        cup_data = closes[-cup_window-10:-10]  # Cup portion
+        handle_data = closes[-10:]  # Handle portion
+
+        if len(cup_data) >= 20:
+            cup_start = cup_data[0]
+            cup_end = cup_data[-1]
+            cup_bottom = np.min(cup_data)
+            cup_bottom_idx = np.argmin(cup_data)
+
+            # Cup validation:
+            # 1. Start and end of cup should be similar height (forming rim)
+            # 2. Cup should have a rounded bottom (not V-shaped)
+            # 3. Cup depth should be 15-30% of the cup height
+            rim_diff = abs(cup_start - cup_end) / cup_start
+            cup_depth_pct = (cup_start - cup_bottom) / cup_start
+
+            # Check for rounded bottom (bottom should be in middle third)
+            bottom_in_middle = cup_window // 3 < cup_bottom_idx < 2 * cup_window // 3
+
+            if rim_diff < tolerance and 0.10 < cup_depth_pct < 0.35 and bottom_in_middle:
+                # Check handle: should be a slight pullback (1-10% from rim)
+                handle_high = np.max(handle_data)
+                handle_low = np.min(handle_data)
+                handle_pullback = (handle_high - handle_low) / handle_high
+
+                if handle_pullback < 0.12:  # Handle less than 12% pullback
+                    # Target: Height of cup from breakout point
+                    pattern_height = cup_start - cup_bottom
+                    target_price = handle_high + pattern_height
+
+                    # Confidence based on cup symmetry and handle quality
+                    confidence = min(75, 60 + (1 - rim_diff) * 15)
+
+                    patterns_found.append({
+                        "name": "Cup and Handle",
+                        "type": "bullish_continuation",
+                        "confidence": round(confidence, 1),
+                        "cup_rim": round(cup_start, 2),
+                        "cup_bottom": round(cup_bottom, 2),
+                        "handle_high": round(handle_high, 2),
+                        "target_price": round(target_price, 2),
+                        "current_price": round(current_price, 2),
+                        "cup_depth_pct": round(cup_depth_pct * 100, 2),
+                        "expected_move_pct": round((pattern_height / current_price * 100), 2),
+                        "pattern_complete": current_price > handle_high,
+                        "success_rate": PATTERN_SUCCESS_RATES["Cup and Handle"],
+                    })
+
+    # Pattern 10: Rising Wedge (Bearish Reversal)
+    # Higher highs AND higher lows, but highs rising slower than lows (converging)
+    if len(peaks) >= 3 and len(troughs) >= 3:
+        recent_peaks = peaks[-4:] if len(peaks) >= 4 else peaks[-3:]
+        recent_troughs = troughs[-4:] if len(troughs) >= 4 else troughs[-3:]
+
+        # Check if both are rising
+        peaks_rising = all(recent_peaks[i][1] < recent_peaks[i+1][1]
+                          for i in range(len(recent_peaks)-1))
+        troughs_rising = all(recent_troughs[i][1] < recent_troughs[i+1][1]
+                            for i in range(len(recent_troughs)-1))
+
+        if peaks_rising and troughs_rising:
+            # Calculate slopes
+            peak_slope = (recent_peaks[-1][1] - recent_peaks[0][1]) / (recent_peaks[-1][0] - recent_peaks[0][0])
+            trough_slope = (recent_troughs[-1][1] - recent_troughs[0][1]) / (recent_troughs[-1][0] - recent_troughs[0][0])
+
+            # Rising wedge: both rising, but trough slope > peak slope (converging)
+            if trough_slope > peak_slope * 0.8:  # Troughs rising faster → converging
+                wedge_height = recent_peaks[-1][1] - recent_troughs[-1][1]
+                target_price = recent_troughs[-1][1] - wedge_height  # Bearish target
+
+                confidence = 70
+
+                patterns_found.append({
+                    "name": "Rising Wedge",
+                    "type": "bearish_reversal",
+                    "confidence": round(confidence, 1),
+                    "upper_trendline": round(recent_peaks[-1][1], 2),
+                    "lower_trendline": round(recent_troughs[-1][1], 2),
+                    "target_price": round(target_price, 2),
+                    "current_price": round(current_price, 2),
+                    "expected_move_pct": round((-wedge_height / current_price * 100), 2),
+                    "pattern_complete": current_price < recent_troughs[-1][1],
+                    "success_rate": PATTERN_SUCCESS_RATES["Rising Wedge"],
+                })
+
+    # Pattern 11: Falling Wedge (Bullish Reversal)
+    # Lower highs AND lower lows, but lows falling slower than highs (converging)
+    if len(peaks) >= 3 and len(troughs) >= 3:
+        recent_peaks = peaks[-4:] if len(peaks) >= 4 else peaks[-3:]
+        recent_troughs = troughs[-4:] if len(troughs) >= 4 else troughs[-3:]
+
+        # Check if both are falling
+        peaks_falling = all(recent_peaks[i][1] > recent_peaks[i+1][1]
+                           for i in range(len(recent_peaks)-1))
+        troughs_falling = all(recent_troughs[i][1] > recent_troughs[i+1][1]
+                             for i in range(len(recent_troughs)-1))
+
+        if peaks_falling and troughs_falling:
+            # Calculate slopes (negative for falling)
+            peak_slope = (recent_peaks[-1][1] - recent_peaks[0][1]) / (recent_peaks[-1][0] - recent_peaks[0][0])
+            trough_slope = (recent_troughs[-1][1] - recent_troughs[0][1]) / (recent_troughs[-1][0] - recent_troughs[0][0])
+
+            # Falling wedge: both falling, but peak slope more negative → converging
+            if peak_slope < trough_slope * 0.8:  # Peaks falling faster
+                wedge_height = recent_peaks[-1][1] - recent_troughs[-1][1]
+                target_price = recent_peaks[-1][1] + wedge_height  # Bullish target
+
+                confidence = 70
+
+                patterns_found.append({
+                    "name": "Falling Wedge",
+                    "type": "bullish_reversal",
+                    "confidence": round(confidence, 1),
+                    "upper_trendline": round(recent_peaks[-1][1], 2),
+                    "lower_trendline": round(recent_troughs[-1][1], 2),
+                    "target_price": round(target_price, 2),
+                    "current_price": round(current_price, 2),
+                    "expected_move_pct": round((wedge_height / current_price * 100), 2),
+                    "pattern_complete": current_price > recent_peaks[-1][1],
+                    "success_rate": PATTERN_SUCCESS_RATES["Falling Wedge"],
+                })
+
+    # Pattern 12: Ascending Channel (Bullish Continuation)
+    # Parallel higher highs and higher lows
+    if len(peaks) >= 3 and len(troughs) >= 3:
+        recent_peaks = peaks[-4:] if len(peaks) >= 4 else peaks[-3:]
+        recent_troughs = troughs[-4:] if len(troughs) >= 4 else troughs[-3:]
+
+        # Check if both are rising (parallel lines)
+        peaks_rising = all(recent_peaks[i][1] < recent_peaks[i+1][1]
+                          for i in range(len(recent_peaks)-1))
+        troughs_rising = all(recent_troughs[i][1] < recent_troughs[i+1][1]
+                            for i in range(len(recent_troughs)-1))
+
+        if peaks_rising and troughs_rising:
+            peak_slope = (recent_peaks[-1][1] - recent_peaks[0][1]) / (recent_peaks[-1][0] - recent_peaks[0][0])
+            trough_slope = (recent_troughs[-1][1] - recent_troughs[0][1]) / (recent_troughs[-1][0] - recent_troughs[0][0])
+
+            # Check for parallel (slopes similar)
+            slope_ratio = peak_slope / trough_slope if trough_slope != 0 else 0
+            if 0.8 < slope_ratio < 1.2:  # Roughly parallel
+                channel_width = recent_peaks[-1][1] - recent_troughs[-1][1]
+                target_price = current_price + channel_width  # Bullish continuation
+
+                confidence = 65
+
+                patterns_found.append({
+                    "name": "Ascending Channel",
+                    "type": "bullish_continuation",
+                    "confidence": round(confidence, 1),
+                    "channel_high": round(recent_peaks[-1][1], 2),
+                    "channel_low": round(recent_troughs[-1][1], 2),
+                    "channel_width": round(channel_width, 2),
+                    "target_price": round(target_price, 2),
+                    "current_price": round(current_price, 2),
+                    "expected_move_pct": round((channel_width / current_price * 100), 2),
+                    "pattern_complete": False,
+                    "success_rate": PATTERN_SUCCESS_RATES["Ascending Channel"],
+                })
+
+    # Pattern 13: Descending Channel (Bearish Continuation)
+    # Parallel lower highs and lower lows
+    if len(peaks) >= 3 and len(troughs) >= 3:
+        recent_peaks = peaks[-4:] if len(peaks) >= 4 else peaks[-3:]
+        recent_troughs = troughs[-4:] if len(troughs) >= 4 else troughs[-3:]
+
+        peaks_falling = all(recent_peaks[i][1] > recent_peaks[i+1][1]
+                           for i in range(len(recent_peaks)-1))
+        troughs_falling = all(recent_troughs[i][1] > recent_troughs[i+1][1]
+                             for i in range(len(recent_troughs)-1))
+
+        if peaks_falling and troughs_falling:
+            peak_slope = (recent_peaks[-1][1] - recent_peaks[0][1]) / (recent_peaks[-1][0] - recent_peaks[0][0])
+            trough_slope = (recent_troughs[-1][1] - recent_troughs[0][1]) / (recent_troughs[-1][0] - recent_troughs[0][0])
+
+            slope_ratio = peak_slope / trough_slope if trough_slope != 0 else 0
+            if 0.8 < slope_ratio < 1.2:  # Roughly parallel
+                channel_width = recent_peaks[-1][1] - recent_troughs[-1][1]
+                target_price = current_price - channel_width  # Bearish continuation
+
+                confidence = 65
+
+                patterns_found.append({
+                    "name": "Descending Channel",
+                    "type": "bearish_continuation",
+                    "confidence": round(confidence, 1),
+                    "channel_high": round(recent_peaks[-1][1], 2),
+                    "channel_low": round(recent_troughs[-1][1], 2),
+                    "channel_width": round(channel_width, 2),
+                    "target_price": round(target_price, 2),
+                    "current_price": round(current_price, 2),
+                    "expected_move_pct": round((-channel_width / current_price * 100), 2),
+                    "pattern_complete": False,
+                    "success_rate": PATTERN_SUCCESS_RATES["Descending Channel"],
+                })
+
+    # Pattern 14: Rectangle (Neutral - Breakout Direction Determines Bias)
+    # Horizontal support and resistance with price bouncing between
+    if len(peaks) >= 2 and len(troughs) >= 2:
+        recent_peaks = peaks[-3:] if len(peaks) >= 3 else peaks[-2:]
+        recent_troughs = troughs[-3:] if len(troughs) >= 3 else troughs[-2:]
+
+        peak_prices = [p[1] for p in recent_peaks]
+        trough_prices = [t[1] for t in recent_troughs]
+
+        peak_variance = np.std(peak_prices) / np.mean(peak_prices)
+        trough_variance = np.std(trough_prices) / np.mean(trough_prices)
+
+        # Both horizontal (low variance)
+        if peak_variance < tolerance and trough_variance < tolerance:
+            resistance = np.mean(peak_prices)
+            support = np.mean(trough_prices)
+            rectangle_height = resistance - support
+
+            # Determine breakout direction based on current price position
+            if current_price > resistance * (1 - tolerance * 0.5):
+                # Near resistance - bullish breakout likely
+                target_price = resistance + rectangle_height
+                pattern_type = "bullish_continuation"
+            elif current_price < support * (1 + tolerance * 0.5):
+                # Near support - bearish breakout likely
+                target_price = support - rectangle_height
+                pattern_type = "bearish_continuation"
+            else:
+                # In the middle - watch for breakout
+                target_price = resistance + rectangle_height  # Default to bullish
+                pattern_type = "neutral"
+
+            confidence = 60  # Rectangles are less reliable
+
+            patterns_found.append({
+                "name": "Rectangle",
+                "type": pattern_type,
+                "confidence": round(confidence, 1),
+                "resistance": round(resistance, 2),
+                "support": round(support, 2),
+                "rectangle_height": round(rectangle_height, 2),
+                "target_price": round(target_price, 2),
+                "current_price": round(current_price, 2),
+                "expected_move_pct": round((rectangle_height / current_price * 100), 2),
+                "pattern_complete": current_price > resistance or current_price < support,
+                "success_rate": PATTERN_SUCCESS_RATES["Rectangle"],
+            })
 
     # Calculate statistics
     bullish_patterns = [p for p in patterns_found if 'bullish' in p['type']]
@@ -1336,6 +1907,45 @@ def build_snapshot(symbol: str) -> MarketSnapshot:
         except Exception as e:
             logger.warning(f"Could not detect MACD divergences: {e}")
 
+        # ============================================================
+        # NEW INDICATORS (Shortcomings Fix - Institutional Grade)
+        # ============================================================
+
+        # Ichimoku Cloud - comprehensive trend/momentum/S&R indicator
+        try:
+            ichimoku = calculate_ichimoku(price_bars_1d)
+            indicators.append(ichimoku)
+        except Exception as e:
+            logger.warning(f"Could not calculate Ichimoku: {e}")
+
+        # Williams %R - momentum oscillator (overbought/oversold)
+        try:
+            williams = calculate_williams_r(price_bars_1d)
+            indicators.append(williams)
+        except Exception as e:
+            logger.warning(f"Could not calculate Williams %R: {e}")
+
+        # Parabolic SAR - trend following with trailing stop levels
+        try:
+            psar = calculate_parabolic_sar(price_bars_1d)
+            indicators.append(psar)
+        except Exception as e:
+            logger.warning(f"Could not calculate Parabolic SAR: {e}")
+
+        # Chaikin Money Flow - volume-weighted buying/selling pressure
+        try:
+            cmf = calculate_cmf(price_bars_1d)
+            indicators.append(cmf)
+        except Exception as e:
+            logger.warning(f"Could not calculate CMF: {e}")
+
+        # Accumulation/Distribution Line - cumulative volume flow
+        try:
+            adl = calculate_adl(price_bars_1d)
+            indicators.append(adl)
+        except Exception as e:
+            logger.warning(f"Could not calculate ADL: {e}")
+
         # Find structural pivots
         pivots = find_structural_pivots(price_bars_1d, lookback=20, min_touches=2)
 
@@ -1438,7 +2048,9 @@ def generate_trade_plan(
     supports.sort(key=lambda x: current_price - x.price)
     resistances.sort(key=lambda x: x.price - current_price)
 
-    # Determine optimal trade type from market structure (not user preference)
+    # Multi-factor trade type determination
+    # Consider: ATR%, volume relative to average, EMA positioning, proximity to S/R
+
     # Get EMAs for trend analysis
     ema_9 = next((i for i in snapshot.indicators if i.name == "EMA_9"), None)
     ema_20 = next((i for i in snapshot.indicators if i.name == "EMA_20"), None)
@@ -1448,35 +2060,61 @@ def generate_trade_plan(
     atr_indicator = next((i for i in snapshot.indicators if i.name.startswith("ATR")), None)
     atr_pct = (atr_indicator.value / current_price * 100) if atr_indicator else 2.0
 
-    # Determine trade type from technical analysis:
-    # - High volatility (ATR > 3%) + short-term momentum → Day trade
-    # - Strong trend + moderate volatility → Swing trade
-    # - Strong multi-week trend + low volatility → Position/Long trade
+    # Get volume for confirmation
+    volume_indicator = next((i for i in snapshot.indicators if i.name == "Volume"), None)
+    relative_volume = volume_indicator.metadata.get("relative_volume", 1.0) if volume_indicator else 1.0
+
+    # Multi-factor scoring for trade type determination
+    # Higher score = shorter-term trade (day), lower score = longer-term (position)
+    trade_type_score = 0
+
+    # Factor 1: Volatility (ATR %)
+    if atr_pct > 3.0:
+        trade_type_score += 3  # High volatility → day trade
+    elif atr_pct > 1.5:
+        trade_type_score += 1  # Moderate volatility → swing
+    else:
+        trade_type_score -= 2  # Low volatility → position trade
+
+    # Factor 2: Volume activity
+    if relative_volume > 2.0:
+        trade_type_score += 2  # High volume → shorter-term opportunity
+    elif relative_volume < 0.7:
+        trade_type_score -= 1  # Low volume → wait for longer-term
+
+    # Factor 3: EMA alignment and positioning
     if ema_9 and ema_20 and ema_50:
         ema_aligned_bullish = ema_9.value > ema_20.value > ema_50.value
         ema_aligned_bearish = ema_9.value < ema_20.value < ema_50.value
         ema_moderate_bullish = ema_9.value > ema_20.value
 
-        if atr_pct > 3.0:
-            # High volatility - day trade to capture quick moves
-            trade_type = "day"
-        elif ema_aligned_bullish or ema_aligned_bearish:
-            # Strong trend alignment
-            if atr_pct < 1.5:
-                # Low volatility + strong trend → position trade
-                trade_type = "long"
-            else:
-                # Moderate volatility + strong trend → swing trade
-                trade_type = "swing"
-        elif ema_moderate_bullish:
-            # Moderate uptrend - swing trade
-            trade_type = "swing"
+        if ema_aligned_bullish or ema_aligned_bearish:
+            trade_type_score -= 1  # Strong alignment → longer-term trade works
+        if ema_moderate_bullish:
+            pass  # Neutral
         else:
-            # No clear trend - default to swing for flexibility
-            trade_type = "swing"
-    else:
-        # Default to swing if we can't determine trend
+            trade_type_score += 1  # No trend → shorter-term
+
+    # Factor 4: Proximity to support/resistance
+    if supports and resistances:
+        nearest_support_pct = (current_price - supports[0].price) / current_price * 100
+        nearest_resistance_pct = (resistances[0].price - current_price) / current_price * 100
+
+        if nearest_support_pct < 1.0 or nearest_resistance_pct < 1.0:
+            trade_type_score += 2  # Near significant level → shorter-term
+
+    # Determine trade type from multi-factor score
+    if trade_type_score >= 3:
+        trade_type = "day"
+    elif trade_type_score >= 0:
         trade_type = "swing"
+    else:
+        trade_type = "long"
+
+    logger.info(
+        f"Trade type determination: score={trade_type_score}, "
+        f"atr={atr_pct:.2f}%, rel_vol={relative_volume:.1f}x → {trade_type}"
+    )
 
     # Expert parameters based on determined trade type
     # These are optimized defaults that work well across different setups
@@ -1537,14 +2175,40 @@ def generate_trade_plan(
             stop_pct = 0.02 if trade_type == "day" else 0.03
             stop_loss = entry_price * (1 - stop_pct)
 
-    # Ensure stop loss is reasonable (not too tight or too wide)
+    # Volatility-adaptive stop loss bounds
+    # Scale the acceptable stop range based on current market volatility
+    if atr_pct < 1.5:
+        # Low volatility: 1-4% stop range
+        min_stop_pct = 0.01
+        max_stop_pct = 0.04
+        volatility_regime = "low"
+    elif atr_pct <= 3.0:
+        # Moderate volatility: 2-6% stop range
+        min_stop_pct = 0.02
+        max_stop_pct = 0.06
+        volatility_regime = "moderate"
+    else:
+        # High volatility: 3-8% stop range
+        min_stop_pct = 0.03
+        max_stop_pct = 0.08
+        volatility_regime = "high"
+
+    # Ensure stop loss is within volatility-adaptive bounds
     risk_per_share = entry_price - stop_loss
-    if risk_per_share < entry_price * 0.01:  # Less than 1%
-        stop_loss = entry_price * 0.99
+    if risk_per_share < entry_price * min_stop_pct:
+        stop_loss = entry_price * (1 - min_stop_pct)
         risk_per_share = entry_price - stop_loss
-    elif risk_per_share > entry_price * 0.08:  # More than 8% (widened for ATR)
-        stop_loss = entry_price * 0.92
+        logger.info(
+            f"Stop too tight for {volatility_regime} volatility, "
+            f"adjusted to {min_stop_pct*100:.1f}%"
+        )
+    elif risk_per_share > entry_price * max_stop_pct:
+        stop_loss = entry_price * (1 - max_stop_pct)
         risk_per_share = entry_price - stop_loss
+        logger.info(
+            f"Stop too wide for {volatility_regime} volatility, "
+            f"capped to {max_stop_pct*100:.1f}%"
+        )
 
     # Calculate position size based on risk
     risk_amount = account_size * (risk_percentage / 100)
@@ -1566,7 +2230,7 @@ def generate_trade_plan(
     fib_indicator = None
     if use_fib_extensions or target_method == "fibonacci":
         try:
-            fib_indicator = calculate_fibonacci_levels(snapshot.price_bars_1d)
+            fib_indicator = calculate_fibonacci_levels(snapshot.price_bars_1d, trade_type=trade_type)
         except Exception as e:
             logger.warning(f"Could not calculate Fibonacci for targets: {e}")
 
@@ -1698,9 +2362,68 @@ def run_analysis(
             "adx": 2.0,                # Trend strength
             "stochastic": 2.0,         # Momentum confirmation
         }
-        confidence_threshold = 65.0
-        rsi_overbought = 70.0
-        rsi_oversold = 30.0
+
+        # Signal grouping to prevent double-counting correlated signals
+        # Each group has a max contribution cap to prevent over-weighting
+        SIGNAL_GROUPS = {
+            "momentum": {
+                "indicators": ["rsi", "stochastic", "williams_r"],
+                "max_weight_multiplier": 1.0,  # Max 1x the base weight
+            },
+            "volume": {
+                "indicators": ["volume", "cmf", "adl"],
+                "max_weight_multiplier": 1.0,
+            },
+            "trend": {
+                "indicators": ["ema_trend", "macd", "ichimoku"],
+                "max_weight_multiplier": 1.5,  # Trend is most important
+            },
+        }
+        signal_group_scores = {
+            "momentum": {"bullish": 0, "bearish": 0},
+            "volume": {"bullish": 0, "bearish": 0},
+            "trend": {"bullish": 0, "bearish": 0},
+        }
+
+        # Risk-tiered confidence thresholds based on account size
+        # Larger accounts = more conservative thresholds
+        if account_size >= 10000:
+            confidence_threshold = 70.0  # Conservative for larger accounts
+            risk_tier = "low"
+        elif account_size >= 5000:
+            confidence_threshold = 65.0  # Standard threshold
+            risk_tier = "medium"
+        else:
+            confidence_threshold = 60.0  # More aggressive for smaller accounts
+            risk_tier = "high"
+
+        logger.info(f"Risk tier: {risk_tier} (threshold: {confidence_threshold}%)")
+
+        # Determine trend strength for trend-adjusted RSI thresholds
+        ema_9 = next((i for i in snapshot.indicators if i.name == "EMA_9"), None)
+        ema_50 = next((i for i in snapshot.indicators if i.name == "EMA_50"), None)
+
+        if ema_9 and ema_50:
+            ema_diff_pct = ((ema_9.value - ema_50.value) / ema_50.value) * 100
+            if ema_diff_pct > 2.0:  # Strong uptrend
+                rsi_overbought = 80.0
+                rsi_oversold = 40.0
+                trend_regime = "strong_uptrend"
+            elif ema_diff_pct < -2.0:  # Strong downtrend
+                rsi_overbought = 60.0
+                rsi_oversold = 20.0
+                trend_regime = "strong_downtrend"
+            else:  # No clear trend
+                rsi_overbought = 70.0
+                rsi_oversold = 30.0
+                trend_regime = "neutral"
+        else:
+            rsi_overbought = 70.0
+            rsi_oversold = 30.0
+            trend_regime = "neutral"
+
+        logger.info(f"Trend regime: {trend_regime}, RSI thresholds: overbought={rsi_overbought}, oversold={rsi_oversold}")
+
         adx_threshold = 25.0
         # Note: ATR excluded (0%) - informational only, non-directional
 
@@ -1713,7 +2436,7 @@ def run_analysis(
             reasons.append(f"Bearish sentiment (score: {snapshot.sentiment.score:.2f})")
         # else: neutral = 0 points
 
-        # 2. Trend Analysis - EMAs (weight: 12.82%)
+        # 2. Trend Analysis - EMAs (weight: 12.82%) - Track in trend group
         ema_signals = [i for i in snapshot.indicators if i.name.startswith("EMA")]
         if ema_signals:
             bullish_emas = sum(1 for ema in ema_signals if ema.signal == "bullish")
@@ -1722,33 +2445,36 @@ def run_analysis(
             # Scale by alignment: +100% if all bullish, -100% if all bearish
             ema_alignment = (bullish_emas - bearish_emas) / len(ema_signals)
             ema_score = ema_alignment * WEIGHTS["ema_trend"]
-            score += ema_score
 
+            # Track in trend group for signal grouping
             if ema_score > 0:
+                signal_group_scores["trend"]["bullish"] += ema_score
                 reasons.append(f"Price above key EMAs ({bullish_emas}/{len(ema_signals)} bullish)")
             elif ema_score < 0:
+                signal_group_scores["trend"]["bearish"] += abs(ema_score)
                 reasons.append(f"Price below key EMAs ({bearish_emas}/{len(ema_signals)} bearish)")
 
-        # 3. RSI Analysis (weight varies by profile)
+        # 3. RSI Analysis (weight varies by profile) - Track in momentum group
+        # Uses trend-adjusted thresholds calculated above
         rsi_indicator = next((i for i in snapshot.indicators if i.name.startswith("RSI")), None)
         if rsi_indicator and WEIGHTS["rsi"] > 0:
             rsi_value = rsi_indicator.value
 
             if 40 <= rsi_value <= rsi_overbought:
                 # Sweet spot - bullish momentum without overbought
-                score += WEIGHTS["rsi"]
+                signal_group_scores["momentum"]["bullish"] += WEIGHTS["rsi"]
                 reasons.append(f"RSI in bullish zone ({rsi_value:.1f})")
             elif rsi_oversold <= rsi_value < 40:
                 # Recovering from oversold - partial bullish
-                score += WEIGHTS["rsi"] * 0.5
+                signal_group_scores["momentum"]["bullish"] += WEIGHTS["rsi"] * 0.5
                 reasons.append(f"RSI recovering from oversold ({rsi_value:.1f})")
             elif rsi_value < rsi_oversold:
                 # Oversold - potential bounce (partial weight)
-                score += WEIGHTS["rsi"] * 0.67
+                signal_group_scores["momentum"]["bullish"] += WEIGHTS["rsi"] * 0.67
                 reasons.append(f"RSI oversold ({rsi_value:.1f}) - potential bounce")
             elif rsi_value > rsi_overbought:
                 # Overbought - risky
-                score -= WEIGHTS["rsi"]
+                signal_group_scores["momentum"]["bearish"] += WEIGHTS["rsi"]
                 reasons.append(f"RSI overbought ({rsi_value:.1f}) - caution")
 
         # 4. VWAP Analysis (weight: 7.69%)
@@ -1761,34 +2487,34 @@ def run_analysis(
                 score -= WEIGHTS["vwap"]
                 reasons.append(f"Price below VWAP (${vwap_indicator.value:.2f})")
 
-        # 5. Volume Analysis (weight: 10.26%) - CRITICAL
+        # 5. Volume Analysis (weight: 10.26%) - CRITICAL - Track in volume group
         volume_indicator = next((i for i in snapshot.indicators if i.name == "Volume"), None)
         if volume_indicator:
             if volume_indicator.signal == "bullish":
-                score += WEIGHTS["volume"]
+                signal_group_scores["volume"]["bullish"] += WEIGHTS["volume"]
                 rel_vol = volume_indicator.metadata.get("relative_volume", 1.0)
                 reasons.append(f"Strong volume confirmation ({rel_vol:.1f}x avg)")
             elif volume_indicator.signal == "bearish":
-                score -= WEIGHTS["volume"] * 0.75  # Slightly less penalty
+                signal_group_scores["volume"]["bearish"] += WEIGHTS["volume"] * 0.75
                 reasons.append("High volume distribution - bearish")
             elif volume_indicator.metadata.get("interpretation") == "low_volume":
-                score -= WEIGHTS["volume"] * 0.5  # Half penalty for low volume
+                signal_group_scores["volume"]["bearish"] += WEIGHTS["volume"] * 0.5
                 reasons.append("Low volume - unreliable move")
 
-        # 6. MACD Analysis (weight: 10.26%)
+        # 6. MACD Analysis (weight: 10.26%) - Track in trend group
         macd_indicator = next((i for i in snapshot.indicators if i.name == "MACD"), None)
         if macd_indicator:
             if macd_indicator.metadata.get("bullish_crossover"):
-                score += WEIGHTS["macd"]
+                signal_group_scores["trend"]["bullish"] += WEIGHTS["macd"]
                 reasons.append("MACD bullish crossover - strong entry signal")
             elif macd_indicator.metadata.get("bearish_crossover"):
-                score -= WEIGHTS["macd"]
+                signal_group_scores["trend"]["bearish"] += WEIGHTS["macd"]
                 reasons.append("MACD bearish crossover - exit signal")
             elif macd_indicator.signal == "bullish":
-                score += WEIGHTS["macd"] * 0.5  # Half weight for momentum vs crossover
+                signal_group_scores["trend"]["bullish"] += WEIGHTS["macd"] * 0.5
                 reasons.append("MACD bullish momentum")
             elif macd_indicator.signal == "bearish":
-                score -= WEIGHTS["macd"] * 0.5
+                signal_group_scores["trend"]["bearish"] += WEIGHTS["macd"] * 0.5
                 reasons.append("MACD bearish momentum")
 
         # 7. Bollinger Bands (weight: 7.69%)
@@ -2036,24 +2762,56 @@ def run_analysis(
             except Exception as e:
                 logger.warning(f"Could not calculate ADX: {e}")
 
-        # 16. Stochastic Oscillator (profile-specific, weight varies)
+        # 16. Stochastic Oscillator (profile-specific, weight varies) - Track in momentum group
         if WEIGHTS.get("stochastic", 0) > 0:
             try:
                 from app.tools.indicators import calculate_stochastic
                 stoch = calculate_stochastic(snapshot.price_bars_1d)
 
                 if stoch.metadata.get("bullish_crossover") and stoch.metadata.get("is_oversold"):
-                    score += WEIGHTS["stochastic"]
+                    signal_group_scores["momentum"]["bullish"] += WEIGHTS["stochastic"]
                     reasons.append("Stochastic bullish crossover from oversold")
                 elif stoch.metadata.get("bearish_crossover") and stoch.metadata.get("is_overbought"):
-                    score -= WEIGHTS["stochastic"]
+                    signal_group_scores["momentum"]["bearish"] += WEIGHTS["stochastic"]
                     reasons.append("Stochastic bearish crossover from overbought")
                 elif stoch.signal == "bullish":
-                    score += WEIGHTS["stochastic"] * 0.5
+                    signal_group_scores["momentum"]["bullish"] += WEIGHTS["stochastic"] * 0.5
                 elif stoch.signal == "bearish":
-                    score -= WEIGHTS["stochastic"] * 0.5
+                    signal_group_scores["momentum"]["bearish"] += WEIGHTS["stochastic"] * 0.5
             except Exception as e:
                 logger.warning(f"Could not calculate Stochastic: {e}")
+
+        # Apply signal grouping caps to prevent double-counting
+        # Each group has a max weight multiplier - cap the contributions
+        for group_name, group_config in SIGNAL_GROUPS.items():
+            max_weight = sum(WEIGHTS.get(ind, 0) for ind in group_config["indicators"])
+            max_allowed = max_weight * group_config["max_weight_multiplier"]
+
+            # Cap bullish contributions
+            if signal_group_scores[group_name]["bullish"] > max_allowed:
+                logger.info(
+                    f"Capping {group_name} bullish score from "
+                    f"{signal_group_scores[group_name]['bullish']:.1f} to {max_allowed:.1f}"
+                )
+                signal_group_scores[group_name]["bullish"] = max_allowed
+
+            # Cap bearish contributions
+            if signal_group_scores[group_name]["bearish"] > max_allowed:
+                logger.info(
+                    f"Capping {group_name} bearish score from "
+                    f"{signal_group_scores[group_name]['bearish']:.1f} to {max_allowed:.1f}"
+                )
+                signal_group_scores[group_name]["bearish"] = max_allowed
+
+        # Aggregate signal group scores into final score
+        for group_name, group_scores in signal_group_scores.items():
+            score += group_scores["bullish"] - group_scores["bearish"]
+
+        logger.info(
+            f"Signal groups: Trend={signal_group_scores['trend']}, "
+            f"Momentum={signal_group_scores['momentum']}, "
+            f"Volume={signal_group_scores['volume']}"
+        )
 
         # Normalize score to 0-100 confidence scale
         # Raw score ranges from approximately -50 to +50:
@@ -2105,9 +2863,80 @@ def run_analysis(
         raise
 
 
+def _find_swing_pivots(
+    price_bars: List[PriceBar],
+    lookback: int,
+    pivot_window: int = 5,
+) -> tuple[float, float, int, int]:
+    """Find proper swing pivot highs and lows.
+
+    A swing high is a bar whose high is higher than N bars on each side.
+    A swing low is a bar whose low is lower than N bars on each side.
+
+    Args:
+        price_bars: List of PriceBar objects
+        lookback: How many recent bars to search
+        pivot_window: Number of bars on each side for pivot confirmation
+
+    Returns:
+        Tuple of (swing_high, swing_low, high_index, low_index)
+        Indices are relative to the lookback window
+    """
+    recent_bars = price_bars[-lookback:]
+    swing_high = None
+    swing_low = None
+    high_index = -1
+    low_index = -1
+
+    # Search for swing pivots, leaving room for confirmation window
+    for i in range(pivot_window, len(recent_bars) - pivot_window):
+        bar = recent_bars[i]
+
+        # Check if this is a swing high
+        is_swing_high = True
+        for j in range(i - pivot_window, i + pivot_window + 1):
+            if j == i:
+                continue
+            if recent_bars[j].high > bar.high:
+                is_swing_high = False
+                break
+
+        if is_swing_high and (swing_high is None or bar.high > swing_high):
+            swing_high = bar.high
+            high_index = i
+
+        # Check if this is a swing low
+        is_swing_low = True
+        for j in range(i - pivot_window, i + pivot_window + 1):
+            if j == i:
+                continue
+            if recent_bars[j].low < bar.low:
+                is_swing_low = False
+                break
+
+        if is_swing_low and (swing_low is None or bar.low < swing_low):
+            swing_low = bar.low
+            low_index = i
+
+    # Fallback to simple min/max if no pivots found
+    if swing_high is None:
+        swing_high = max(bar.high for bar in recent_bars)
+        high_index = next(i for i, bar in enumerate(recent_bars) if bar.high == swing_high)
+        logger.debug("No swing high pivot found, using max high")
+
+    if swing_low is None:
+        swing_low = min(bar.low for bar in recent_bars)
+        low_index = next(i for i, bar in enumerate(recent_bars) if bar.low == swing_low)
+        logger.debug("No swing low pivot found, using min low")
+
+    return swing_high, swing_low, high_index, low_index
+
+
 def calculate_fibonacci_levels(
     price_bars: List[PriceBar],
     swing_lookback: int = 20,
+    trade_type: Optional[str] = None,
+    use_3point: bool = False,
 ) -> Indicator:
     """Calculate Fibonacci retracement and extension levels.
 
@@ -2120,9 +2949,19 @@ def calculate_fibonacci_levels(
     - 0.618 (61.8%): Golden ratio, strongest level
     - 0.786 (78.6%): Deep retracement, last chance
 
+    Extension levels (beyond swing high/low):
+    - 1.272: First extension target
+    - 1.618: Golden extension, common target
+    - 2.000: Double the range
+    - 2.618: Extreme extension target
+
     Args:
         price_bars: List of PriceBar objects (OHLCV data)
-        swing_lookback: Period to identify swing high and low
+        swing_lookback: Period to identify swing high and low (default: 20)
+        trade_type: Optional trade type to auto-select lookback period.
+                   Options: "day" (15 bars), "swing" (30 bars), "position" (50 bars).
+                   If provided, overrides swing_lookback parameter.
+        use_3point: Use 3-point extension method (A-B-C pattern)
 
     Returns:
         Indicator object with Fibonacci analysis and signal for scoring
@@ -2132,34 +2971,78 @@ def calculate_fibonacci_levels(
 
     Example:
         >>> bars = fetch_price_bars("AAPL", "1d", 100)
-        >>> fib = calculate_fibonacci_levels(bars)
+        >>> fib = calculate_fibonacci_levels(bars, trade_type="swing")
         >>> if fib.signal == "bullish" and fib.metadata['at_entry_level']:
         >>>     print(f"Entry at {fib.metadata['nearest_level']} level")
     """
-    logger.info(f"Calculating Fibonacci levels for {len(price_bars)} bars")
+    # Trade type to lookback period mapping
+    TRADE_TYPE_LOOKBACKS = {
+        "day": 15,
+        "swing": 30,
+        "position": 50,
+    }
+
+    # Use trade type lookback if provided, otherwise use swing_lookback parameter
+    if trade_type and trade_type in TRADE_TYPE_LOOKBACKS:
+        lookback_used = TRADE_TYPE_LOOKBACKS[trade_type]
+        logger.info(f"Using {trade_type} trade type with {lookback_used} bar lookback")
+    else:
+        lookback_used = swing_lookback
+        if trade_type and trade_type not in TRADE_TYPE_LOOKBACKS:
+            logger.warning(f"Unknown trade_type '{trade_type}', using default lookback {swing_lookback}")
+
+    logger.info(f"Calculating Fibonacci levels for {len(price_bars)} bars (3-point: {use_3point})")
 
     if not price_bars:
         raise ValueError("price_bars cannot be empty")
 
-    if len(price_bars) < swing_lookback:
-        raise ValueError(f"Need at least {swing_lookback} bars for Fibonacci calculation")
+    if len(price_bars) < lookback_used:
+        raise ValueError(f"Need at least {lookback_used} bars for Fibonacci calculation")
 
-    # Find swing high and low in recent period
-    recent_bars = price_bars[-swing_lookback:]
-    swing_high = max(bar.high for bar in recent_bars)
-    swing_low = min(bar.low for bar in recent_bars)
+    # Find proper swing pivots
+    swing_high, swing_low, high_idx, low_idx = _find_swing_pivots(
+        price_bars, lookback_used, pivot_window=5
+    )
+
+    logger.debug(
+        f"Swing pivots found: High={swing_high:.2f} at index {high_idx}, "
+        f"Low={swing_low:.2f} at index {low_idx}"
+    )
 
     current_price = price_bars[-1].close
+    price_range = swing_high - swing_low
 
-    # Determine trend direction (for retracement vs extension)
-    if current_price > (swing_high + swing_low) / 2:
+    # Validate price data integrity
+    if swing_high <= 0 or swing_low <= 0:
+        raise ValueError(
+            f"Invalid price data: swing_high={swing_high:.4f}, swing_low={swing_low:.4f}. "
+            "Prices must be positive."
+        )
+
+    # Validate price range for meaningful Fibonacci calculation
+    # Minimum range threshold prevents meaningless levels in flat/consolidating markets
+    min_range_threshold = swing_low * 0.001  # 0.1% of swing low as minimum range
+    if price_range <= 0:
+        raise ValueError(
+            f"Invalid price range: swing_high ({swing_high:.4f}) must be greater than "
+            f"swing_low ({swing_low:.4f})"
+        )
+    if price_range < min_range_threshold:
+        raise ValueError(
+            f"Insufficient price movement for Fibonacci analysis: range={price_range:.4f} "
+            f"(minimum required: {min_range_threshold:.4f}). Market may be consolidating."
+        )
+
+    # Determine trend direction based on swing sequence
+    # If swing high came after swing low, we're in uptrend
+    if high_idx > low_idx:
         trend = "uptrend"
-        # Retracement from swing high down to swing low
+        # Retracement: measure from swing high down to swing low
         retracement_base = swing_high
         retracement_target = swing_low
     else:
         trend = "downtrend"
-        # Retracement from swing low up to swing high
+        # Retracement: measure from swing low up to swing high
         retracement_base = swing_low
         retracement_target = swing_high
 
@@ -2176,19 +3059,97 @@ def calculate_fibonacci_levels(
     }
 
     # Calculate Fibonacci extension levels
-    extension_levels = {
-        "1.272": retracement_base + (diff * 0.272),
-        "1.618": retracement_base + (diff * 0.618),
-        "2.000": retracement_base + diff,
-        "2.618": retracement_base + (diff * 1.618),
-    }
+    # Extensions project BEYOND the swing high (uptrend) or swing low (downtrend)
+    if trend == "uptrend":
+        # Extensions project above swing high
+        extension_levels = {
+            "1.272": swing_high + (price_range * 0.272),
+            "1.618": swing_high + (price_range * 0.618),
+            "2.000": swing_high + price_range,
+            "2.618": swing_high + (price_range * 1.618),
+        }
+    else:
+        # Extensions project below swing low
+        extension_levels = {
+            "1.272": swing_low - (price_range * 0.272),
+            "1.618": swing_low - (price_range * 0.618),
+            "2.000": swing_low - price_range,
+            "2.618": swing_low - (price_range * 1.618),
+        }
+
+    # Optional: Calculate 3-point extensions (A-B-C pattern)
+    three_point_extensions = {}
+    if use_3point and len(price_bars) >= lookback_used * 2:
+        try:
+            # Find earlier swing for point A
+            earlier_lookback = lookback_used * 2
+            earlier_bars = price_bars[-earlier_lookback:-lookback_used]
+
+            if trend == "uptrend":
+                # Point A: Earlier swing low
+                point_a = min(bar.low for bar in earlier_bars)
+                # Point B: Current swing high
+                point_b = swing_high
+                # Point C: Current retracement (swing low)
+                point_c = swing_low
+                # Calculate extensions from C based on B-A range
+                ab_range = point_b - point_a
+
+                # Validate AB range is meaningful (at least 0.1% of point_a)
+                if abs(ab_range) < point_a * 0.001:
+                    logger.warning(
+                        f"3-point AB range too small ({ab_range:.4f}), skipping 3-point extensions"
+                    )
+                else:
+                    three_point_extensions = {
+                        "3pt_1.272": point_c + (ab_range * 1.272),
+                        "3pt_1.618": point_c + (ab_range * 1.618),
+                        "3pt_2.000": point_c + (ab_range * 2.000),
+                        "3pt_2.618": point_c + (ab_range * 2.618),
+                    }
+                    logger.debug(
+                        f"3-point extensions (uptrend): A={point_a:.2f}, B={point_b:.2f}, "
+                        f"C={point_c:.2f}, AB range={ab_range:.2f}"
+                    )
+            else:
+                # Point A: Earlier swing high
+                point_a = max(bar.high for bar in earlier_bars)
+                # Point B: Current swing low
+                point_b = swing_low
+                # Point C: Current retracement (swing high)
+                point_c = swing_high
+                # Calculate extensions from C based on A-B range
+                ab_range = point_a - point_b
+
+                # Validate AB range is meaningful (at least 0.1% of point_b)
+                if abs(ab_range) < point_b * 0.001:
+                    logger.warning(
+                        f"3-point AB range too small ({ab_range:.4f}), skipping 3-point extensions"
+                    )
+                else:
+                    three_point_extensions = {
+                        "3pt_1.272": point_c - (ab_range * 1.272),
+                        "3pt_1.618": point_c - (ab_range * 1.618),
+                        "3pt_2.000": point_c - (ab_range * 2.000),
+                        "3pt_2.618": point_c - (ab_range * 2.618),
+                    }
+                    logger.debug(
+                        f"3-point extensions (downtrend): A={point_a:.2f}, B={point_b:.2f}, "
+                        f"C={point_c:.2f}, AB range={ab_range:.2f}"
+                )
+        except Exception as e:
+            logger.warning(f"Could not calculate 3-point extensions: {e}")
+
+    # Combine all levels for nearest level calculation
+    all_levels = {**retracement_levels, **extension_levels}
+    if three_point_extensions:
+        all_levels = {**all_levels, **three_point_extensions}
 
     # Find nearest Fibonacci level to current price
-    all_levels = {**retracement_levels, **extension_levels}
     nearest_level = min(all_levels.items(), key=lambda x: abs(x[1] - current_price))
 
     # Check if price is near a Fibonacci level (within 1%)
-    near_fib = abs(nearest_level[1] - current_price) / current_price < 0.01
+    near_fib = (abs(nearest_level[1] - current_price) / current_price < 0.01) if current_price > 0 else False
 
     # Determine if at a favorable entry level
     key_entry_levels = ["0.382", "0.500", "0.618", "0.786"]
@@ -2212,25 +3173,35 @@ def calculate_fibonacci_levels(
 
     logger.info(
         f"Fibonacci: Swing High={swing_high:.2f}, Swing Low={swing_low:.2f}, "
-        f"Trend={trend}, Near Level={nearest_level[0]}, Signal={signal}"
+        f"Range={price_range:.2f}, Trend={trend}, Current={current_price:.2f}, "
+        f"Nearest Level={nearest_level[0]} @ {nearest_level[1]:.2f}, Signal={signal}"
     )
+
+    metadata = {
+        "swing_high": round(swing_high, 2),
+        "swing_low": round(swing_low, 2),
+        "range": round(price_range, 2),
+        "trend": trend,
+        "retracement": {k: round(v, 2) for k, v in retracement_levels.items()},
+        "extension": {k: round(v, 2) for k, v in extension_levels.items()},
+        "nearest_level": nearest_level[0],
+        "nearest_price": round(nearest_level[1], 2),
+        "near_fib_level": near_fib,
+        "at_entry_level": at_entry_level,
+        "current_price": round(current_price, 2),
+        "trade_type": trade_type,
+        "lookback_used": lookback_used,
+    }
+
+    # Add 3-point extensions if calculated
+    if three_point_extensions:
+        metadata["3point_extension"] = {k: round(v, 2) for k, v in three_point_extensions.items()}
 
     return Indicator(
         name="Fibonacci",
         value=round(current_price, 2),
         signal=signal,
-        metadata={
-            "swing_high": round(swing_high, 2),
-            "swing_low": round(swing_low, 2),
-            "trend": trend,
-            "retracement": {k: round(v, 2) for k, v in retracement_levels.items()},
-            "extension": {k: round(v, 2) for k, v in extension_levels.items()},
-            "nearest_level": nearest_level[0],
-            "nearest_price": round(nearest_level[1], 2),
-            "near_fib_level": near_fib,
-            "at_entry_level": at_entry_level,
-            "current_price": round(current_price, 2),
-        },
+        metadata=metadata,
     )
 
 
