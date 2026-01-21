@@ -616,6 +616,7 @@ struct AgentStreamingView: View {
 
                     Spacer(minLength: 100)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(20)
             }
             .onChange(of: steps) { _, newSteps in
@@ -934,6 +935,7 @@ private struct AnalysisStepRow: View {
                     .padding(.leading, 31)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(step.status == .active ? cardBg : Color.clear)
