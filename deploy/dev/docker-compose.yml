@@ -1,10 +1,17 @@
-version: '3.8'
+# Docker Compose for development with local PostgreSQL
+# Use this for testing against a local database (not Supabase)
+#
+# Prerequisites:
+#   1. Create .env in this folder with your configuration
+#
+# Usage:
+#   docker-compose -f deploy/dev/docker-compose.yml up --build
 
 services:
   # StockMate API Backend
   api:
     build:
-      context: .
+      context: ../..
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
@@ -15,9 +22,9 @@ services:
       - LOG_LEVEL=INFO
     volumes:
       # Mount data directory for SQLite persistence in development
-      - ./data:/app/data
+      - ../../data:/app/data
       # Mount app code for hot reloading (development only)
-      - ./app:/app/app:ro
+      - ../../app:/app/app:ro
     depends_on:
       db:
         condition: service_healthy

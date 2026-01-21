@@ -26,7 +26,7 @@ final class AuthenticationManager: ObservableObject {
     // MARK: - Private Properties
 
     private let keychain = KeychainHelper.shared
-    private let baseURL = "https://stockmate-fggr.onrender.com"
+    private var baseURL: String { AppConfiguration.apiBaseURL }
 
     /// Timer for proactive token refresh
     private var tokenRefreshTimer: Timer?
