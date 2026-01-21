@@ -1016,36 +1016,40 @@ private struct AgentGeneratingView: View {
             .padding(.bottom, 28)
 
             // Content - V2 or V1 mode
-            ScrollView {
-                if viewModel.isV2Mode && !viewModel.subagentProgress.isEmpty {
-                    // V2: Parallel sub-agent view
-                    V2SubAgentsView(
-                        orchestratorSteps: viewModel.orchestratorSteps,
-                        subagents: viewModel.sortedSubagents,
-                        expandedAgents: viewModel.expandedSubagents,
-                        isAnalyzersSectionExpanded: viewModel.isAnalyzersSectionExpanded,
-                        allSubagentsComplete: viewModel.allSubagentsComplete,
-                        completedCount: viewModel.completedSubagentCount,
-                        onToggle: { viewModel.toggleSubagentExpansion($0) },
-                        onToggleAnalyzersSection: { viewModel.toggleAnalyzersSection() },
-                        pulseAnimation: pulseAnimation
-                    )
-                    .padding(.horizontal, 20)
-                } else {
-                    // V1: Linear steps list
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
-                            if step.type != .complete {
-                                AgentStepRow(
-                                    step: step,
-                                    isLast: index == steps.count - 2,
-                                    isExpanded: isStepExpanded(step),
-                                    onToggle: { toggleStepExpansion(step.id) }
-                                )
+            GeometryReader { geometry in
+                ScrollView {
+                    if viewModel.isV2Mode && !viewModel.subagentProgress.isEmpty {
+                        // V2: Parallel sub-agent view
+                        V2SubAgentsView(
+                            orchestratorSteps: viewModel.orchestratorSteps,
+                            subagents: viewModel.sortedSubagents,
+                            expandedAgents: viewModel.expandedSubagents,
+                            isAnalyzersSectionExpanded: viewModel.isAnalyzersSectionExpanded,
+                            allSubagentsComplete: viewModel.allSubagentsComplete,
+                            completedCount: viewModel.completedSubagentCount,
+                            onToggle: { viewModel.toggleSubagentExpansion($0) },
+                            onToggleAnalyzersSection: { viewModel.toggleAnalyzersSection() },
+                            pulseAnimation: pulseAnimation
+                        )
+                        .frame(width: geometry.size.width - 40)
+                        .padding(.horizontal, 20)
+                    } else {
+                        // V1: Linear steps list
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
+                                if step.type != .complete {
+                                    AgentStepRow(
+                                        step: step,
+                                        isLast: index == steps.count - 2,
+                                        isExpanded: isStepExpanded(step),
+                                        onToggle: { toggleStepExpansion(step.id) }
+                                    )
+                                }
                             }
                         }
+                        .frame(width: geometry.size.width - 48)
+                        .padding(.horizontal, 24)
                     }
-                    .padding(.horizontal, 24)
                 }
             }
         }
@@ -1117,6 +1121,7 @@ private struct V2SubAgentsView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -1241,6 +1246,7 @@ private struct ExpandableAnalyzersSectionRow: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(.secondarySystemBackground))
@@ -1320,6 +1326,7 @@ private struct OrchestratorStepRow: View {
                         .fill(statusColor.opacity(0.12))
                 )
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 8)
         .padding(.horizontal, 12)
         .background(
@@ -1785,6 +1792,7 @@ private struct V2SubAgentCard: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(.secondarySystemBackground))
@@ -1960,6 +1968,7 @@ private struct V1StyleStepRow: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -2042,19 +2051,22 @@ private struct ManagerGeneratingView: View {
             .padding(.bottom, 28)
 
             // Sub-agent progress
-            ScrollView {
-                V2SubAgentsView(
-                    orchestratorSteps: manager.orchestratorSteps,
-                    subagents: manager.sortedSubagents,
-                    expandedAgents: manager.expandedSubagents,
-                    isAnalyzersSectionExpanded: manager.isAnalyzersSectionExpanded,
-                    allSubagentsComplete: manager.allSubagentsComplete,
-                    completedCount: manager.completedSubagentsCount,
-                    onToggle: { manager.toggleSubagentExpansion($0) },
-                    onToggleAnalyzersSection: { manager.toggleAnalyzersSection() },
-                    pulseAnimation: pulseAnimation
-                )
-                .padding(.horizontal, 20)
+            GeometryReader { geometry in
+                ScrollView {
+                    V2SubAgentsView(
+                        orchestratorSteps: manager.orchestratorSteps,
+                        subagents: manager.sortedSubagents,
+                        expandedAgents: manager.expandedSubagents,
+                        isAnalyzersSectionExpanded: manager.isAnalyzersSectionExpanded,
+                        allSubagentsComplete: manager.allSubagentsComplete,
+                        completedCount: manager.completedSubagentsCount,
+                        onToggle: { manager.toggleSubagentExpansion($0) },
+                        onToggleAnalyzersSection: { manager.toggleAnalyzersSection() },
+                        pulseAnimation: pulseAnimation
+                    )
+                    .frame(width: geometry.size.width - 40)
+                    .padding(.horizontal, 20)
+                }
             }
 
             // Error display
@@ -2196,6 +2208,7 @@ private struct AgentStepRow: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isExpanded)
     }
 
