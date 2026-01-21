@@ -8,6 +8,7 @@ class StockDetailViewModel: ObservableObject {
 
     @Published var detail: StockDetail?
     @Published var selectedTimeframe: ChartTimeframe = .oneDay
+    @Published var selectedChartType: ChartType = .line
     @Published var isLoading = false
     @Published var isLoadingBars = false
     @Published var isLoadingAnalysis = true  // Separate loading state for analysis section
@@ -230,6 +231,15 @@ class StockDetailViewModel: ObservableObject {
         }
 
         isTogglingWatchlist = false
+    }
+
+    // MARK: - Chart Type Selection
+
+    /// Called when chart type changes
+    func onChartTypeChanged(_ chartType: ChartType) {
+        // Haptic feedback
+        let generator = UISelectionFeedbackGenerator()
+        generator.selectionChanged()
     }
 
     // MARK: - Timeframe Selection

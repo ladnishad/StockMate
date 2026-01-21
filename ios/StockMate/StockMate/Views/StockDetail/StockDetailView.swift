@@ -30,6 +30,7 @@ struct StockDetailView: View {
                         PriceHeroSection(
                             detail: detail,
                             selectedTimeframe: $viewModel.selectedTimeframe,
+                            selectedChartType: $viewModel.selectedChartType,
                             chartBars: viewModel.chartBars,
                             isLoadingBars: viewModel.isLoadingBars,
                             formattedChange: viewModel.formattedTimeframeChange,
@@ -47,7 +48,8 @@ struct StockDetailView: View {
                             symbol: viewModel.symbol,
                             chartBars: viewModel.chartBars,
                             isLoadingBars: viewModel.isLoadingBars,
-                            selectedTimeframe: $viewModel.selectedTimeframe
+                            selectedTimeframe: $viewModel.selectedTimeframe,
+                            selectedChartType: $viewModel.selectedChartType
                         )
 
                         // Stats skeleton
@@ -148,6 +150,9 @@ struct StockDetailView: View {
         .onChange(of: viewModel.selectedTimeframe) { _, newTimeframe in
             viewModel.onTimeframeChanged(newTimeframe)
         }
+        .onChange(of: viewModel.selectedChartType) { _, newChartType in
+            viewModel.onChartTypeChanged(newChartType)
+        }
         .sheet(isPresented: $viewModel.showPositionEntrySheet) {
             PositionEntrySheet(viewModel: viewModel, hasPlan: planViewModel.plan != nil)
         }
@@ -238,6 +243,7 @@ private struct AIChatButton: View {
 private struct PriceHeroSection: View {
     let detail: StockDetail
     @Binding var selectedTimeframe: ChartTimeframe
+    @Binding var selectedChartType: ChartType
     let chartBars: [PriceBar]
     var isLoadingBars: Bool = false
     // Timeframe-specific change values
@@ -272,21 +278,41 @@ private struct PriceHeroSection: View {
             .padding(.top, 8)
             .padding(.bottom, 16)
 
-            // Chart - uses timeframe-specific isUp for color
-            MinimalChart(
-                bars: chartBars,
-                isUp: isUp,
-                supportLevels: detail.supportLevels,
-                resistanceLevels: detail.resistanceLevels,
-                timeframe: selectedTimeframe
-            )
+            // Chart - conditionally render line or candlestick
+            Group {
+                switch selectedChartType {
+                case .line:
+                    MinimalChart(
+                        bars: chartBars,
+                        isUp: isUp,
+                        supportLevels: detail.supportLevels,
+                        resistanceLevels: detail.resistanceLevels,
+                        timeframe: selectedTimeframe
+                    )
+                case .candlestick:
+                    CandlestickChart(
+                        bars: chartBars,
+                        isUp: isUp,
+                        supportLevels: detail.supportLevels,
+                        resistanceLevels: detail.resistanceLevels,
+                        timeframe: selectedTimeframe
+                    )
+                }
+            }
             .frame(height: 200)
             .padding(.horizontal, 16)
+            .animation(.easeInOut(duration: 0.2), value: selectedChartType)
 
-            // Timeframe selector
-            TimeframePills(selected: $selectedTimeframe, isLoading: isLoadingBars)
-                .padding(.top, 12)
-                .padding(.bottom, 16)
+            // Chart type toggle and Timeframe selector
+            VStack(spacing: 8) {
+                // Chart type toggle
+                ChartTypeToggle(selected: $selectedChartType)
+
+                // Timeframe selector
+                TimeframePills(selected: $selectedTimeframe, isLoading: isLoadingBars)
+            }
+            .padding(.top, 12)
+            .padding(.bottom, 16)
         }
         .background(Color(.systemBackground))
     }
@@ -927,6 +953,47 @@ private struct EmptyChartPlaceholder: View {
     }
 }
 
+// MARK: - Chart Type Toggle
+
+private struct ChartTypeToggle: View {
+    @Binding var selected: ChartType
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(ChartType.allCases) { chartType in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        selected = chartType
+                    }
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: chartType.icon)
+                            .font(.system(size: 11, weight: .medium))
+
+                        Text(chartType.rawValue)
+                            .font(.system(size: 12, weight: selected == chartType ? .semibold : .medium))
+                    }
+                    .foregroundStyle(selected == chartType ? .primary : .secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule()
+                            .fill(selected == chartType ? Color(.systemGray5) : Color.clear)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(
+            Capsule()
+                .fill(Color(.secondarySystemBackground))
+        )
+    }
+}
+
 // MARK: - Timeframe Pills
 
 private struct TimeframePills: View {
@@ -1004,6 +1071,7 @@ private struct PriceHeroSkeleton: View {
     let chartBars: [PriceBar]
     let isLoadingBars: Bool
     @Binding var selectedTimeframe: ChartTimeframe
+    @Binding var selectedChartType: ChartType
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1020,13 +1088,26 @@ private struct PriceHeroSkeleton: View {
 
             // Show actual chart if we have bars, otherwise skeleton
             if !chartBars.isEmpty {
-                MinimalChart(
-                    bars: chartBars,
-                    isUp: true,
-                    supportLevels: [],
-                    resistanceLevels: [],
-                    timeframe: selectedTimeframe
-                )
+                Group {
+                    switch selectedChartType {
+                    case .line:
+                        MinimalChart(
+                            bars: chartBars,
+                            isUp: true,
+                            supportLevels: [],
+                            resistanceLevels: [],
+                            timeframe: selectedTimeframe
+                        )
+                    case .candlestick:
+                        CandlestickChart(
+                            bars: chartBars,
+                            isUp: true,
+                            supportLevels: [],
+                            resistanceLevels: [],
+                            timeframe: selectedTimeframe
+                        )
+                    }
+                }
                 .frame(height: 200)
                 .padding(.horizontal, 16)
             } else if isLoadingBars {
@@ -1052,10 +1133,13 @@ private struct PriceHeroSkeleton: View {
                     .padding(.horizontal, 16)
             }
 
-            // Timeframe selector
-            TimeframePills(selected: $selectedTimeframe, isLoading: isLoadingBars)
-                .padding(.top, 12)
-                .padding(.bottom, 16)
+            // Chart type toggle and Timeframe selector
+            VStack(spacing: 8) {
+                ChartTypeToggle(selected: $selectedChartType)
+                TimeframePills(selected: $selectedTimeframe, isLoading: isLoadingBars)
+            }
+            .padding(.top, 12)
+            .padding(.bottom, 16)
         }
         .background(Color(.systemBackground))
     }
