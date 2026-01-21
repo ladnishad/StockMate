@@ -518,15 +518,17 @@ struct ProviderDonutChart: View {
         }
         .chartBackground { proxy in
             GeometryReader { geo in
-                let frame = geo[proxy.plotFrame!]
-                VStack(spacing: 4) {
-                    Text("Total")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Text("$\(String(format: "%.2f", claudeCost + grokCost))")
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                if let plotFrame = proxy.plotFrame {
+                    let frame = geo[plotFrame]
+                    VStack(spacing: 4) {
+                        Text("Total")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text("$\(String(format: "%.2f", claudeCost + grokCost))")
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                    }
+                    .position(x: frame.midX, y: frame.midY)
                 }
-                .position(x: frame.midX, y: frame.midY)
             }
         }
     }

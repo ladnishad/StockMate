@@ -76,9 +76,10 @@ class UsageTracker:
             return None
 
         # Extract token counts from response
+        # Note: Claude uses "input_tokens"/"output_tokens", OpenAI/Grok use "prompt_tokens"/"completion_tokens"
         usage = response.usage
-        input_tokens = usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0)
-        output_tokens = usage.get("output_tokens", 0) or usage.get("completion_tokens", 0)
+        input_tokens = usage.get("input_tokens") if "input_tokens" in usage else usage.get("prompt_tokens", 0)
+        output_tokens = usage.get("output_tokens") if "output_tokens" in usage else usage.get("completion_tokens", 0)
 
         # Count tool calls (from citations or direct tool_calls)
         tool_calls = 0
