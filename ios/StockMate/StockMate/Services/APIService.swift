@@ -993,6 +993,77 @@ actor APIService {
         }
     }
 
+    // MARK: - Admin Usage API
+
+    /// Check if current user has admin privileges
+    func checkAdminStatus() async throws -> AdminStatusResponse {
+        let url = URL(string: "\(baseURL)/admin/status")!
+        return try await fetch(url: url)
+    }
+
+    /// Get usage summary (admin only)
+    func getUsageSummary(userId: String? = nil, days: Int = 30) async throws -> UsageSummaryResponse {
+        var components = URLComponents(string: "\(baseURL)/admin/usage/summary")!
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "days", value: String(days))
+        ]
+        if let userId = userId {
+            queryItems.append(URLQueryItem(name: "user_id", value: userId))
+        }
+        components.queryItems = queryItems
+
+        return try await fetch(url: components.url!)
+    }
+
+    /// Get usage by user (admin only)
+    func getUsageByUser(days: Int = 30, limit: Int = 50) async throws -> AllUsersSummaryResponse {
+        var components = URLComponents(string: "\(baseURL)/admin/usage/users")!
+        components.queryItems = [
+            URLQueryItem(name: "days", value: String(days)),
+            URLQueryItem(name: "limit", value: String(limit))
+        ]
+
+        return try await fetch(url: components.url!)
+    }
+
+    /// Get daily cost breakdown (admin only)
+    func getDailyCosts(userId: String? = nil, days: Int = 30) async throws -> DailyCostsResponse {
+        var components = URLComponents(string: "\(baseURL)/admin/usage/daily")!
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "days", value: String(days))
+        ]
+        if let userId = userId {
+            queryItems.append(URLQueryItem(name: "user_id", value: userId))
+        }
+        components.queryItems = queryItems
+
+        return try await fetch(url: components.url!)
+    }
+
+    /// Get usage by operation type (admin only)
+    func getUsageByOperation(userId: String? = nil, days: Int = 30) async throws -> UsageByOperationResponse {
+        var components = URLComponents(string: "\(baseURL)/admin/usage/by-operation")!
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "days", value: String(days))
+        ]
+        if let userId = userId {
+            queryItems.append(URLQueryItem(name: "user_id", value: userId))
+        }
+        components.queryItems = queryItems
+
+        return try await fetch(url: components.url!)
+    }
+
+    /// Get current user's own usage summary
+    func getMyUsage(days: Int = 30) async throws -> UsageSummaryResponse {
+        var components = URLComponents(string: "\(baseURL)/admin/my-usage")!
+        components.queryItems = [
+            URLQueryItem(name: "days", value: String(days))
+        ]
+
+        return try await fetch(url: components.url!)
+    }
+
     // MARK: - Private Helpers
 
     private func fetch<T: Decodable>(url: URL) async throws -> T {
