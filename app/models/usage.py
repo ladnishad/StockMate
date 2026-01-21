@@ -151,10 +151,43 @@ class UserUsageSummary(BaseModel):
     # Most recent activity
     last_request_at: Optional[str] = None
 
-    # By operation type
+    # By operation type - counts
     plan_generations: int = 0
     chat_requests: int = 0
     evaluations: int = 0
+    orchestrator_calls: int = 0
+    subagent_calls: int = 0
+    image_analyses: int = 0
+
+    # By operation type - costs
+    plan_generation_cost: float = 0.0
+    chat_cost: float = 0.0
+    evaluation_cost: float = 0.0
+    orchestrator_cost: float = 0.0
+    subagent_cost: float = 0.0
+    image_analysis_cost: float = 0.0
+
+
+class OperationTypeBreakdown(BaseModel):
+    """Breakdown of usage by operation type."""
+
+    operation_type: str
+    request_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    total_cost: float = 0.0
+    avg_cost_per_request: float = 0.0
+
+
+class UsageByOperationResponse(BaseModel):
+    """Response model for usage by operation type."""
+
+    user_id: Optional[str] = None
+    period_start: str
+    period_end: str
+    breakdowns: List[OperationTypeBreakdown] = Field(default_factory=list)
+    total_cost: float = 0.0
 
 
 class UsageResponse(BaseModel):

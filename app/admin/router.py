@@ -21,6 +21,8 @@ from app.models.usage import (
     UsageRecord,
     UsageSummary,
     UserUsageSummary,
+    OperationTypeBreakdown,
+    UsageByOperationResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -278,6 +280,50 @@ async def get_daily_costs(
         daily_costs=daily_costs,
         total_cost=round(total_cost, 6),
         period_days=days,
+    )
+
+
+@router.get(
+    "/usage/by-operation",
+    response_model=UsageByOperationResponse,
+    summary="Get usage by operation type",
+    description="Get usage breakdown by operation type (plan generation vs evaluation, etc.) - admin only.",
+)
+async def get_usage_by_operation_type(
+    admin: User = Depends(get_admin_user),
+    user_id: Optional[str] = Query(None, description="Filter by user ID (None for all)"),
+    days: int = Query(30, ge=1, le=365, description="Number of days to include"),
+) -> UsageByOperationResponse:
+    """Get usage breakdown by operation type.
+
+    Shows costs and request counts for:
+    - plan_generation: New trading plan creation
+    - plan_evaluation: Evaluating existing plans
+    - chat: Conversational AI interactions
+    - orchestrator: Plan synthesis
+    - subagent: Individual trade-style analysis
+    - image_analysis: Chart vision analysis
+    """
+    store = get_usage_store()
+
+    end_date = datetime.utcnow().isoformat()
+    start_date = (datetime.utcnow() - timedelta(days=days)).isoformat()
+
+    breakdowns_data = await store.get_usage_by_operation(
+        user_id=user_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    breakdowns = [OperationTypeBreakdown(**d) for d in breakdowns_data]
+    total_cost = sum(b.total_cost for b in breakdowns)
+
+    return UsageByOperationResponse(
+        user_id=user_id,
+        period_start=start_date,
+        period_end=end_date,
+        breakdowns=breakdowns,
+        total_cost=round(total_cost, 6),
     )
 
 

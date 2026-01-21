@@ -360,9 +360,20 @@ class UsageStore:
                     COALESCE(SUM(CASE WHEN provider = 'claude' THEN estimated_cost ELSE 0 END), 0) as claude_cost,
                     COALESCE(SUM(CASE WHEN provider = 'grok' THEN estimated_cost ELSE 0 END), 0) as grok_cost,
                     MAX(created_at) as last_request_at,
+                    -- Operation type counts
                     COALESCE(SUM(CASE WHEN operation_type = 'plan_generation' THEN 1 ELSE 0 END), 0) as plan_generations,
                     COALESCE(SUM(CASE WHEN operation_type = 'chat' THEN 1 ELSE 0 END), 0) as chat_requests,
-                    COALESCE(SUM(CASE WHEN operation_type = 'plan_evaluation' THEN 1 ELSE 0 END), 0) as evaluations
+                    COALESCE(SUM(CASE WHEN operation_type = 'plan_evaluation' THEN 1 ELSE 0 END), 0) as evaluations,
+                    COALESCE(SUM(CASE WHEN operation_type = 'orchestrator' THEN 1 ELSE 0 END), 0) as orchestrator_calls,
+                    COALESCE(SUM(CASE WHEN operation_type = 'subagent' THEN 1 ELSE 0 END), 0) as subagent_calls,
+                    COALESCE(SUM(CASE WHEN operation_type = 'image_analysis' THEN 1 ELSE 0 END), 0) as image_analyses,
+                    -- Operation type costs
+                    COALESCE(SUM(CASE WHEN operation_type = 'plan_generation' THEN estimated_cost ELSE 0 END), 0) as plan_generation_cost,
+                    COALESCE(SUM(CASE WHEN operation_type = 'chat' THEN estimated_cost ELSE 0 END), 0) as chat_cost,
+                    COALESCE(SUM(CASE WHEN operation_type = 'plan_evaluation' THEN estimated_cost ELSE 0 END), 0) as evaluation_cost,
+                    COALESCE(SUM(CASE WHEN operation_type = 'orchestrator' THEN estimated_cost ELSE 0 END), 0) as orchestrator_cost,
+                    COALESCE(SUM(CASE WHEN operation_type = 'subagent' THEN estimated_cost ELSE 0 END), 0) as subagent_cost,
+                    COALESCE(SUM(CASE WHEN operation_type = 'image_analysis' THEN estimated_cost ELSE 0 END), 0) as image_analysis_cost
                 FROM api_usage
                 WHERE created_at >= ? AND created_at <= ?
                 GROUP BY user_id
@@ -383,9 +394,20 @@ class UsageStore:
                 claude_cost=round(row[4], 6),
                 grok_cost=round(row[5], 6),
                 last_request_at=row[6],
+                # Operation type counts
                 plan_generations=row[7],
                 chat_requests=row[8],
                 evaluations=row[9],
+                orchestrator_calls=row[10],
+                subagent_calls=row[11],
+                image_analyses=row[12],
+                # Operation type costs
+                plan_generation_cost=round(row[13], 6),
+                chat_cost=round(row[14], 6),
+                evaluation_cost=round(row[15], 6),
+                orchestrator_cost=round(row[16], 6),
+                subagent_cost=round(row[17], 6),
+                image_analysis_cost=round(row[18], 6),
             ))
 
         return summaries
@@ -445,6 +467,75 @@ class UsageStore:
             }
             for row in rows
         ]
+
+    async def get_usage_by_operation(
+        self,
+        user_id: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> List[dict]:
+        """Get usage breakdown by operation type.
+
+        Args:
+            user_id: Filter by specific user (None for all users)
+            start_date: Start of period (ISO format)
+            end_date: End of period (ISO format)
+
+        Returns:
+            List of operation type breakdowns
+        """
+        # Default to last 30 days if no dates provided
+        if not end_date:
+            end_date = datetime.utcnow().isoformat()
+        if not start_date:
+            start_dt = datetime.utcnow() - timedelta(days=30)
+            start_date = start_dt.isoformat()
+
+        conditions = ["created_at >= ?", "created_at <= ?"]
+        params = [start_date, end_date]
+
+        if user_id:
+            conditions.append("user_id = ?")
+            params.append(user_id)
+
+        where_clause = " AND ".join(conditions)
+
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                f"""
+                SELECT
+                    operation_type,
+                    COUNT(*) as request_count,
+                    COALESCE(SUM(input_tokens), 0) as input_tokens,
+                    COALESCE(SUM(output_tokens), 0) as output_tokens,
+                    COALESCE(SUM(total_tokens), 0) as total_tokens,
+                    COALESCE(SUM(estimated_cost), 0) as total_cost
+                FROM api_usage
+                WHERE {where_clause}
+                GROUP BY operation_type
+                ORDER BY total_cost DESC
+                """,
+                params,
+            )
+            rows = await cursor.fetchall()
+
+        breakdowns = []
+        for row in rows:
+            request_count = row[1]
+            total_cost = row[5]
+            avg_cost = round(total_cost / request_count, 6) if request_count > 0 else 0
+
+            breakdowns.append({
+                "operation_type": row[0],
+                "request_count": request_count,
+                "input_tokens": row[2],
+                "output_tokens": row[3],
+                "total_tokens": row[4],
+                "total_cost": round(total_cost, 6),
+                "avg_cost_per_request": avg_cost,
+            })
+
+        return breakdowns
 
     def _row_to_record(self, row) -> UsageRecord:
         """Convert database row to UsageRecord."""
