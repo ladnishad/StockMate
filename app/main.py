@@ -1659,7 +1659,7 @@ async def get_stock_bars(
         ytd_days = (today - date(today.year, 1, 1)).days + 1
 
         timeframe_config = {
-            "1d": ("1m", 3),       # Intraday: 1-min bars (3 days to cover weekends)
+            "1d": ("1m", 5),       # Intraday: 1-min bars (5 days to cover long weekends)
             "1w": ("1h", 7),       # 1 week: hourly bars
             "1m": ("1d", 30),      # 1 month: daily bars
             "3m": ("1d", 90),      # 3 months: daily bars
