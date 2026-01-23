@@ -140,6 +140,7 @@ class UserUsageSummary(BaseModel):
 
     user_id: str
     email: Optional[str] = None
+    subscription_tier: str = "base"  # User's subscription tier
     total_requests: int = 0
     total_tokens: int = 0
     total_cost: float = 0.0

@@ -91,6 +91,7 @@ struct AllUsersSummaryResponse: Codable {
 struct UserUsageSummary: Codable, Identifiable {
     let userId: String
     let email: String?
+    let subscriptionTier: String  // base, premium, pro, unlimited
     let totalRequests: Int
     let totalTokens: Int
     let totalCost: Double
@@ -123,6 +124,7 @@ struct UserUsageSummary: Codable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case userId = "user_id"
         case email
+        case subscriptionTier = "subscription_tier"
         case totalRequests = "total_requests"
         case totalTokens = "total_tokens"
         case totalCost = "total_cost"
@@ -149,6 +151,16 @@ struct UserUsageSummary: Codable, Identifiable {
             return email.components(separatedBy: "@").first ?? email
         }
         return String(userId.prefix(8)) + "..."
+    }
+
+    /// Full email for display
+    var fullEmail: String {
+        email ?? userId
+    }
+
+    /// Subscription tier as enum
+    var tier: SubscriptionTier {
+        SubscriptionTier(rawValue: subscriptionTier) ?? .base
     }
 }
 
@@ -277,5 +289,33 @@ struct OperationTypeBreakdown: Codable, Identifiable {
         case "image_analysis": return "pink"
         default: return "gray"
         }
+    }
+}
+
+// MARK: - Admin Subscription Management
+
+struct AdminSubscriptionUpdateRequest: Encodable {
+    let userId: String
+    let tier: String
+
+    enum CodingKeys: String, CodingKey {
+        case userId = "user_id"
+        case tier
+    }
+}
+
+struct AdminSubscriptionUpdateResponse: Codable {
+    let success: Bool
+    let userId: String
+    let oldTier: String
+    let newTier: String
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case success
+        case userId = "user_id"
+        case oldTier = "old_tier"
+        case newTier = "new_tier"
+        case message
     }
 }

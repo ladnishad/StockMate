@@ -17,6 +17,7 @@ class UserSettings(BaseModel):
     """User settings data model."""
 
     user_id: str
+    email: Optional[str] = None  # User email from authentication
     model_provider: str = "grok"  # Default to Grok for real-time X/Twitter sentiment
     is_admin: bool = False  # Admin flag for viewing usage data
     created_at: str
@@ -60,6 +61,7 @@ class UserSettingsStore:
         now = datetime.utcnow().isoformat()
         return UserSettings(
             user_id=user_id,
+            email=None,
             model_provider="grok",  # Default to Grok
             is_admin=is_admin,
             created_at=now,
@@ -174,6 +176,61 @@ class UserSettingsStore:
 
         return await self.get_settings(user_id)
 
+    async def get_all_user_ids(self) -> list[str]:
+        """Get all user IDs from the settings table.
+
+        Returns:
+            List of user IDs
+        """
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT user_id FROM user_settings ORDER BY created_at DESC"
+            )
+            rows = await cursor.fetchall()
+            return [row["user_id"] for row in rows]
+
+    async def ensure_user_email(self, user_id: str, email: Optional[str]) -> None:
+        """Ensure user email is stored in settings.
+
+        Updates email if provided and different from stored value.
+
+        Args:
+            user_id: User identifier
+            email: User email from authentication
+        """
+        if not email:
+            return
+
+        now = datetime.utcnow().isoformat()
+
+        async with self.db.connection() as conn:
+            # Check if user exists
+            cursor = await conn.execute(
+                "SELECT email FROM user_settings WHERE user_id = ?",
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+
+            if row:
+                # Update email if different
+                stored_email = row["email"] if "email" in row.keys() else None
+                if stored_email != email:
+                    await conn.execute(
+                        "UPDATE user_settings SET email = ?, updated_at = ? WHERE user_id = ?",
+                        (email, now, user_id),
+                    )
+                    await conn.commit()
+            else:
+                # Insert new user with email
+                await conn.execute(
+                    """
+                    INSERT INTO user_settings (user_id, email, model_provider, created_at, updated_at)
+                    VALUES (?, ?, 'grok', ?, ?)
+                    """,
+                    (user_id, email, now, now),
+                )
+                await conn.commit()
+
     def _row_to_settings(self, row) -> UserSettings:
         """Convert database row to UserSettings object."""
         # Handle is_admin field (may not exist in old rows)
@@ -186,8 +243,14 @@ class UserSettingsStore:
             settings = get_settings()
             is_admin = row["user_id"].lower() in settings.admin_user_list
 
+        # Handle email field (may not exist in old rows)
+        email = None
+        if "email" in row.keys():
+            email = row["email"]
+
         return UserSettings(
             user_id=row["user_id"],
+            email=email,
             model_provider=row["model_provider"],
             is_admin=is_admin,
             created_at=row["created_at"],

@@ -1,46 +1,40 @@
 import SwiftUI
 import Charts
 
-/// Admin dashboard for viewing API usage and costs
+/// Tab selection for admin dashboard
+enum AdminTab: String, CaseIterable {
+    case usage = "Usage"
+    case users = "Users"
+}
+
+/// Admin dashboard for viewing API usage and managing users
 struct AdminUsageDashboardView: View {
     @StateObject private var viewModel = UsageViewModel()
     @Environment(\.dismiss) private var dismiss
+    @State private var selectedTab: AdminTab = .usage
+    @State private var selectedUser: UserUsageSummary?
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 24) {
-                    // Time Period Filter
-                    periodFilterSection
+            VStack(spacing: 0) {
+                // Tab Picker
+                tabPicker
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+                    .padding(.bottom, 12)
 
-                    if viewModel.isLoading {
-                        loadingView
-                    } else if let error = viewModel.error {
-                        errorView(error)
-                    } else {
-                        // Summary Cards
-                        summaryCardsSection
+                // Tab Content
+                TabView(selection: $selectedTab) {
+                    usageAnalyticsContent
+                        .tag(AdminTab.usage)
 
-                        // Cost Trend Chart
-                        costTrendSection
-
-                        // Provider Breakdown
-                        providerBreakdownSection
-
-                        // Operation Breakdown
-                        operationBreakdownSection
-
-                        // Top Users
-                        topUsersSection
-                    }
+                    userManagementContent
+                        .tag(AdminTab.users)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
-                .padding(.bottom, 40)
+                .tabViewStyle(.page(indexDisplayMode: .never))
             }
-            .scrollIndicators(.hidden)
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Usage Dashboard")
+            .navigationTitle("Admin Dashboard")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -65,7 +59,162 @@ struct AdminUsageDashboardView: View {
                     await viewModel.loadAllData()
                 }
             }
+            .sheet(item: $selectedUser) { user in
+                UserTierEditSheet(user: user, viewModel: viewModel) {
+                    selectedUser = nil
+                }
+            }
         }
+    }
+
+    // MARK: - Tab Picker
+
+    private var tabPicker: some View {
+        HStack(spacing: 0) {
+            ForEach(AdminTab.allCases, id: \.self) { tab in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        selectedTab = tab
+                    }
+                } label: {
+                    Text(tab.rawValue)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(selectedTab == tab ? .white : .primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(selectedTab == tab ? Color.blue : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+        )
+    }
+
+    // MARK: - Usage Analytics Content
+
+    private var usageAnalyticsContent: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                // Time Period Filter
+                periodFilterSection
+
+                if viewModel.isLoading {
+                    loadingView
+                } else if let error = viewModel.error {
+                    errorView(error)
+                } else {
+                    // Summary Cards
+                    summaryCardsSection
+
+                    // Cost Trend Chart
+                    costTrendSection
+
+                    // Provider Breakdown
+                    providerBreakdownSection
+
+                    // Operation Breakdown
+                    operationBreakdownSection
+
+                    // Top Users
+                    topUsersSection
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 40)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    // MARK: - User Management Content
+
+    private var userManagementContent: some View {
+        VStack(spacing: 0) {
+            // Search Bar
+            userSearchBar
+                .padding(.horizontal, 20)
+                .padding(.bottom, 12)
+
+            if viewModel.isLoading {
+                loadingView
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        if viewModel.filteredUsers.isEmpty {
+                            emptyUsersView
+                        } else {
+                            ForEach(viewModel.filteredUsers) { user in
+                                UserManagementRow(user: user, viewModel: viewModel) {
+                                    selectedUser = user
+                                }
+
+                                if user.id != viewModel.filteredUsers.last?.id {
+                                    Divider()
+                                        .padding(.leading, 68)
+                                }
+                            }
+                        }
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color(.secondarySystemGroupedBackground))
+                    )
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 40)
+                }
+                .scrollIndicators(.hidden)
+            }
+        }
+    }
+
+    private var userSearchBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            TextField("Search users...", text: $viewModel.searchText)
+                .font(.system(size: 16))
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+
+            if !viewModel.searchText.isEmpty {
+                Button {
+                    viewModel.searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+        )
+    }
+
+    private var emptyUsersView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "person.slash")
+                .font(.system(size: 32))
+                .foregroundStyle(.tertiary)
+
+            Text(viewModel.searchText.isEmpty ? "No users found" : "No matching users")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(40)
     }
 
     // MARK: - Period Filter
@@ -712,6 +861,406 @@ struct UserCostRow: View {
         case 2: return .gray
         case 3: return .orange
         default: return .blue
+        }
+    }
+}
+
+// MARK: - User Management Row
+
+struct UserManagementRow: View {
+    let user: UserUsageSummary
+    @ObservedObject var viewModel: UsageViewModel
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 14) {
+                // User avatar
+                ZStack {
+                    Circle()
+                        .fill(avatarColor.opacity(0.15))
+                        .frame(width: 44, height: 44)
+
+                    Text(avatarInitial)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(avatarColor)
+                }
+
+                // User info
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(user.fullEmail)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    HStack(spacing: 8) {
+                        // Tier badge
+                        TierBadge(tier: user.tier)
+
+                        Text("\(viewModel.formatNumber(user.totalRequests)) req")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+
+                        Text(viewModel.formatCurrency(user.totalCost))
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var avatarInitial: String {
+        if let email = user.email, !email.isEmpty {
+            return String(email.prefix(1)).uppercased()
+        }
+        return String(user.userId.prefix(1)).uppercased()
+    }
+
+    private var avatarColor: Color {
+        switch user.tier {
+        case .base: return .gray
+        case .premium: return .blue
+        case .pro: return .purple
+        case .unlimited: return .orange
+        }
+    }
+}
+
+// MARK: - Tier Badge
+
+struct TierBadge: View {
+    let tier: SubscriptionTier
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: tier.iconName)
+                .font(.system(size: 10, weight: .semibold))
+
+            Text(tier.displayName)
+                .font(.system(size: 11, weight: .semibold))
+        }
+        .foregroundStyle(tierColor)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            Capsule()
+                .fill(tierColor.opacity(0.12))
+        )
+    }
+
+    private var tierColor: Color {
+        switch tier {
+        case .base: return .gray
+        case .premium: return .blue
+        case .pro: return .purple
+        case .unlimited: return .orange
+        }
+    }
+}
+
+// MARK: - User Tier Edit Sheet
+
+struct UserTierEditSheet: View {
+    let user: UserUsageSummary
+    @ObservedObject var viewModel: UsageViewModel
+    let onDismiss: () -> Void
+
+    @State private var selectedTier: SubscriptionTier
+    @State private var showConfirmation = false
+    @Environment(\.dismiss) private var dismiss
+
+    init(user: UserUsageSummary, viewModel: UsageViewModel, onDismiss: @escaping () -> Void) {
+        self.user = user
+        self.viewModel = viewModel
+        self.onDismiss = onDismiss
+        self._selectedTier = State(initialValue: user.tier)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 24) {
+                    // User header
+                    userHeader
+
+                    // Tier selection
+                    tierSelectionSection
+
+                    // Usage summary
+                    usageSummarySection
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 20)
+                .padding(.bottom, 40)
+            }
+            .scrollIndicators(.hidden)
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("Edit User")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        onDismiss()
+                    }
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save") {
+                        if selectedTier != user.tier {
+                            showConfirmation = true
+                        } else {
+                            onDismiss()
+                        }
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(viewModel.isUpdatingTier)
+                }
+            }
+            .alert("Confirm Tier Change", isPresented: $showConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Confirm") {
+                    Task {
+                        let success = await viewModel.updateUserTier(userId: user.userId, newTier: selectedTier)
+                        if success {
+                            onDismiss()
+                        }
+                    }
+                }
+            } message: {
+                Text("Change \(user.displayName)'s tier from \(user.tier.displayName) to \(selectedTier.displayName)?")
+            }
+            .alert("Error", isPresented: .constant(viewModel.tierUpdateError != nil)) {
+                Button("OK") {
+                    viewModel.clearTierUpdateMessages()
+                }
+            } message: {
+                if let error = viewModel.tierUpdateError {
+                    Text(error)
+                }
+            }
+            .overlay {
+                if viewModel.isUpdatingTier {
+                    ProgressView()
+                        .scaleEffect(1.2)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.black.opacity(0.3))
+                }
+            }
+        }
+    }
+
+    private var userHeader: some View {
+        VStack(spacing: 12) {
+            // Avatar
+            ZStack {
+                Circle()
+                    .fill(avatarColor.opacity(0.15))
+                    .frame(width: 72, height: 72)
+
+                Text(avatarInitial)
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(avatarColor)
+            }
+
+            // Email
+            Text(user.fullEmail)
+                .font(.system(size: 17, weight: .semibold))
+                .multilineTextAlignment(.center)
+
+            // User ID
+            Text("ID: \(user.userId.prefix(12))...")
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 20)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+        )
+    }
+
+    private var tierSelectionSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(title: "Subscription Tier", icon: "crown")
+
+            VStack(spacing: 0) {
+                ForEach(SubscriptionTier.allCases, id: \.self) { tier in
+                    TierSelectionRow(
+                        tier: tier,
+                        isSelected: selectedTier == tier,
+                        isCurrent: user.tier == tier
+                    ) {
+                        selectedTier = tier
+                    }
+
+                    if tier != SubscriptionTier.allCases.last {
+                        Divider()
+                            .padding(.leading, 52)
+                    }
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(.secondarySystemGroupedBackground))
+            )
+        }
+    }
+
+    private var usageSummarySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(title: "Usage Summary", icon: "chart.bar")
+
+            VStack(spacing: 0) {
+                usageSummaryRow(label: "Total Requests", value: viewModel.formatNumber(user.totalRequests))
+                Divider().padding(.leading, 16)
+                usageSummaryRow(label: "Total Cost", value: viewModel.formatCurrency(user.totalCost))
+                Divider().padding(.leading, 16)
+                usageSummaryRow(label: "Claude Cost", value: viewModel.formatCurrency(user.claudeCost))
+                Divider().padding(.leading, 16)
+                usageSummaryRow(label: "Grok Cost", value: viewModel.formatCurrency(user.grokCost))
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(.secondarySystemGroupedBackground))
+            )
+        }
+    }
+
+    private func usageSummaryRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 15))
+                .foregroundStyle(.primary)
+
+            Spacer()
+
+            Text(value)
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private func sectionHeader(title: String, icon: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .tracking(0.5)
+        }
+        .padding(.leading, 4)
+    }
+
+    private var avatarInitial: String {
+        if let email = user.email, !email.isEmpty {
+            return String(email.prefix(1)).uppercased()
+        }
+        return String(user.userId.prefix(1)).uppercased()
+    }
+
+    private var avatarColor: Color {
+        switch selectedTier {
+        case .base: return .gray
+        case .premium: return .blue
+        case .pro: return .purple
+        case .unlimited: return .orange
+        }
+    }
+}
+
+// MARK: - Tier Selection Row
+
+struct TierSelectionRow: View {
+    let tier: SubscriptionTier
+    let isSelected: Bool
+    let isCurrent: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 14) {
+                // Icon
+                ZStack {
+                    Circle()
+                        .fill(tierColor.opacity(0.15))
+                        .frame(width: 36, height: 36)
+
+                    Image(systemName: tier.iconName)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(tierColor)
+                }
+
+                // Tier info
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Text(tier.displayName)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.primary)
+
+                        if isCurrent {
+                            Text("Current")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule()
+                                        .fill(Color(.tertiarySystemFill))
+                                )
+                        }
+                    }
+
+                    Text(tier.shortDescription)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                // Radio button
+                ZStack {
+                    Circle()
+                        .strokeBorder(isSelected ? tierColor : Color(.tertiaryLabel), lineWidth: 2)
+                        .frame(width: 22, height: 22)
+
+                    if isSelected {
+                        Circle()
+                            .fill(tierColor)
+                            .frame(width: 12, height: 12)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var tierColor: Color {
+        switch tier {
+        case .base: return .gray
+        case .premium: return .blue
+        case .pro: return .purple
+        case .unlimited: return .orange
         }
     }
 }

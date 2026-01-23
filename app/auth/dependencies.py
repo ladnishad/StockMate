@@ -204,11 +204,22 @@ async def get_current_user(
     token_payload = decode_jwt(credentials.credentials)
 
     # Build User from JWT claims
-    return User(
+    user = User(
         id=token_payload.sub,
         email=token_payload.email or "",
         email_verified=True,  # Supabase only allows authenticated users to get tokens
     )
+
+    # Ensure email is stored in user settings (for admin dashboard)
+    if user.email:
+        try:
+            from app.storage.user_settings_store import get_user_settings_store
+            settings_store = get_user_settings_store()
+            await settings_store.ensure_user_email(user.id, user.email)
+        except Exception as e:
+            logger.debug(f"Failed to store user email: {e}")
+
+    return user
 
 
 async def get_optional_user(

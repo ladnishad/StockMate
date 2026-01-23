@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from app.auth import get_admin_user, User
 from app.storage.usage_store import get_usage_store
 from app.storage.user_settings_store import get_user_settings_store
+from app.services.subscription_service import get_subscription_service
 from app.models.usage import (
     ModelProvider,
     UsageRecord,
@@ -233,15 +234,98 @@ async def get_usage_by_user(
 ) -> AllUsersSummaryResponse:
     """Get usage breakdown by user."""
     store = get_usage_store()
+    settings_store = get_user_settings_store()
+    subscription_service = get_subscription_service()
 
     end_date = datetime.utcnow().isoformat()
     start_date = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
-    users = await store.get_all_users_summary(
+    # Get users with usage data
+    users_with_usage = await store.get_all_users_summary(
         start_date=start_date,
         end_date=end_date,
         limit=limit,
     )
+
+    # Create a dict for easy lookup
+    users_dict = {u.user_id: u for u in users_with_usage}
+
+    # Get all users from settings (includes users without usage)
+    all_user_ids = await settings_store.get_all_user_ids()
+
+    # Add users without usage data
+    for user_id in all_user_ids:
+        if user_id not in users_dict:
+            # Create empty usage summary for this user
+            users_dict[user_id] = UserUsageSummary(
+                user_id=user_id,
+                total_requests=0,
+                total_tokens=0,
+                total_cost=0.0,
+                claude_cost=0.0,
+                grok_cost=0.0,
+                plan_generations=0,
+                chat_requests=0,
+                evaluations=0,
+                orchestrator_calls=0,
+                subagent_calls=0,
+                image_analyses=0,
+                plan_generation_cost=0.0,
+                chat_cost=0.0,
+                evaluation_cost=0.0,
+                orchestrator_cost=0.0,
+                subagent_cost=0.0,
+                image_analysis_cost=0.0,
+            )
+
+    # Fetch subscription tier and email for each user, creating new instances with updated data
+    updated_users = []
+    for user_id, user in users_dict.items():
+        # Get subscription tier
+        try:
+            tier = await subscription_service.get_user_tier(user_id)
+            subscription_tier = tier.value
+        except Exception as e:
+            logger.warning(f"Failed to get subscription tier for user {user_id}: {e}")
+            subscription_tier = "base"
+
+        # Get email from settings
+        email = None
+        try:
+            settings = await settings_store.get_settings(user_id)
+            if settings and settings.email:
+                email = settings.email
+        except Exception:
+            pass
+
+        # Create new instance with updated fields
+        updated_user = UserUsageSummary(
+            user_id=user.user_id,
+            email=email,
+            subscription_tier=subscription_tier,
+            total_requests=user.total_requests,
+            total_tokens=user.total_tokens,
+            total_cost=user.total_cost,
+            claude_cost=user.claude_cost,
+            grok_cost=user.grok_cost,
+            last_request_at=user.last_request_at,
+            plan_generations=user.plan_generations,
+            chat_requests=user.chat_requests,
+            evaluations=user.evaluations,
+            orchestrator_calls=user.orchestrator_calls,
+            subagent_calls=user.subagent_calls,
+            image_analyses=user.image_analyses,
+            plan_generation_cost=user.plan_generation_cost,
+            chat_cost=user.chat_cost,
+            evaluation_cost=user.evaluation_cost,
+            orchestrator_cost=user.orchestrator_cost,
+            subagent_cost=user.subagent_cost,
+            image_analysis_cost=user.image_analysis_cost,
+        )
+        updated_users.append(updated_user)
+
+    # Sort by cost descending, then by user_id for users with no cost
+    users = sorted(updated_users, key=lambda u: (-u.total_cost, u.user_id))[:limit]
 
     grand_total = sum(u.total_cost for u in users)
 

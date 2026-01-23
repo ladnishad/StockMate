@@ -1080,6 +1080,44 @@ actor APIService {
         return try await fetch(url: components.url!)
     }
 
+    /// Admin: Update a user's subscription tier
+    func updateUserSubscription(userId: String, tier: SubscriptionTier) async throws -> AdminSubscriptionUpdateResponse {
+        let url = URL(string: "\(baseURL)/subscription/admin")!
+
+        let requestBody = AdminSubscriptionUpdateRequest(userId: userId, tier: tier.rawValue)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
+
+        let encoder = JSONEncoder()
+        request.httpBody = try encoder.encode(requestBody)
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIServiceError.invalidResponse
+        }
+
+        let decoder = JSONDecoder()
+
+        // Handle 401 with automatic token refresh
+        if httpResponse.statusCode == 401 {
+            return try await handleUnauthorizedAndRetry(request: request, decoder: decoder)
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            if let errorResponse = try? decoder.decode(APIError.self, from: data) {
+                throw APIServiceError.serverError(errorResponse.detail)
+            }
+            throw APIServiceError.httpError(httpResponse.statusCode)
+        }
+
+        return try decoder.decode(AdminSubscriptionUpdateResponse.self, from: data)
+    }
+
     // MARK: - Private Helpers
 
     private func fetch<T: Decodable>(url: URL) async throws -> T {

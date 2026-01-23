@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
 from app.models.request import AnalysisRequest
-from app.auth import auth_router, get_current_user, get_optional_user, User
+from app.auth import auth_router, get_current_user, get_optional_user, get_admin_user, User
 from app.models.response import AnalysisResponse, SmartAnalysisResponse
 from app.agent.planning_agent import StockPlanningAgent
 from app.models.profile_presets import list_profiles, get_profile, PROFILE_REGISTRY
@@ -4981,24 +4981,13 @@ async def get_subscription_tiers():
 )
 async def admin_update_subscription(
     request: AdminUpdateSubscriptionRequest,
-    admin_user: User = Depends(get_current_user),
+    admin_user: User = Depends(get_admin_user),
 ):
     """Admin endpoint to update a user's subscription tier.
 
-    Restricted to users whose ID matches the ADMIN_USER_ID environment variable.
-    Returns 403 Forbidden if admin functionality is disabled or user is not admin.
+    Restricted to admin users (checked via get_admin_user dependency).
+    Returns 403 Forbidden if user is not an admin.
     """
-    settings = get_settings()
-
-    # Check if admin functionality is enabled and user is admin
-    if not settings.admin_user_id or admin_user.id != settings.admin_user_id:
-        logger.warning(
-            f"Unauthorized admin access attempt by user {admin_user.id}"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required",
-        )
 
     try:
         subscription_service = get_subscription_service()

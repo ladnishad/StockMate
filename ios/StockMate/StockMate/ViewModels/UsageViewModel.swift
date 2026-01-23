@@ -26,6 +26,12 @@ class UsageViewModel: ObservableObject {
     // Time period options
     let dayOptions = [7, 14, 30, 60, 90]
 
+    // User management state
+    @Published var searchText: String = ""
+    @Published var isUpdatingTier: Bool = false
+    @Published var tierUpdateError: String?
+    @Published var tierUpdateSuccess: String?
+
     // MARK: - Computed Properties
 
     /// Total cost formatted as currency
@@ -65,6 +71,19 @@ class UsageViewModel: ObservableObject {
     /// Top user by cost
     var topUser: UserUsageSummary? {
         userSummaries.first
+    }
+
+    /// Filtered users based on search text
+    var filteredUsers: [UserUsageSummary] {
+        if searchText.isEmpty {
+            return userSummaries
+        }
+        let lowercased = searchText.lowercased()
+        return userSummaries.filter { user in
+            user.displayName.lowercased().contains(lowercased) ||
+            user.userId.lowercased().contains(lowercased) ||
+            (user.email?.lowercased().contains(lowercased) ?? false)
+        }
     }
 
     // MARK: - API Methods
@@ -159,6 +178,42 @@ class UsageViewModel: ObservableObject {
     /// Refresh data when filter changes
     func refreshData() async {
         await loadAllData()
+    }
+
+    /// Update a user's subscription tier
+    func updateUserTier(userId: String, newTier: SubscriptionTier) async -> Bool {
+        isUpdatingTier = true
+        tierUpdateError = nil
+        tierUpdateSuccess = nil
+
+        do {
+            let response = try await APIService.shared.updateUserSubscription(userId: userId, tier: newTier)
+
+            if response.success {
+                tierUpdateSuccess = response.message
+
+                // Refresh user list to show updated tier
+                await loadUserSummaries()
+
+                isUpdatingTier = false
+                return true
+            } else {
+                tierUpdateError = "Failed to update subscription"
+                isUpdatingTier = false
+                return false
+            }
+        } catch {
+            tierUpdateError = error.localizedDescription
+            print("UsageViewModel: Error updating user tier - \(error)")
+            isUpdatingTier = false
+            return false
+        }
+    }
+
+    /// Clear tier update messages
+    func clearTierUpdateMessages() {
+        tierUpdateError = nil
+        tierUpdateSuccess = nil
     }
 
     // MARK: - Formatting Helpers

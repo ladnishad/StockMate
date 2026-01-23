@@ -171,6 +171,7 @@ class Database:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_settings (
                     user_id TEXT PRIMARY KEY,
+                    email TEXT,
                     model_provider TEXT DEFAULT 'claude',
                     subscription_tier TEXT DEFAULT 'base',
                     is_admin INTEGER DEFAULT 0,
@@ -191,6 +192,14 @@ class Database:
             try:
                 await conn.execute(
                     "ALTER TABLE user_settings ADD COLUMN is_admin INTEGER DEFAULT 0"
+                )
+            except Exception:
+                pass  # Column already exists
+
+            # Migration: Add email column if it doesn't exist
+            try:
+                await conn.execute(
+                    "ALTER TABLE user_settings ADD COLUMN email TEXT"
                 )
             except Exception:
                 pass  # Column already exists
