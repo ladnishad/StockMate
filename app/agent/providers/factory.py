@@ -217,8 +217,9 @@ def get_default_provider() -> ModelProvider:
         return ModelProvider.CLAUDE
 
     # Neither configured - will raise error when actually used
+    # Return CLAUDE as ultimate fallback (avoid returning provider without API key)
     logger.warning("No AI provider API key configured")
-    return ModelProvider.GROK
+    return ModelProvider.CLAUDE
 
 
 def get_available_providers() -> list[ModelProvider]:

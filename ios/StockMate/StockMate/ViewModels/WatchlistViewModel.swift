@@ -14,6 +14,12 @@ class WatchlistViewModel: ObservableObject {
     @Published var isAdding = false
     @Published var addError: String?
 
+    // Subscription limit tracking
+    @Published var canAddMore: Bool = true
+    @Published var watchlistCount: Int = 0
+    @Published var watchlistLimit: Int = -1  // -1 means unlimited
+    @Published var tierName: String = "Base"
+
     // MARK: - Private
 
     private let service = WatchlistService.shared
@@ -150,5 +156,37 @@ class WatchlistViewModel: ObservableObject {
     /// Check if symbol is already in watchlist
     func isInWatchlist(_ symbol: String) -> Bool {
         service.hasSymbol(symbol)
+    }
+
+    // MARK: - Subscription
+
+    /// Load subscription info to check limits
+    func loadSubscriptionInfo() async {
+        do {
+            let settings = try await APIService.shared.getUserSettings()
+            if let subscription = settings.subscription {
+                canAddMore = subscription.canAddToWatchlist
+                watchlistCount = subscription.watchlistCount
+                watchlistLimit = subscription.tierInfo.watchlistLimit
+                tierName = subscription.tierInfo.name
+            }
+        } catch {
+            // Default to allowing adds if we can't fetch subscription
+            canAddMore = true
+        }
+    }
+
+    /// Formatted limit text for display
+    var limitDisplayText: String {
+        if watchlistLimit == -1 {
+            return "\(watchlistCount) stocks"
+        } else {
+            return "\(watchlistCount) of \(watchlistLimit) stocks"
+        }
+    }
+
+    /// Whether the user has hit their limit
+    var isAtLimit: Bool {
+        !canAddMore
     }
 }

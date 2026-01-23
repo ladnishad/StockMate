@@ -1110,30 +1110,37 @@ async def add_to_watchlist(
         else:
             already_exists = store.has_symbol(user_id, symbol.upper())
 
-        # Only check subscription limits for NEW symbols
+        # Get subscription limit info for validation
+        subscription_service = get_subscription_service()
+        user_subscription = await subscription_service.get_user_subscription(user_id)
+        limit = user_subscription.tier_info.watchlist_limit
+        tier_name = user_subscription.tier_info.name
+
+        # Only check subscription limits for NEW symbols (non-atomic check for early fail)
         if not already_exists:
-            subscription_service = get_subscription_service()
-            can_add, current_count, limit = await subscription_service.can_add_to_watchlist(user_id)
+            can_add, current_count, _ = await subscription_service.can_add_to_watchlist(user_id)
 
             if not can_add:
-                # Get tier info for the error message
-                user_subscription = await subscription_service.get_user_subscription(user_id)
-                tier_name = user_subscription.tier_info.name
-
-                if limit == -1:
-                    limit_text = "unlimited"
-                else:
-                    limit_text = str(limit)
-
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Watchlist limit reached. Your {tier_name} subscription allows {limit_text} stocks. "
-                           f"You currently have {current_count}. Remove a stock or upgrade your subscription to add more.",
+                    detail=f"Watchlist limit reached for {tier_name} subscription. Upgrade to add more stocks.",
                 )
 
-        item = store.add_symbol(user_id, symbol.upper(), notes=notes)
-        if hasattr(item, '__await__'):
-            item = await item
+        # For PostgreSQL store, pass the limit for atomic check (prevents race condition)
+        # For JSON store, the check above is sufficient (single-process)
+        try:
+            if hasattr(store, 'has_symbol_async'):
+                # PostgreSQL store - use atomic limit checking
+                item = await store.add_symbol(user_id, symbol.upper(), notes=notes, limit=limit)
+            else:
+                # JSON store - already checked above
+                item = store.add_symbol(user_id, symbol.upper(), notes=notes)
+        except ValueError as e:
+            # Atomic limit check failed (race condition caught)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Watchlist limit reached for {tier_name} subscription. Upgrade to add more stocks.",
+            )
 
         # Fetch current price
         try:
@@ -4974,10 +4981,21 @@ async def admin_update_subscription(
 ):
     """Admin endpoint to update a user's subscription tier.
 
-    Note: In production, this should be restricted to admin users only.
-    For now, any authenticated user can update any user's subscription.
-    This is for testing purposes.
+    Restricted to users whose ID matches the ADMIN_USER_ID environment variable.
+    Returns 403 Forbidden if admin functionality is disabled or user is not admin.
     """
+    settings = get_settings()
+
+    # Check if admin functionality is enabled and user is admin
+    if not settings.admin_user_id or admin_user.id != settings.admin_user_id:
+        logger.warning(
+            f"Unauthorized admin access attempt by user {admin_user.id}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+
     try:
         subscription_service = get_subscription_service()
         tier = SubscriptionTier(request.tier)

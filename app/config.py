@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     app_env: str = "development"  # development, staging, production
     log_level: str = "INFO"
 
+    # Admin Configuration
+    # Set this to a user ID to enable admin endpoints (e.g., ADMIN_USER_ID=uuid-here)
+    admin_user_id: Optional[str] = None
+
     # CORS Configuration (comma-separated list of allowed origins for production)
     cors_origins: str = ""  # e.g., "https://yourdomain.com,capacitor://localhost"
 

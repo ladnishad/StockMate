@@ -15,6 +15,11 @@ struct TickerSearchView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                // Limit reached banner
+                if viewModel.isAtLimit {
+                    LimitReachedBanner(tierName: viewModel.tierName, limit: viewModel.watchlistLimit)
+                }
+
                 // Search bar
                 SearchInputField(
                     text: $viewModel.searchQuery,
@@ -42,7 +47,8 @@ struct TickerSearchView: View {
                     List(viewModel.searchResults) { result in
                         SearchResultRow(
                             result: result,
-                            isInWatchlist: viewModel.isInWatchlist(result.symbol)
+                            isInWatchlist: viewModel.isInWatchlist(result.symbol),
+                            isAtLimit: viewModel.isAtLimit
                         ) {
                             addTicker(result.symbol)
                         }
@@ -59,15 +65,33 @@ struct TickerSearchView: View {
                     }
                 }
             }
-            .alert("Error", isPresented: .constant(viewModel.addError != nil)) {
+            .alert(
+                viewModel.lastError?.isLimitError == true ? "Watchlist Full" : "Unable to Add",
+                isPresented: .constant(viewModel.addError != nil)
+            ) {
                 Button("OK") {
                     viewModel.addError = nil
+                    viewModel.lastError = nil
+                }
+                if viewModel.lastError?.isLimitError == true {
+                    Button("View Plans") {
+                        viewModel.addError = nil
+                        viewModel.lastError = nil
+                        // TODO: Navigate to subscription plans
+                    }
                 }
             } message: {
-                if let error = viewModel.addError {
-                    Text(error)
+                if let error = viewModel.lastError {
+                    if error.isLimitError {
+                        Text("Your \(viewModel.tierName) plan allows \(viewModel.watchlistLimit) stocks. Upgrade to add more.")
+                    } else {
+                        Text(error.localizedDescription)
+                    }
                 }
             }
+        }
+        .task {
+            await viewModel.loadSubscriptionInfo()
         }
         .onAppear {
             isSearchFocused = true
@@ -128,7 +152,12 @@ struct SearchInputField: View {
 struct SearchResultRow: View {
     let result: SearchResult
     let isInWatchlist: Bool
+    var isAtLimit: Bool = false
     let onAdd: () -> Void
+
+    private var isDisabled: Bool {
+        isInWatchlist || (isAtLimit && !isInWatchlist)
+    }
 
     var body: some View {
         Button(action: onAdd) {
@@ -172,6 +201,10 @@ struct SearchResultRow: View {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 20))
                         .foregroundStyle(.green)
+                } else if isAtLimit {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.secondary)
                 } else {
                     Image(systemName: "plus.circle")
                         .font(.system(size: 20))
@@ -181,8 +214,8 @@ struct SearchResultRow: View {
             .padding(.vertical, 4)
         }
         .buttonStyle(.plain)
-        .disabled(isInWatchlist)
-        .opacity(isInWatchlist ? 0.6 : 1)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.6 : 1)
     }
 }
 
@@ -230,8 +263,51 @@ struct SearchPromptView: View {
     }
 }
 
+// MARK: - Limit Reached Banner
+
+struct LimitReachedBanner: View {
+    let tierName: String
+    let limit: Int
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 20))
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Watchlist Full")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Text("Your \(tierName) plan allows \(limit) stocks. Upgrade to add more.")
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.orange.opacity(0.1))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+        )
+        .padding(.horizontal)
+        .padding(.top, 8)
+    }
+}
+
 // MARK: - Preview
 
 #Preview("Ticker Search") {
     TickerSearchView()
+}
+
+#Preview("Limit Banner") {
+    LimitReachedBanner(tierName: "Base", limit: 2)
+        .padding()
 }

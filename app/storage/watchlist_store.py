@@ -301,8 +301,25 @@ class DatabaseWatchlistStore:
         symbol: str,
         notes: Optional[str] = None,
         alerts_enabled: bool = False,
+        limit: Optional[int] = None,
     ) -> dict:
-        """Add symbol to user's watchlist in database."""
+        """Add symbol to user's watchlist in database.
+
+        Args:
+            user_id: User identifier
+            symbol: Stock ticker symbol
+            notes: Optional user notes
+            alerts_enabled: Whether to enable alerts
+            limit: Optional limit to enforce atomically (use FOR UPDATE lock).
+                   If provided and limit would be exceeded, raises ValueError.
+                   Use -1 for unlimited.
+
+        Returns:
+            The created watchlist item
+
+        Raises:
+            ValueError: If limit is provided and would be exceeded
+        """
         from app.storage.postgres import get_connection
 
         symbol = symbol.upper()
@@ -310,30 +327,43 @@ class DatabaseWatchlistStore:
         item_id = str(uuid.uuid4())
 
         async with get_connection() as conn:
-            # Check if exists
-            existing = await conn.fetchval(
-                "SELECT symbol FROM watchlist WHERE user_id = $1 AND symbol = $2",
-                user_id, symbol
-            )
-            if existing:
-                logger.info(f"Symbol {symbol} already in watchlist for user {user_id}")
-                row = await conn.fetchrow(
-                    "SELECT * FROM watchlist WHERE user_id = $1 AND symbol = $2",
+            # Use transaction to ensure atomicity when checking limits
+            async with conn.transaction():
+                # Check if exists
+                existing = await conn.fetchval(
+                    "SELECT symbol FROM watchlist WHERE user_id = $1 AND symbol = $2",
                     user_id, symbol
                 )
-                return {
-                    "symbol": row["symbol"],
-                    "added_at": row["added_at"],
-                    "notes": row["notes"],
-                    "alerts_enabled": row["alerts_enabled"],
-                }
+                if existing:
+                    logger.info(f"Symbol {symbol} already in watchlist for user {user_id}")
+                    row = await conn.fetchrow(
+                        "SELECT * FROM watchlist WHERE user_id = $1 AND symbol = $2",
+                        user_id, symbol
+                    )
+                    return {
+                        "symbol": row["symbol"],
+                        "added_at": row["added_at"],
+                        "notes": row["notes"],
+                        "alerts_enabled": row["alerts_enabled"],
+                    }
 
-            # Insert new
-            await conn.execute(
-                """INSERT INTO watchlist (id, user_id, symbol, notes, alerts_enabled, added_at)
-                   VALUES ($1, $2, $3, $4, $5, $6)""",
-                item_id, user_id, symbol, notes, alerts_enabled, now
-            )
+                # If limit is provided, check atomically with FOR UPDATE lock
+                if limit is not None and limit != -1:
+                    # Lock the user's rows and count them
+                    # Note: FOR UPDATE can't be used with COUNT(*), so we select rows and count in Python
+                    rows = await conn.fetch(
+                        "SELECT id FROM watchlist WHERE user_id = $1 FOR UPDATE",
+                        user_id
+                    )
+                    if len(rows) >= limit:
+                        raise ValueError(f"Watchlist limit of {limit} reached")
+
+                # Insert new
+                await conn.execute(
+                    """INSERT INTO watchlist (id, user_id, symbol, notes, alerts_enabled, added_at)
+                       VALUES ($1, $2, $3, $4, $5, $6)""",
+                    item_id, user_id, symbol, notes, alerts_enabled, now
+                )
 
         logger.info(f"Added {symbol} to watchlist for user {user_id}")
         return {
