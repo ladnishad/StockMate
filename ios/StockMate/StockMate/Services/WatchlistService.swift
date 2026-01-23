@@ -36,9 +36,9 @@ actor WatchlistService {
     func addSymbol(_ symbol: String) async throws -> WatchlistItem {
         let upperSymbol = symbol.uppercased()
 
-        // Check if already in watchlist
-        if cache.hasSymbol(upperSymbol) {
-            throw WatchlistError.alreadyExists
+        // If already in watchlist, return the existing item (not an error)
+        if let existingItem = cache.load().first(where: { $0.symbol.uppercased() == upperSymbol }) {
+            return existingItem
         }
 
         // Optimistically add to cache

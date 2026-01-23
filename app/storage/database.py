@@ -171,12 +171,21 @@ class Database:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_settings (
                     user_id TEXT PRIMARY KEY,
-                    model_provider TEXT DEFAULT 'grok',
+                    model_provider TEXT DEFAULT 'claude',
+                    subscription_tier TEXT DEFAULT 'base',
                     is_admin INTEGER DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
             """)
+
+            # Migration: Add subscription_tier column if it doesn't exist
+            try:
+                await conn.execute(
+                    "ALTER TABLE user_settings ADD COLUMN subscription_tier TEXT DEFAULT 'base'"
+                )
+            except Exception:
+                pass  # Column already exists
 
             # Migration: Add is_admin column if it doesn't exist
             try:
