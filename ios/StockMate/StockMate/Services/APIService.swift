@@ -1009,6 +1009,115 @@ actor APIService {
         }
     }
 
+    // MARK: - Admin Usage API
+
+    /// Check if current user has admin privileges
+    func checkAdminStatus() async throws -> AdminStatusResponse {
+        let url = URL(string: "\(baseURL)/admin/status")!
+        return try await fetch(url: url)
+    }
+
+    /// Get usage summary (admin only)
+    func getUsageSummary(userId: String? = nil, days: Int = 30) async throws -> UsageSummaryResponse {
+        var components = URLComponents(string: "\(baseURL)/admin/usage/summary")!
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "days", value: String(days))
+        ]
+        if let userId = userId {
+            queryItems.append(URLQueryItem(name: "user_id", value: userId))
+        }
+        components.queryItems = queryItems
+
+        return try await fetch(url: components.url!)
+    }
+
+    /// Get usage by user (admin only)
+    func getUsageByUser(days: Int = 30, limit: Int = 50) async throws -> AllUsersSummaryResponse {
+        var components = URLComponents(string: "\(baseURL)/admin/usage/users")!
+        components.queryItems = [
+            URLQueryItem(name: "days", value: String(days)),
+            URLQueryItem(name: "limit", value: String(limit))
+        ]
+
+        return try await fetch(url: components.url!)
+    }
+
+    /// Get daily cost breakdown (admin only)
+    func getDailyCosts(userId: String? = nil, days: Int = 30) async throws -> DailyCostsResponse {
+        var components = URLComponents(string: "\(baseURL)/admin/usage/daily")!
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "days", value: String(days))
+        ]
+        if let userId = userId {
+            queryItems.append(URLQueryItem(name: "user_id", value: userId))
+        }
+        components.queryItems = queryItems
+
+        return try await fetch(url: components.url!)
+    }
+
+    /// Get usage by operation type (admin only)
+    func getUsageByOperation(userId: String? = nil, days: Int = 30) async throws -> UsageByOperationResponse {
+        var components = URLComponents(string: "\(baseURL)/admin/usage/by-operation")!
+        var queryItems: [URLQueryItem] = [
+            URLQueryItem(name: "days", value: String(days))
+        ]
+        if let userId = userId {
+            queryItems.append(URLQueryItem(name: "user_id", value: userId))
+        }
+        components.queryItems = queryItems
+
+        return try await fetch(url: components.url!)
+    }
+
+    /// Get current user's own usage summary
+    func getMyUsage(days: Int = 30) async throws -> UsageSummaryResponse {
+        var components = URLComponents(string: "\(baseURL)/admin/my-usage")!
+        components.queryItems = [
+            URLQueryItem(name: "days", value: String(days))
+        ]
+
+        return try await fetch(url: components.url!)
+    }
+
+    /// Admin: Update a user's subscription tier
+    func updateUserSubscription(userId: String, tier: SubscriptionTier) async throws -> AdminSubscriptionUpdateResponse {
+        let url = URL(string: "\(baseURL)/subscription/admin")!
+
+        let requestBody = AdminSubscriptionUpdateRequest(userId: userId, tier: tier.rawValue)
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        addAuthHeader(to: &request)
+
+        let encoder = JSONEncoder()
+        request.httpBody = try encoder.encode(requestBody)
+
+        let (data, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIServiceError.invalidResponse
+        }
+
+        let decoder = JSONDecoder()
+
+        // Handle 401 with automatic token refresh
+        if httpResponse.statusCode == 401 {
+            return try await handleUnauthorizedAndRetry(request: request, decoder: decoder)
+        }
+
+        guard (200...299).contains(httpResponse.statusCode) else {
+            if let errorResponse = try? decoder.decode(APIError.self, from: data) {
+                throw APIServiceError.serverError(errorResponse.detail)
+            }
+            throw APIServiceError.httpError(httpResponse.statusCode)
+        }
+
+        return try decoder.decode(AdminSubscriptionUpdateResponse.self, from: data)
+    }
+
     // MARK: - Private Helpers
 
     private func fetch<T: Decodable>(url: URL) async throws -> T {

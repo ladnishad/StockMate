@@ -269,8 +269,10 @@ async def init_postgres_tables():
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS user_settings (
                 user_id TEXT PRIMARY KEY,
+                email TEXT,
                 model_provider TEXT DEFAULT 'grok',
                 subscription_tier TEXT DEFAULT 'base',
+                is_admin INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -281,6 +283,24 @@ async def init_postgres_tables():
             await conn.execute("""
                 ALTER TABLE user_settings
                 ADD COLUMN IF NOT EXISTS subscription_tier TEXT DEFAULT 'base'
+            """)
+        except Exception:
+            pass  # Column may already exist
+
+        # Add email column if it doesn't exist
+        try:
+            await conn.execute("""
+                ALTER TABLE user_settings
+                ADD COLUMN IF NOT EXISTS email TEXT
+            """)
+        except Exception:
+            pass  # Column may already exist
+
+        # Add is_admin column if it doesn't exist
+        try:
+            await conn.execute("""
+                ALTER TABLE user_settings
+                ADD COLUMN IF NOT EXISTS is_admin INTEGER DEFAULT 0
             """)
         except Exception:
             pass  # Column may already exist

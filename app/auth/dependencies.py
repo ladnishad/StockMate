@@ -204,11 +204,22 @@ async def get_current_user(
     token_payload = decode_jwt(credentials.credentials)
 
     # Build User from JWT claims
-    return User(
+    user = User(
         id=token_payload.sub,
         email=token_payload.email or "",
         email_verified=True,  # Supabase only allows authenticated users to get tokens
     )
+
+    # Ensure email is stored in user settings (for admin dashboard)
+    if user.email:
+        try:
+            from app.storage.user_settings_store import get_user_settings_store
+            settings_store = get_user_settings_store()
+            await settings_store.ensure_user_email(user.id, user.email)
+        except Exception as e:
+            logger.debug(f"Failed to store user email: {e}")
+
+    return user
 
 
 async def get_optional_user(
@@ -249,3 +260,61 @@ def get_user_id(user: User = Depends(get_current_user)) -> str:
         User ID string (Supabase UUID)
     """
     return user.id
+
+
+async def get_admin_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+) -> User:
+    """Get the current authenticated admin user.
+
+    This is a FastAPI dependency that validates the JWT token and verifies
+    the user has admin privileges. Use this for admin-only endpoints.
+
+    Args:
+        credentials: Bearer token from Authorization header
+
+    Returns:
+        User object with id, email, etc.
+
+    Raises:
+        HTTPException 401: If no token provided or token is invalid
+        HTTPException 403: If user is not an admin
+    """
+    import os
+
+    # Test mode bypass - return a test admin user
+    if os.getenv("BYPASS_AUTH", "").lower() == "true":
+        return User(
+            id="test-admin-00000000-0000-0000-0000-000000000000",
+            email="admin@stockmate.local",
+            email_verified=True,
+        )
+
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token_payload = decode_jwt(credentials.credentials)
+
+    # Build User from JWT claims
+    user = User(
+        id=token_payload.sub,
+        email=token_payload.email or "",
+        email_verified=True,
+    )
+
+    # Check admin status
+    from app.storage.user_settings_store import get_user_settings_store
+    settings_store = get_user_settings_store()
+    is_admin = await settings_store.is_user_admin(user.id, user.email)
+
+    if not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+
+    return user

@@ -4,14 +4,21 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @StateObject private var viewModel = SettingsViewModel()
+    @StateObject private var usageViewModel = UsageViewModel()
     @Environment(\.dismiss) private var dismiss
 
     @State private var showingLogoutConfirmation = false
+    @State private var showingUsageDashboard = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 28) {
+                    // Admin Section (only visible for admins)
+                    if usageViewModel.isAdmin {
+                        adminSection
+                    }
+
                     // Subscription Section
                     subscriptionSection
 
@@ -39,6 +46,10 @@ struct SettingsView: View {
             }
             .task {
                 await viewModel.loadSettings()
+                await usageViewModel.checkAdminStatus()
+            }
+            .sheet(isPresented: $showingUsageDashboard) {
+                AdminUsageDashboardView()
             }
             .overlay {
                 if viewModel.isLoading {
@@ -60,6 +71,79 @@ struct SettingsView: View {
             } message: {
                 Text("Are you sure you want to sign out?")
             }
+        }
+    }
+
+    // MARK: - Admin Section
+
+    private var adminSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Section Header
+            HStack(spacing: 8) {
+                Image(systemName: "chart.bar.xaxis")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Text("Admin")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+            }
+            .padding(.leading, 4)
+
+            // Usage Dashboard Card
+            Button {
+                showingUsageDashboard = true
+            } label: {
+                HStack(spacing: 14) {
+                    // Icon
+                    ZStack {
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.blue.opacity(0.2), Color.purple.opacity(0.15)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 44, height: 44)
+
+                        Image(systemName: "chart.pie.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [.blue, .purple],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                    }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Usage Dashboard")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.primary)
+
+                        Text("View API costs and analytics")
+                            .font(.system(size: 13, weight: .regular))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(.secondarySystemGroupedBackground))
+                )
+            }
+            .buttonStyle(.plain)
         }
     }
 
