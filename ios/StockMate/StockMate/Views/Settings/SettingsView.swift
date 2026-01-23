@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Settings screen for managing AI provider and account preferences
+/// Settings screen for managing AI provider, subscription, and account preferences
 struct SettingsView: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @StateObject private var viewModel = SettingsViewModel()
@@ -12,6 +12,9 @@ struct SettingsView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 28) {
+                    // Subscription Section
+                    subscriptionSection
+
                     // AI Provider Section
                     aiProviderSection
 
@@ -60,6 +63,166 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Subscription Section
+
+    private var subscriptionSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Section Header
+            HStack(spacing: 8) {
+                Image(systemName: "crown.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Text("Subscription")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+            }
+            .padding(.leading, 4)
+
+            // Subscription Card
+            VStack(spacing: 0) {
+                if let subscription = viewModel.subscription {
+                    // Current Plan
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text(subscription.tierInfo.name)
+                                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.primary)
+
+                                Text(subscription.tierInfo.priceDisplay)
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        Capsule()
+                                            .fill(tierAccentColor(for: subscription.tier))
+                                    )
+                            }
+
+                            Text(subscription.tierInfo.description)
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: tierIcon(for: subscription.tier))
+                            .font(.system(size: 28, weight: .medium))
+                            .foregroundStyle(tierAccentColor(for: subscription.tier))
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 16)
+
+                    Divider()
+                        .padding(.leading, 16)
+
+                    // Watchlist Usage
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Watchlist")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.secondary)
+
+                            Text(subscription.usageDisplay)
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.primary)
+                        }
+
+                        Spacer()
+
+                        if subscription.tierInfo.isUnlimited {
+                            Text("Unlimited")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.green)
+                        } else {
+                            Text(subscription.remainingDisplay)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(subscription.canAddToWatchlist ? .green : .orange)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+
+                    Divider()
+                        .padding(.leading, 16)
+
+                    // Features List
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Your Benefits")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.bottom, 4)
+
+                        ForEach(subscription.tierInfo.features, id: \.self) { feature in
+                            HStack(spacing: 10) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(.green)
+
+                                Text(feature)
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+
+                    Divider()
+                        .padding(.leading, 16)
+
+                    // Manage Subscription Button
+                    Button {
+                        // Coming soon
+                    } label: {
+                        HStack {
+                            Image(systemName: "creditcard")
+                                .font(.system(size: 16, weight: .medium))
+
+                            Text("Manage Subscription")
+                                .font(.system(size: 16, weight: .medium))
+
+                            Spacer()
+
+                            Text("Coming Soon")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(
+                                    Capsule()
+                                        .fill(Color.gray)
+                                )
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                    }
+                    .disabled(true)
+                } else {
+                    // Loading state
+                    HStack {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                        Text("Loading subscription...")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 20)
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(.secondarySystemGroupedBackground))
+            )
+        }
+    }
+
     // MARK: - AI Provider Section
 
     private var aiProviderSection: some View {
@@ -78,13 +241,16 @@ struct SettingsView: View {
             }
             .padding(.leading, 4)
 
-            // Provider Cards
+            // Provider Cards - Show all providers, not just available ones
             VStack(spacing: 12) {
-                ForEach(viewModel.availableProviders, id: \.self) { provider in
+                // Always show both Claude and Grok
+                ForEach(["claude", "grok"], id: \.self) { provider in
                     ProviderCard(
                         provider: provider,
                         isSelected: viewModel.selectedProvider == provider,
+                        isEnabled: viewModel.isProviderEnabled(provider),
                         isSaving: viewModel.isSaving,
+                        badge: viewModel.providerBadge(for: provider),
                         viewModel: viewModel
                     ) {
                         Task {
@@ -95,15 +261,31 @@ struct SettingsView: View {
             }
 
             // Provider Description
-            HStack(spacing: 10) {
-                Image(systemName: "info.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Image(systemName: "info.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.tertiary)
 
-                Text(viewModel.providerDescription)
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    Text(viewModel.providerDescription)
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                // Show upgrade hint if on base tier
+                if !viewModel.isGrokAvailable {
+                    HStack(spacing: 10) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.blue)
+
+                        Text("Upgrade to Premium to unlock Grok with real-time X/Twitter sentiment")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.blue)
+                    }
+                    .padding(.top, 4)
+                }
             }
             .padding(.horizontal, 4)
             .padding(.top, 4)
@@ -209,6 +391,38 @@ struct SettingsView: View {
             )
         }
     }
+
+    // MARK: - Helpers
+
+    private func tierAccentColor(for tier: String) -> Color {
+        switch tier {
+        case "base":
+            return Color.gray
+        case "premium":
+            return Color.blue
+        case "pro":
+            return Color.purple
+        case "unlimited":
+            return Color(red: 0.85, green: 0.65, blue: 0.13) // Gold
+        default:
+            return Color.gray
+        }
+    }
+
+    private func tierIcon(for tier: String) -> String {
+        switch tier {
+        case "base":
+            return "star"
+        case "premium":
+            return "star.fill"
+        case "pro":
+            return "crown"
+        case "unlimited":
+            return "crown.fill"
+        default:
+            return "star"
+        }
+    }
 }
 
 // MARK: - Claude Logo View
@@ -216,6 +430,7 @@ struct SettingsView: View {
 struct ClaudeLogoView: View {
     let size: CGFloat
     let isSelected: Bool
+    var isEnabled: Bool = true
 
     // Claude brand color: #D97757 (warm terracotta)
     private let claudeColor = Color(red: 0.851, green: 0.467, blue: 0.341)
@@ -236,6 +451,7 @@ struct ClaudeLogoView: View {
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: size * 0.55, height: size * 0.55)
+                .opacity(isEnabled ? 1 : 0.4)
         }
     }
 }
@@ -245,6 +461,7 @@ struct ClaudeLogoView: View {
 struct GrokLogoView: View {
     let size: CGFloat
     let isSelected: Bool
+    var isEnabled: Bool = true
 
     var body: some View {
         ZStack {
@@ -263,6 +480,7 @@ struct GrokLogoView: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(width: size * 0.55, height: size * 0.55)
                 .foregroundStyle(isSelected ? Color.white : Color.secondary)
+                .opacity(isEnabled ? 1 : 0.4)
         }
     }
 }
@@ -272,21 +490,27 @@ struct GrokLogoView: View {
 struct ProviderCard: View {
     let provider: String
     let isSelected: Bool
+    let isEnabled: Bool
     let isSaving: Bool
+    let badge: String?
     @ObservedObject var viewModel: SettingsViewModel
     let onSelect: () -> Void
 
     @State private var isPressed = false
 
     var body: some View {
-        Button(action: onSelect) {
+        Button(action: {
+            if isEnabled {
+                onSelect()
+            }
+        }) {
             HStack(spacing: 14) {
                 // Provider Logo
                 Group {
                     if provider == "claude" {
-                        ClaudeLogoView(size: 44, isSelected: isSelected)
+                        ClaudeLogoView(size: 44, isSelected: isSelected, isEnabled: isEnabled)
                     } else if provider == "grok" {
-                        GrokLogoView(size: 44, isSelected: isSelected)
+                        GrokLogoView(size: 44, isSelected: isSelected, isEnabled: isEnabled)
                     } else {
                         // Fallback for unknown providers
                         ZStack {
@@ -306,23 +530,45 @@ struct ProviderCard: View {
                     HStack(spacing: 6) {
                         Text(viewModel.displayName(for: provider))
                             .font(.system(size: 17, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(isEnabled ? .primary : .secondary)
 
                         Text(viewModel.companyName(for: provider))
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(.tertiary)
+
+                        // Badge for disabled providers
+                        if let badge = badge {
+                            Text(badge)
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule()
+                                        .fill(Color.blue)
+                                )
+                        }
                     }
 
                     Text(viewModel.featureTagline(for: provider))
                         .font(.system(size: 13, weight: .regular))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(isEnabled ? .secondary : .tertiary)
                 }
 
                 Spacer()
 
-                // Selection Indicator
+                // Selection Indicator or Lock
                 ZStack {
-                    if isSelected {
+                    if !isEnabled {
+                        // Locked state
+                        Circle()
+                            .fill(Color(.systemGray5))
+                            .frame(width: 24, height: 24)
+
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.secondary)
+                    } else if isSelected {
                         Circle()
                             .fill(viewModel.accentColor(for: provider))
                             .frame(width: 24, height: 24)
@@ -343,9 +589,9 @@ struct ProviderCard: View {
             .background(
                 ZStack {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(viewModel.cardGradient(for: provider, isSelected: isSelected))
+                        .fill(isEnabled ? viewModel.cardGradient(for: provider, isSelected: isSelected) : LinearGradient(colors: [Color(.systemGray6)], startPoint: .topLeading, endPoint: .bottomTrailing))
 
-                    if isSelected {
+                    if isSelected && isEnabled {
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
                             .strokeBorder(
                                 viewModel.accentColor(for: provider).opacity(0.4),
@@ -354,15 +600,15 @@ struct ProviderCard: View {
                     }
                 }
             )
-            .scaleEffect(isPressed ? 0.98 : 1.0)
+            .scaleEffect(isPressed && isEnabled ? 0.98 : 1.0)
             .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isPressed)
         }
         .buttonStyle(.plain)
-        .disabled(isSaving)
+        .disabled(isSaving || !isEnabled)
         .opacity(isSaving && !isSelected ? 0.6 : 1.0)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { _ in isPressed = true }
+                .onChanged { _ in if isEnabled { isPressed = true } }
                 .onEnded { _ in isPressed = false }
         )
     }

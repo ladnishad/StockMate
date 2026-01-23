@@ -270,10 +270,20 @@ async def init_postgres_tables():
             CREATE TABLE IF NOT EXISTS user_settings (
                 user_id TEXT PRIMARY KEY,
                 model_provider TEXT DEFAULT 'grok',
+                subscription_tier TEXT DEFAULT 'base',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
         """)
+
+        # Add subscription_tier column if it doesn't exist (migration for existing tables)
+        try:
+            await conn.execute("""
+                ALTER TABLE user_settings
+                ADD COLUMN IF NOT EXISTS subscription_tier TEXT DEFAULT 'base'
+            """)
+        except Exception:
+            pass  # Column may already exist
 
         # Add V2 columns to trading_plans if they don't exist
         # PostgreSQL doesn't have IF NOT EXISTS for ADD COLUMN, so we check first

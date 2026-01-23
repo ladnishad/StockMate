@@ -960,15 +960,31 @@ actor APIService {
     struct UserSettingsResponse: Decodable {
         let modelProvider: String
         let availableProviders: [String]
+        let subscription: UserSubscription?
 
         enum CodingKeys: String, CodingKey {
             case modelProvider = "model_provider"
             case availableProviders = "available_providers"
+            case subscription
         }
     }
 
     func getUserSettings() async throws -> UserSettingsResponse {
         let url = URL(string: "\(baseURL)/settings")!
+        return try await fetch(url: url)
+    }
+
+    // MARK: - Subscription
+
+    /// Get user's current subscription
+    func getSubscription() async throws -> UserSubscription {
+        let url = URL(string: "\(baseURL)/subscription")!
+        return try await fetch(url: url)
+    }
+
+    /// Get all available subscription tiers
+    func getSubscriptionTiers() async throws -> [SubscriptionTierInfo] {
+        let url = URL(string: "\(baseURL)/subscription/tiers")!
         return try await fetch(url: url)
     }
 
