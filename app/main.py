@@ -112,10 +112,11 @@ async def lifespan(app: FastAPI):
         try:
             from app.services.plan_evaluator import get_plan_evaluator
             plan_evaluator = get_plan_evaluator()
-            await plan_evaluator.start()
-            logger.info("✓ Plan evaluator started (15-min per-plan intervals + key level triggers)")
+            # AUTO-EVALUATION DISABLED - manual evaluation still works via /chat/{symbol}/evaluate
+            # await plan_evaluator.start()
+            logger.info("✓ Plan evaluator initialized (auto-evaluation DISABLED)")
         except Exception as e:
-            logger.error(f"Failed to start plan evaluator: {e}")
+            logger.error(f"Failed to initialize plan evaluator: {e}")
     else:
         logger.warning("⚠ Claude API key not configured - plan evaluator disabled")
 
