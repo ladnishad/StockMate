@@ -215,9 +215,19 @@ Our current infrastructure costs are minimal:
 
 ---
 
-### 24. Please describe the breakdown of the equity ownership in percentages among the founders, employees and any other stockholders.
+### 24. If you have not formed the company yet, describe the planned equity ownership breakdown among the founders, employees and any other proposed stockholders. If there are multiple founders, be sure to give the proposed equity ownership of each founder and founder title (e.g. CEO).
 
-[FILL IN: e.g., "Founder 1 (CEO): 60%, Founder 2 (CTO): 40%" — YC expects founders to have at least 10% each]
+**Founder equity (pre-dilution):**
+- [Your Name], CEO: 60%
+- [Co-founder Name], CTO: 40%
+
+**Vesting:** Standard 4-year vesting with 1-year cliff for both founders. This protects both of us if one leaves early — YC's standard recommendation.
+
+**Employee option pool:** We plan to set aside 10-15% for future employees post-incorporation, which will dilute founders proportionally.
+
+**No outside investors yet.** We're bootstrapped. YC would be our first institutional investment.
+
+**Incorporation plan:** We'll form a Delaware C-Corp during YC if accepted — the standard structure for venture-backed startups.
 
 ---
 
