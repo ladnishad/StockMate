@@ -14,7 +14,7 @@ StockMate is an AI-powered stock analysis platform that brings institutional-gra
 
 Our platform runs a 15-factor weighted scoring system (VWAP, RSI, MACD, volume profile, divergences, Fibonacci, chart patterns, and more) that gives traders a clear confidence score on whether to buy, removing guesswork and emotional decision-making. The AI agent continuously monitors watchlists and alerts users when price approaches key support/resistance levels, when breakouts occur, or when stop losses are at risk.
 
-We serve four distinct trader profiles — day traders, swing traders, position traders, and long-term investors — each with customized timeframes, risk parameters, and indicator weightings. The iOS app delivers all of this in a conversational chat interface where you can ask the AI about any stock and get back a professional-grade trade plan in seconds, something that takes even experienced traders hours to build manually.
+We serve three distinct trader profiles — day traders, swing traders, and position traders — each with customized timeframes, risk parameters, and indicator weightings. The iOS app delivers all of this in a conversational chat interface where you can ask the AI about any stock and get back a professional-grade trade plan in seconds, something that takes even experienced traders hours to build manually.
 
 ---
 
