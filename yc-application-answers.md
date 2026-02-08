@@ -44,9 +44,37 @@ We have a fully functional product deployed in production. The backend is built 
 
 ---
 
+### 7. What tech stack are you using, or planning to use, to build this product? Include AI models and AI coding tools you use.
+
+**Backend:** Python 3.11 with FastAPI, deployed on Render.com with Docker. PostgreSQL via Supabase for auth and database. Alpaca Markets API for real-time market data and WebSocket streaming.
+
+**iOS App:** Native SwiftUI with async/await patterns.
+
+**AI Models:**
+- Claude (claude-sonnet-4-20250514 for deep analysis, claude-3-5-haiku for fast chat) — primary model for trade plan generation and technical analysis synthesis
+- Grok (grok-4 via xAI API) — alternative model with native X/Twitter sentiment search
+
+**Technical Analysis:** Custom-built engine with 34 tool functions using Pandas, NumPy, and TA-Lib for indicators. Volume profile, chart pattern recognition, divergence detection, and multi-timeframe confluence scoring all built in-house.
+
+**AI Coding Tools:** Claude Code for development acceleration — used extensively throughout the build process for both backend and iOS development.
+
+---
+
+### 8. Why did you pick this idea to work on? Do you have domain expertise in this area? How do you know people need what you're making?
+
+I've been trading stocks for [X years] and spent countless hours in trading Discord communities and following "furus" (financial gurus) on X/Twitter. I watched how these communities operate: the guru posts a stock setup with entry zones and targets, drops it in the chat, and then... leaves. Followers scramble to figure out position sizing, where exactly to enter, when to cut losses. The hand-holding stops right when it matters most.
+
+These Discord communities charge $100-300/month for access, and people pay it because they're desperate for guidance. But what they really want isn't a guru who posts ideas — they want someone to walk them through the entire trade, personalized to their account size and risk tolerance. That's exactly what StockMate does: it's the guru that never sleeps, never gets distracted, and always gives you the complete plan.
+
+I know people need this because I needed it. And I've seen thousands of traders in these communities asking the same questions over and over: "What's my stop?" "How many shares should I buy?" "Is this still a good entry?" StockMate answers all of that instantly.
+
+[FILL IN: Add specific details — how long you've been trading, which communities you were part of, any specific experiences that drove you to build this]
+
+---
+
 ## Founder / Team Details
 
-### 7. Who writes code, or does other technical work on your product? Was any of it done by a non-founder?
+### 9. Who writes code, or does other technical work on your product? Was any of it done by a non-founder?
 
 All code has been written by the founders. The backend (FastAPI, Python), AI agent system, technical analysis engine, and iOS app (SwiftUI) were built entirely in-house. No outside contractors or agencies were used. We own 100% of the IP.
 
@@ -54,25 +82,25 @@ All code has been written by the founders. The backend (FastAPI, Python), AI age
 
 ---
 
-### 8. How long have the founders known one another and how did you meet?
+### 10. How long have the founders known one another and how did you meet?
 
 [FILL IN: Your story — how you met, how long you've known each other]
 
 ---
 
-### 9. Please tell us about an interesting project, preferably outside of class or work, that two or more of you created together.
+### 11. Please tell us about an interesting project, preferably outside of class or work, that two or more of you created together.
 
 [FILL IN: A project you and your co-founder built together — ideally something that shows technical ability, scrappiness, and complementary skills]
 
 ---
 
-### 10. Please tell us in one or two sentences about something impressive that each founder has built or achieved.
+### 12. Please tell us in one or two sentences about something impressive that each founder has built or achieved.
 
 [FILL IN: This is YC's most important question. For each founder, one genuinely impressive achievement. Be specific with numbers/outcomes. Examples: "Built X that got Y users," "Grew Z from 0 to N," "Won competition X against N teams"]
 
 ---
 
-### 11. Please tell us about the time you most successfully hacked some (non-computer) system to your advantage.
+### 13. Please tell us about the time you most successfully hacked some (non-computer) system to your advantage.
 
 [FILL IN: A story showing resourcefulness and willingness to bend rules creatively — YC loves founders who find unconventional shortcuts]
 
@@ -80,7 +108,7 @@ All code has been written by the founders. The backend (FastAPI, Python), AI age
 
 ## Product & Market
 
-### 12. What's new about what you're making? What substitutes do people resort to because it doesn't exist yet (or they don't know about it)?
+### 14. What's new about what you're making? What substitutes do people resort to because it doesn't exist yet (or they don't know about it)?
 
 Today, retail traders cobble together a fragmented stack: TradingView for charts ($15-60/mo), a separate screener like Finviz, Twitter/X for sentiment, YouTube for pattern analysis, and a spreadsheet to track positions. Even with all that, they're still guessing on entries, exits, and position sizes. Professional traders at hedge funds have Bloomberg terminals ($24,000/year) and teams of analysts running the same analysis our AI does in seconds.
 
@@ -88,17 +116,24 @@ What's new is the AI copilot approach. No existing platform uses LLMs as an inte
 
 ---
 
-### 13. Who are your competitors? What do you understand about your business that they don't?
+### 15. Who are your competitors? What do you understand about your business that they don't?
 
-**Direct competitors:** TradingView (charting), Seeking Alpha (analysis), Stock Advisor by Motley Fool (recommendations), Trade Ideas (scanning).
+**Software competitors:**
+- **TradingView** ($15-60/mo) — Best-in-class charting, but it's a canvas, not an advisor. Users still have to interpret everything themselves.
+- **Trade Ideas** ($118-228/mo) — AI-powered scanning and alerts, but focuses on finding stocks, not building complete trade plans with entries/stops/sizing.
+- **Tickeron** ($50-250/mo) — AI pattern recognition, but predictions without actionable plans. Says "bullish pattern detected" but not "buy at X, stop at Y."
+- **Motley Fool Stock Advisor** ($199/yr) — Long-term buy recommendations, but no entry timing, no stops, no position sizing. "Buy AAPL" isn't a trade plan.
+- **Seeking Alpha Premium** ($239/yr) — Analyst ratings and articles, but again, no specific execution guidance.
 
-**What they miss:** These platforms are all tools-first — they give you the instruments but expect you to be the expert. TradingView is powerful but overwhelming for non-professionals. Motley Fool gives buy recommendations without specific entries, stops, or position sizing. None of them use AI as an intelligent analyst that personalizes analysis to your trading style and risk profile.
+**Human competitors (and the real insight):**
+- **Trading Discord communities** ($100-300/mo) — Furus post setups and targets, but don't hand-hold through execution. Followers still ask "what's my stop?" and "how many shares?"
+- **Trading mentors/coaches** ($200-500/mo) — One-on-one guidance, but slow response times and limited availability.
 
-What we understand: Retail traders don't need more tools — they need a co-pilot that synthesizes tools for them. The future of trading platforms isn't showing more data, it's showing the right decision. Our 15-factor scoring system with per-profile confidence thresholds (70% for day traders, 60% for long-term investors) means we're not just saying "buy AAPL" — we're saying "buy AAPL at $182.50, stop at $178.20 (1.5x ATR), target $191.30, risk 1% of your account, allocate 847 shares." That specificity is what separates us.
+**What we understand that they don't:** The gap isn't in finding stocks or even in analysis — it's in the last mile of execution. Traders don't fail because they can't find opportunities; they fail because they don't know exactly when to enter, where to place stops, how much to risk, and when to take profits. Every competitor stops short of that. StockMate gives you the complete trade plan: "Buy AAPL at $182.50, stop at $178.20 (1.5x ATR), targets at $187.30 / $191.50 / $196.00, risk 1% of your $25K account = 116 shares." That specificity — personalized to your account size, risk tolerance, and trading style — is what no one else provides.
 
 ---
 
-### 14. How do or will you make money? How much could you make?
+### 16. How do or will you make money? How much could you make?
 
 **Revenue model:** Four-tier monthly SaaS subscription.
 
@@ -107,13 +142,15 @@ What we understand: Retail traders don't need more tools — they need a co-pilo
 - **Pro ($50/mo):** 20 stocks, professional-grade analysis, priority support
 - **Unlimited ($200/mo):** Unlimited watchlist, all features, dedicated support
 
-**Unit economics:** Our primary costs are AI API calls and market data. We track per-user API costs in real-time through our admin dashboard, broken down by provider and operation type. Claude analysis costs roughly $0.01-0.05 per analysis depending on depth, meaning even at the $20/mo tier our margins are strong.
+**Why we know people will pay:** Trading Discord communities charge $100-300/month for access to a guru who posts setups a few times a day. Trade Ideas charges $228/month. Traders routinely pay for edge. Our $20-50/month pricing is a fraction of what people already spend on trading tools and communities, and we deliver more actionable guidance than any of them. We're not competing on price — we're competing on value at a price point that feels like a steal.
+
+**Unit economics:** Our primary costs are AI API calls and market data. We track per-user API costs in real-time through our admin dashboard, broken down by provider and operation type. Claude analysis costs roughly $0.01-0.05 per analysis depending on depth, meaning even at the $20/mo tier our margins are 80%+.
 
 **Market size:** There are 60+ million active retail traders in the US alone (up from 10 million pre-2020). The retail trading tools market is projected at $12B+ by 2028. If we capture just 0.1% of US retail traders at an average $35/mo ARPU, that's $25M ARR. The real upside is international expansion — retail trading is exploding in India, Southeast Asia, and Latin America.
 
 ---
 
-### 15. How do users find your product? How did you get the users you have now?
+### 17. How do users find your product? How did you get the users you have now?
 
 [FILL IN: Your actual distribution strategy. Some honest options:]
 
@@ -131,13 +168,13 @@ Our initial distribution strategy targets three channels:
 
 ## Users & Metrics
 
-### 16. How many active users or customers do you have?
+### 18. How many active users or customers do you have?
 
 [FILL IN: Honest number — even if it's small. "5 beta users" is fine. YC has funded pre-launch companies.]
 
 ---
 
-### 17. Do you have revenue?
+### 19. Do you have revenue?
 
 [FILL IN: Yes/No and numbers if yes. Pre-revenue is fine — say so honestly.]
 
@@ -145,7 +182,7 @@ Our initial distribution strategy targets three channels:
 
 ## Financials
 
-### 18. How much money do you spend per month?
+### 20. How much money do you spend per month?
 
 Our current infrastructure costs are minimal:
 - Render.com hosting: $7/month
@@ -158,13 +195,13 @@ Our current infrastructure costs are minimal:
 
 ---
 
-### 19. How much money does your company have in the bank now?
+### 21. How much money does your company have in the bank now?
 
 [FILL IN: Honest number]
 
 ---
 
-### 20. How long is your runway?
+### 22. How long is your runway?
 
 [FILL IN: Based on burn rate and bank balance]
 
@@ -172,19 +209,19 @@ Our current infrastructure costs are minimal:
 
 ## Legal & Equity
 
-### 21. Have you formed ANY legal entity yet?
+### 23. Have you formed ANY legal entity yet?
 
 [FILL IN: Yes/No — if yes, specify type (e.g., Delaware C Corp). If no, that's fine — many YC companies incorporate during the batch.]
 
 ---
 
-### 22. Please describe the breakdown of the equity ownership in percentages among the founders, employees and any other stockholders.
+### 24. Please describe the breakdown of the equity ownership in percentages among the founders, employees and any other stockholders.
 
 [FILL IN: e.g., "Founder 1 (CEO): 60%, Founder 2 (CTO): 40%" — YC expects founders to have at least 10% each]
 
 ---
 
-### 23. Have you taken any investment yet?
+### 25. Have you taken any investment yet?
 
 [FILL IN: Yes/No — if bootstrapped, say so. It's a strength.]
 
@@ -192,7 +229,7 @@ Our current infrastructure costs are minimal:
 
 ## Other
 
-### 24. Is there anything else we should know about your company?
+### 26. Is there anything else we should know about your company?
 
 A few things that don't fit neatly into other answers:
 
@@ -204,19 +241,19 @@ A few things that don't fit neatly into other answers:
 
 ---
 
-### 25. If you had any other ideas you considered applying with, please list them.
+### 27. If you had any other ideas you considered applying with, please list them.
 
 [FILL IN: List 1-3 other ideas you've considered — YC sometimes funds teams based on alternate ideas]
 
 ---
 
-### 26. Please tell us something surprising or amusing that one of you has discovered.
+### 28. Please tell us something surprising or amusing that one of you has discovered.
 
 [FILL IN: Something genuinely interesting — could be a market insight, a technical discovery, or a life observation. Make it memorable.]
 
 ---
 
-### 27. What convinced you to apply to Y Combinator?
+### 29. What convinced you to apply to Y Combinator?
 
 [FILL IN: Be genuine. Some angles that work:]
 
